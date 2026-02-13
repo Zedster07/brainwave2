@@ -140,7 +140,7 @@ When the task is simple enough for a single agent, skip the planner and assign d
       try {
         relevantMemories = await memoryManager.recallForContext(task.prompt, 8)
         if (relevantMemories.length > 0) {
-          workingMemory.setScratchpad('recalled_memories', JSON.stringify(relevantMemories))
+          workingMemory.set('recalled_memories', JSON.stringify(relevantMemories))
           this.bus.emitEvent('system:log', {
             level: 'info',
             message: `Recalled ${relevantMemories.length} relevant memories for task`,

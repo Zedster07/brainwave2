@@ -46,8 +46,6 @@ AVAILABLE AGENT TYPES:
 - researcher: Web search, documentation lookup, fact-finding, summarization
 - coder: Code generation, modification, debugging, explanation
 - reviewer: Quality checking, code review, accuracy verification
-- file: File system operations (read, write, list)
-- memory: Query and store memories, knowledge management
 - reflection: Post-task analysis and lesson extraction
 
 IMPORTANT:
