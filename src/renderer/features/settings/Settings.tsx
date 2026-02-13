@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet } from 'lucide-react'
+import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload } from 'lucide-react'
 
 type SettingsTab = 'general' | 'models' | 'rules' | 'storage'
 
@@ -310,12 +310,46 @@ function RulesSettings() {
 
 function StorageSettings() {
   const [stats, setStats] = useState<{ episodic: number; semantic: number; procedural: number; prospective: number; people: number } | null>(null)
+  const [exportStatus, setExportStatus] = useState<string | null>(null)
+  const [importStatus, setImportStatus] = useState<string | null>(null)
 
   useEffect(() => {
     window.brainwave.getMemoryStats().then(setStats).catch(console.error)
   }, [])
 
   const totalMemories = stats ? stats.episodic + stats.semantic + stats.procedural + stats.prospective + stats.people : 0
+
+  const handleExport = async () => {
+    setExportStatus('Exporting...')
+    try {
+      const result = await window.brainwave.exportMemories()
+      if (result.success) {
+        setExportStatus(`Exported ${result.count} memories`)
+      } else {
+        setExportStatus(result.error === 'Cancelled' ? null : `Error: ${result.error}`)
+      }
+    } catch (err) {
+      setExportStatus(`Error: ${err}`)
+    }
+    setTimeout(() => setExportStatus(null), 4000)
+  }
+
+  const handleImport = async () => {
+    setImportStatus('Importing...')
+    try {
+      const result = await window.brainwave.importMemories()
+      if (result.success) {
+        setImportStatus(`Imported ${result.imported}, skipped ${result.skipped}`)
+        // Refresh stats
+        window.brainwave.getMemoryStats().then(setStats).catch(console.error)
+      } else {
+        setImportStatus(result.error === 'Cancelled' ? null : `Error: ${result.error}`)
+      }
+    } catch (err) {
+      setImportStatus(`Error: ${err}`)
+    }
+    setTimeout(() => setImportStatus(null), 4000)
+  }
 
   return (
     <div className="space-y-6">
@@ -337,6 +371,30 @@ function StorageSettings() {
           ))}
         </div>
       )}
+
+      {/* Export / Import */}
+      <div className="border-t border-white/[0.06] pt-4">
+        <p className="text-sm text-white font-medium mb-1">Memory Export / Import</p>
+        <p className="text-xs text-gray-500 mb-3">Transfer memories between Brainwave instances as JSON</p>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleExport}
+            className="flex items-center gap-2 px-3 py-2 bg-accent/10 text-accent text-xs rounded-lg hover:bg-accent/20 transition-colors"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Export All
+          </button>
+          <button
+            onClick={handleImport}
+            className="flex items-center gap-2 px-3 py-2 bg-white/[0.04] text-gray-300 text-xs rounded-lg hover:bg-white/[0.06] transition-colors"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            Import
+          </button>
+          {exportStatus && <span className="text-[10px] text-accent">{exportStatus}</span>}
+          {importStatus && <span className="text-[10px] text-accent">{importStatus}</span>}
+        </div>
+      </div>
     </div>
   )
 }

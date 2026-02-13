@@ -31,6 +31,8 @@ export const IPC_CHANNELS = {
   MEMORY_DELETE: 'memory:delete',
   MEMORY_GET_STATS: 'memory:get-stats',
   MEMORY_GET_RECENT: 'memory:get-recent',
+  MEMORY_EXPORT: 'memory:export',
+  MEMORY_IMPORT: 'memory:import',
 
   // People
   PEOPLE_GET_ALL: 'people:get-all',
@@ -256,6 +258,8 @@ export interface BrainwaveAPI {
   deleteMemory: (id: string, type: string) => Promise<boolean>
   getMemoryStats: () => Promise<MemoryStatsInfo>
   getRecentMemories: (limit?: number) => Promise<MemoryEntry[]>
+  exportMemories: () => Promise<{ success: boolean; filePath?: string; count?: number; error?: string }>
+  importMemories: () => Promise<{ success: boolean; imported?: number; skipped?: number; error?: string }>
 
   // People
   getAllPeople: () => Promise<PersonEntry[]>

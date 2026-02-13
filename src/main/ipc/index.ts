@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { ipcMain, app, BrowserWindow } from 'electron'
+import { writeFileSync, readFileSync } from 'node:fs'
+import { ipcMain, app, dialog, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '@shared/types'
 import type { TaskSubmission, MemoryQuery, CreateScheduledJobInput } from '@shared/types'
 import { getScheduler } from '../services/scheduler.service'
@@ -8,7 +9,7 @@ import { LLMFactory, getAllCircuitBreakerStatus } from '../llm'
 import { getOrchestrator } from '../agents/orchestrator'
 import { getAgentPool } from '../agents/agent-pool'
 import { getEventBus } from '../agents/event-bus'
-import { getMemoryManager } from '../memory'
+import { getMemoryManager, exportAllMemories, importAllMemories } from '../memory'
 import { getPeopleStore } from '../memory/people'
 import { getCalibrationTracker } from '../agents/calibration'
 import { getPromptRegistry } from '../prompts'
@@ -230,6 +231,56 @@ export function registerIpcHandlers(): void {
       accessCount: e.accessCount,
       tags: e.tags,
     }))
+  })
+
+  // ─── Memory Export/Import ───
+  ipcMain.handle(IPC_CHANNELS.MEMORY_EXPORT, async () => {
+    const win = BrowserWindow.getFocusedWindow()
+    const result = await dialog.showSaveDialog(win!, {
+      title: 'Export Brainwave Memories',
+      defaultPath: `brainwave-memories-${new Date().toISOString().slice(0, 10)}.json`,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    })
+
+    if (result.canceled || !result.filePath) {
+      return { success: false, error: 'Cancelled' }
+    }
+
+    try {
+      const exportData = exportAllMemories()
+      const totalCount = Object.values(exportData.data).reduce((sum, arr) => sum + arr.length, 0)
+      writeFileSync(result.filePath, JSON.stringify(exportData, null, 2), 'utf-8')
+      return { success: true, filePath: result.filePath, count: totalCount }
+    } catch (err) {
+      return { success: false, error: String(err) }
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_IMPORT, async () => {
+    const win = BrowserWindow.getFocusedWindow()
+    const result = await dialog.showOpenDialog(win!, {
+      title: 'Import Brainwave Memories',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      properties: ['openFile'],
+    })
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false, error: 'Cancelled' }
+    }
+
+    try {
+      const raw = readFileSync(result.filePaths[0], 'utf-8')
+      const exportData = JSON.parse(raw)
+
+      if (!exportData.version || !exportData.data) {
+        return { success: false, error: 'Invalid export file format' }
+      }
+
+      const { imported, skipped } = importAllMemories(exportData)
+      return { success: true, imported, skipped }
+    } catch (err) {
+      return { success: false, error: String(err) }
+    }
   })
 
   // ─── People ───

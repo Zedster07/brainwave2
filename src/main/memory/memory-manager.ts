@@ -10,7 +10,9 @@ import { SemanticMemoryStore, type SemanticEntry, type StoreSemanticInput } from
 import { EmbeddingService, getEmbeddingService, type VectorSearchResult } from './embeddings'
 import { FTSService, getFTSService, type FTSResult } from './fts'
 import { WorkingMemory, getWorkingMemory } from './working-memory'
-import { getPeopleStore } from './people'
+import { getPeopleStore, type PersonEntry } from './people'
+import { getProceduralStore, type ProceduralEntry } from './procedural'
+import { getProspectiveStore, type ProspectiveEntry } from './prospective'
 import { getDatabase } from '../db/database'
 import { getEventBus } from '../agents/event-bus'
 
@@ -310,6 +312,146 @@ export class MemoryManager {
 
     return [...byId.values()].sort((a, b) => b.relevance - a.relevance)
   }
+}
+
+// ─── Export/Import Types ────────────────────────────────────
+
+export interface BrainwaveMemoryExport {
+  version: 1
+  exportedAt: string
+  data: {
+    episodic: EpisodicEntry[]
+    semantic: SemanticEntry[]
+    procedural: ProceduralEntry[]
+    prospective: ProspectiveEntry[]
+    people: PersonEntry[]
+  }
+}
+
+/** Export all memories to a JSON-serializable object */
+export function exportAllMemories(): BrainwaveMemoryExport {
+  const mm = getMemoryManager()
+  const procedural = getProceduralStore()
+  const prospective = getProspectiveStore()
+  const people = getPeopleStore()
+
+  return {
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    data: {
+      episodic: mm.episodic.getAll(),
+      semantic: mm.semantic.getAll(),
+      procedural: procedural.getAll(),
+      prospective: prospective.getAll(),
+      people: people.getAll(),
+    },
+  }
+}
+
+/** Import memories from an export object. Returns counts of imported/skipped. */
+export function importAllMemories(
+  exportData: BrainwaveMemoryExport
+): { imported: number; skipped: number } {
+  if (exportData.version !== 1) {
+    throw new Error(`Unsupported export version: ${exportData.version}`)
+  }
+
+  const mm = getMemoryManager()
+  const procedural = getProceduralStore()
+  const prospective = getProspectiveStore()
+  const people = getPeopleStore()
+
+  let imported = 0
+  let skipped = 0
+
+  // Episodic — store via MemoryManager so embeddings + FTS are indexed
+  for (const entry of exportData.data.episodic ?? []) {
+    try {
+      mm.storeEpisodic({
+        content: entry.content,
+        context: entry.context ?? {},
+        emotionalValence: entry.emotionalValence ?? 0,
+        importance: entry.importance ?? 0.5,
+        tags: entry.tags ?? [],
+        metadata: entry.metadata ?? {},
+      })
+      imported++
+    } catch {
+      skipped++
+    }
+  }
+
+  // Semantic — store via MemoryManager (has upsert/dedup logic)
+  for (const entry of exportData.data.semantic ?? []) {
+    try {
+      mm.storeSemantic({
+        subject: entry.subject,
+        predicate: entry.predicate,
+        object: entry.object,
+        confidence: entry.confidence ?? 0.8,
+        source: entry.source ?? 'import',
+        tags: entry.tags ?? [],
+        metadata: entry.metadata ?? {},
+      })
+      imported++
+    } catch {
+      skipped++
+    }
+  }
+
+  // Procedural
+  for (const entry of exportData.data.procedural ?? []) {
+    try {
+      procedural.store({
+        name: entry.name,
+        description: entry.description ?? undefined,
+        steps: entry.steps ?? [],
+        triggerConditions: entry.triggerConditions ?? [],
+        tags: entry.tags ?? [],
+        metadata: entry.metadata ?? {},
+      })
+      imported++
+    } catch {
+      skipped++
+    }
+  }
+
+  // Prospective
+  for (const entry of exportData.data.prospective ?? []) {
+    try {
+      prospective.store({
+        intention: entry.intention,
+        triggerType: entry.triggerType,
+        triggerValue: entry.triggerValue,
+        priority: entry.priority ?? 0.5,
+        dueAt: entry.dueAt ?? undefined,
+        tags: entry.tags ?? [],
+        metadata: entry.metadata ?? {},
+      })
+      imported++
+    } catch {
+      skipped++
+    }
+  }
+
+  // People — upserts by name
+  for (const entry of exportData.data.people ?? []) {
+    try {
+      people.store({
+        name: entry.name,
+        relationship: entry.relationship ?? undefined,
+        traits: entry.traits ?? [],
+        preferences: entry.preferences ?? {},
+        metadata: entry.metadata ?? {},
+      })
+      imported++
+    } catch {
+      skipped++
+    }
+  }
+
+  console.log(`[Memory] Import complete: ${imported} imported, ${skipped} skipped`)
+  return { imported, skipped }
 }
 
 // ─── Singleton ──────────────────────────────────────────────

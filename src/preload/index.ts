@@ -55,6 +55,12 @@ const api: BrainwaveAPI = {
   getRecentMemories: (limit?: number) =>
     ipcRenderer.invoke(IPC_CHANNELS.MEMORY_GET_RECENT, limit),
 
+  exportMemories: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_EXPORT),
+
+  importMemories: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_IMPORT),
+
   // ─── People ───
   getAllPeople: () =>
     ipcRenderer.invoke(IPC_CHANNELS.PEOPLE_GET_ALL),

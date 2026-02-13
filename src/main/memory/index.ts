@@ -6,5 +6,5 @@ export { ProspectiveMemoryStore, getProspectiveStore, type ProspectiveEntry, typ
 export { PeopleStore, getPeopleStore, type PersonEntry, type StorePersonInput, type InteractionSummary } from './people'
 export { EmbeddingService, getEmbeddingService, type VectorSearchResult } from './embeddings'
 export { FTSService, getFTSService, type FTSResult } from './fts'
-export { MemoryManager, initMemoryManager, getMemoryManager, type RecallOptions, type RecallResult, type MemoryStats } from './memory-manager'
+export { MemoryManager, initMemoryManager, getMemoryManager, exportAllMemories, importAllMemories, type RecallOptions, type RecallResult, type MemoryStats, type BrainwaveMemoryExport } from './memory-manager'
 export { MemoryDecayService, getDecayService, type DecayConfig, type DecayTickResult } from './decay'
