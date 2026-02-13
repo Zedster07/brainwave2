@@ -21,6 +21,151 @@ import { getProceduralStore } from '../memory/procedural'
 import { getProspectiveStore } from '../memory/prospective'
 import { getHardEngine, getSoftEngine } from '../rules'
 import type { SafetyRules, BehaviorRules } from '../rules'
+import type { McpRegistry } from '../mcp/registry'
+
+// ─── MCP JSON Import Parser ────────────────────────────────
+
+/**
+ * Parse a VS Code / generic MCP JSON config and import all servers.
+ *
+ * Supported formats:
+ *   { "servers": { "name": { type, command, args, url, ... } } }  (VS Code style)
+ *   { "mcpServers": { ... } }                                     (alternative key)
+ *   { "name": { type, command, args, url, ... } }                 (bare object)
+ *
+ * Transport mapping:  "stdio" → "stdio",  "http" | "sse" → "sse"
+ * Environment vars:   extracted from `-e KEY=VAL` in args (Docker pattern)
+ *                     OR from an explicit "env" object
+ */
+function importMcpServersFromJson(
+  json: string,
+  registry: McpRegistry
+): { imported: number; skipped: number; errors: string[] } {
+  const errors: string[] = []
+  let imported = 0
+  let skipped = 0
+
+  let raw: Record<string, unknown>
+  try {
+    // Strip JSONC comments (// and /* */)
+    const cleaned = json
+      .replace(/\/\/.*$/gm, '')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      // Remove trailing commas before } or ]
+      .replace(/,\s*([\]}])/g, '$1')
+    raw = JSON.parse(cleaned)
+  } catch (err) {
+    return { imported: 0, skipped: 0, errors: [`Invalid JSON: ${err instanceof Error ? err.message : String(err)}`] }
+  }
+
+  // Detect the servers object
+  const serversObj = (
+    (raw.servers as Record<string, unknown>) ??
+    (raw.mcpServers as Record<string, unknown>) ??
+    // If the object itself looks like a servers map (keys have type/command/url props)
+    (Object.values(raw).some((v) => v && typeof v === 'object' && ('type' in (v as object) || 'command' in (v as object)))
+      ? raw
+      : null)
+  )
+
+  if (!serversObj || typeof serversObj !== 'object') {
+    return { imported: 0, skipped: 0, errors: ['Could not find "servers" or "mcpServers" key in the JSON.'] }
+  }
+
+  // Get existing configs to skip duplicates
+  const existingConfigs = registry.getConfigs()
+  const existingNames = new Set(existingConfigs.map((c) => c.name.toLowerCase()))
+
+  for (const [name, value] of Object.entries(serversObj)) {
+    try {
+      if (!value || typeof value !== 'object') {
+        errors.push(`"${name}": Not a valid server object`)
+        continue
+      }
+
+      const srv = value as Record<string, unknown>
+
+      // Skip duplicates by name
+      if (existingNames.has(name.toLowerCase())) {
+        skipped++
+        errors.push(`"${name}": Skipped — already exists`)
+        continue
+      }
+
+      // Determine transport
+      const rawType = String(srv.type ?? 'stdio').toLowerCase()
+      const transport: 'stdio' | 'sse' = (rawType === 'http' || rawType === 'sse') ? 'sse' : 'stdio'
+
+      // Extract env vars — from explicit env object or from Docker -e args
+      let env: Record<string, string> = {}
+      if (srv.env && typeof srv.env === 'object') {
+        env = { ...(srv.env as Record<string, string>) }
+      }
+
+      // Parse args
+      let args: string[] = []
+      if (Array.isArray(srv.args)) {
+        const rawArgs = srv.args.map(String)
+
+        // Extract -e KEY=VAL patterns (Docker style) into env
+        const cleanArgs: string[] = []
+        for (let i = 0; i < rawArgs.length; i++) {
+          if (rawArgs[i] === '-e' && i + 1 < rawArgs.length) {
+            const kvPair = rawArgs[i + 1]
+            const eqIdx = kvPair.indexOf('=')
+            if (eqIdx > 0) {
+              env[kvPair.slice(0, eqIdx)] = kvPair.slice(eqIdx + 1)
+            }
+            i++ // skip the value
+          } else {
+            cleanArgs.push(rawArgs[i])
+          }
+        }
+        args = cleanArgs
+      }
+
+      if (transport === 'stdio') {
+        const command = srv.command ? String(srv.command) : undefined
+        if (!command) {
+          errors.push(`"${name}": Missing "command" for stdio transport`)
+          continue
+        }
+
+        registry.addServer({
+          name,
+          transport: 'stdio',
+          command,
+          args: args.length > 0 ? args : undefined,
+          env: Object.keys(env).length > 0 ? env : undefined,
+          autoConnect: false,
+          enabled: true,
+        })
+      } else {
+        const url = srv.url ? String(srv.url) : undefined
+        if (!url) {
+          errors.push(`"${name}": Missing "url" for http/sse transport`)
+          continue
+        }
+
+        registry.addServer({
+          name,
+          transport: 'sse',
+          url,
+          env: Object.keys(env).length > 0 ? env : undefined,
+          autoConnect: false,
+          enabled: true,
+        })
+      }
+
+      existingNames.add(name.toLowerCase())
+      imported++
+    } catch (err) {
+      errors.push(`"${name}": ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  return { imported, skipped, errors }
+}
 
 export function registerIpcHandlers(): void {
   // ─── Window Controls ───
@@ -507,6 +652,10 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.MCP_GET_TOOLS, async () => {
     return mcpRegistry.getAllTools()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MCP_IMPORT_SERVERS, async (_event, json: string) => {
+    return importMcpServersFromJson(json, mcpRegistry)
   })
 
   // ─── Scheduler ───

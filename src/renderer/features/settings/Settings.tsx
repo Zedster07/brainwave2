@@ -1058,6 +1058,12 @@ function ToolsSettings() {
   const [error, setError] = useState<string | null>(null)
   const [connecting, setConnecting] = useState<string | null>(null)
 
+  // ── Import JSON state ──
+  const [showImport, setShowImport] = useState(false)
+  const [importJson, setImportJson] = useState('')
+  const [importBusy, setImportBusy] = useState(false)
+  const [importResult, setImportResult] = useState<{ imported: number; skipped: number; errors: string[] } | null>(null)
+
   const refresh = useCallback(async () => {
     try {
       const [s, st] = await Promise.all([
@@ -1139,6 +1145,24 @@ function ToolsSettings() {
     setConnecting(null)
   }
 
+  // ── Import JSON handler ──
+  const handleImportJson = async () => {
+    if (!importJson.trim()) return
+    setImportBusy(true)
+    setImportResult(null)
+    try {
+      const result = await window.brainwave.mcpImportServers(importJson)
+      setImportResult(result)
+      if (result.imported > 0) {
+        await refresh()
+      }
+    } catch (err) {
+      setImportResult({ imported: 0, skipped: 0, errors: [err instanceof Error ? err.message : 'Import failed'] })
+    } finally {
+      setImportBusy(false)
+    }
+  }
+
   if (loading) {
     return <div className="flex items-center gap-2 text-gray-500 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
   }
@@ -1177,12 +1201,20 @@ function ToolsSettings() {
             <h3 className="text-sm font-semibold text-white">MCP Servers</h3>
             <p className="text-xs text-gray-500 mt-0.5">Connect external tool servers via Model Context Protocol</p>
           </div>
-          <button
-            onClick={() => { setForm(emptyMcpForm); setError(null); setShowForm(true) }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent/10 text-accent text-xs font-medium hover:bg-accent/20 transition-all"
-          >
-            <Plus className="w-3.5 h-3.5" /> Add Server
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => { setImportJson(''); setImportResult(null); setShowImport(true) }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.04] text-gray-400 text-xs font-medium hover:bg-white/[0.08] hover:text-white transition-all"
+            >
+              <Download className="w-3.5 h-3.5" /> Import JSON
+            </button>
+            <button
+              onClick={() => { setForm(emptyMcpForm); setError(null); setShowForm(true) }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent/10 text-accent text-xs font-medium hover:bg-accent/20 transition-all"
+            >
+              <Plus className="w-3.5 h-3.5" /> Add Server
+            </button>
+          </div>
         </div>
 
         {/* Server list */}
@@ -1256,6 +1288,75 @@ function ToolsSettings() {
             </div>
           )
         })}
+
+        {/* Import JSON modal */}
+        {showImport && (
+          <div className="p-4 bg-white/[0.03] rounded-lg border border-accent/20 space-y-3 mt-2 mb-2">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-medium text-white flex items-center gap-2">
+                <Download className="w-4 h-4 text-accent" /> Import MCP Servers from JSON
+              </h4>
+              <button onClick={() => setShowImport(false)} className="text-gray-500 hover:text-gray-300"><X className="w-4 h-4" /></button>
+            </div>
+
+            <p className="text-[11px] text-gray-500">
+              Paste a VS Code MCP config JSON. Supports <code className="text-gray-400 bg-white/[0.04] px-1 rounded">{'{ "servers": { ... } }'}</code> and <code className="text-gray-400 bg-white/[0.04] px-1 rounded">{'{ "mcpServers": { ... } }'}</code> formats.
+            </p>
+
+            <textarea
+              value={importJson}
+              onChange={(e) => setImportJson(e.target.value)}
+              placeholder={`{
+  "servers": {
+    "filesystem": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
+    },
+    "remote-api": {
+      "type": "http",
+      "url": "http://localhost:3001/sse"
+    }
+  }
+}`}
+              className="w-full h-48 bg-black/20 border border-white/[0.08] rounded-lg px-3 py-2 text-xs text-gray-300 font-mono focus:outline-none focus:border-accent/40 resize-y"
+              spellCheck={false}
+            />
+
+            {/* Results */}
+            {importResult && (
+              <div className={`text-xs px-3 py-2 rounded-lg ${
+                importResult.errors.length > 0 && importResult.imported === 0
+                  ? 'bg-red-500/10 text-red-400'
+                  : importResult.imported > 0
+                    ? 'bg-green-500/10 text-green-400'
+                    : 'bg-yellow-500/10 text-yellow-400'
+              }`}>
+                <div className="flex items-center gap-3 mb-1">
+                  {importResult.imported > 0 && <span className="flex items-center gap-1"><Check className="w-3 h-3" /> {importResult.imported} imported</span>}
+                  {importResult.skipped > 0 && <span>{importResult.skipped} skipped</span>}
+                </div>
+                {importResult.errors.length > 0 && (
+                  <ul className="space-y-0.5 mt-1">
+                    {importResult.errors.map((e, i) => <li key={i} className="text-[10px] text-gray-400">{e}</li>)}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setShowImport(false)} className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors">Cancel</button>
+              <button
+                onClick={handleImportJson}
+                disabled={importBusy || !importJson.trim()}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+              >
+                {importBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                Import Servers
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Add server form */}
         {showForm && (

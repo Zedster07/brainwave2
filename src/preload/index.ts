@@ -271,6 +271,9 @@ const api: BrainwaveAPI = {
   mcpGetTools: () =>
     ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_TOOLS),
 
+  mcpImportServers: (json: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_IMPORT_SERVERS, json),
+
   // ─── Plugins ───
   pluginList: () =>
     ipcRenderer.invoke(IPC_CHANNELS.PLUGIN_LIST),

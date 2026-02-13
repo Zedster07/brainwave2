@@ -117,6 +117,7 @@ export const IPC_CHANNELS = {
   MCP_DISCONNECT: 'mcp:disconnect',
   MCP_GET_STATUSES: 'mcp:get-statuses',
   MCP_GET_TOOLS: 'mcp:get-tools',
+  MCP_IMPORT_SERVERS: 'mcp:import-servers',
 
   // Calibration / Feedback
   CALIBRATION_SUBMIT_FEEDBACK: 'calibration:submit-feedback',
@@ -380,6 +381,7 @@ export interface BrainwaveAPI {
   mcpDisconnect: (serverId: string) => Promise<void>
   mcpGetStatuses: () => Promise<McpServerStatusInfo[]>
   mcpGetTools: () => Promise<McpToolInfo[]>
+  mcpImportServers: (json: string) => Promise<{ imported: number; skipped: number; errors: string[] }>
 
   // Plugins
   pluginList: () => Promise<PluginInfoData[]>
