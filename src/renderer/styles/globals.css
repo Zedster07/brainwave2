@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Base Resets ──────────────────────────────────────────── */
+@layer base {
+  * {
+    @apply border-white/5;
+  }
+
+  body {
+    @apply bg-primary text-gray-200 selection:bg-accent/30 overflow-hidden;
+  }
+
+  /* Custom scrollbar — thin, unobtrusive */
+  ::-webkit-scrollbar {
+    @apply w-1.5;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-white/10 rounded-full hover:bg-white/20;
+  }
+}
+
+/* ─── Glass Card Utility ──────────────────────────────────── */
+@layer components {
+  .glass-card {
+    @apply bg-white/[0.03] backdrop-blur-[12px] border border-white/[0.06] rounded-xl;
+  }
+
+  .glass-card-hover {
+    @apply glass-card transition-all duration-200 hover:bg-white/[0.06] hover:border-white/[0.1];
+  }
+
+  .glow-accent {
+    box-shadow: 0 0 20px theme('colors.accent.DEFAULT / 15%'),
+                0 0 60px theme('colors.accent.DEFAULT / 5%');
+  }
+
+  .glow-subtle {
+    box-shadow: 0 0 15px theme('colors.accent.DEFAULT / 8%');
+  }
+
+  /* Agent status dot */
+  .agent-dot {
+    @apply w-2 h-2 rounded-full;
+  }
+
+  .agent-dot-active {
+    @apply agent-dot animate-pulse-glow;
+  }
+}
