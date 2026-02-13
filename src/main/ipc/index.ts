@@ -25,6 +25,46 @@ import type { McpRegistry } from '../mcp/registry'
 
 // ─── MCP JSON Import Parser ────────────────────────────────
 
+/** Strip line and block comments from JSONC without touching strings */
+function stripJsoncComments(input: string): string {
+  let result = ''
+  let i = 0
+  while (i < input.length) {
+    // String literal — copy verbatim including escapes
+    if (input[i] === '"') {
+      result += '"'
+      i++
+      while (i < input.length && input[i] !== '"') {
+        if (input[i] === '\\' && i + 1 < input.length) {
+          result += input[i] + input[i + 1]
+          i += 2
+        } else {
+          result += input[i]
+          i++
+        }
+      }
+      if (i < input.length) { result += '"'; i++ }
+    }
+    // Line comment
+    else if (input[i] === '/' && i + 1 < input.length && input[i + 1] === '/') {
+      i += 2
+      while (i < input.length && input[i] !== '\n') i++
+    }
+    // Block comment
+    else if (input[i] === '/' && i + 1 < input.length && input[i + 1] === '*') {
+      i += 2
+      while (i < input.length && !(input[i] === '*' && i + 1 < input.length && input[i + 1] === '/')) i++
+      if (i < input.length) i += 2
+    }
+    // Normal character
+    else {
+      result += input[i]
+      i++
+    }
+  }
+  return result
+}
+
 /**
  * Parse a VS Code / generic MCP JSON config and import all servers.
  *
@@ -47,10 +87,8 @@ function importMcpServersFromJson(
 
   let raw: Record<string, unknown>
   try {
-    // Strip JSONC comments (// and /* */)
-    const cleaned = json
-      .replace(/\/\/.*$/gm, '')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
+    // Strip JSONC comments while preserving strings (// and /* */ inside quotes are kept)
+    const cleaned = stripJsoncComments(json)
       // Remove trailing commas before } or ]
       .replace(/,\s*([\]}])/g, '$1')
     raw = JSON.parse(cleaned)
