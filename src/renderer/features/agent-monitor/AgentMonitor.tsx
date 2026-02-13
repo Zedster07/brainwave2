@@ -157,7 +157,10 @@ export function AgentMonitor() {
           </h3>
           {logs.length > 0 && (
             <button
-              onClick={() => setLogs([])}
+              onClick={async () => {
+                await window.brainwave.clearLogHistory()
+                setLogs([])
+              }}
               className="text-[10px] text-gray-600 hover:text-gray-400 transition-colors"
             >
               Clear

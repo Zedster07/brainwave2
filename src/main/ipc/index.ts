@@ -313,6 +313,12 @@ export function registerIpcHandlers(): void {
     }))
   })
 
+  ipcMain.handle(IPC_CHANNELS.AGENT_CLEAR_LOG_HISTORY, async () => {
+    const db = getDatabase()
+    db.run('DELETE FROM agent_runs')
+    console.log('[AgentMonitor] Cleared all agent run history')
+  })
+
   // Forward agent events to renderer
   const forwardToRenderer = (channel: string, data: unknown) => {
     BrowserWindow.getAllWindows().forEach((win) => {

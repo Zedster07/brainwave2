@@ -29,6 +29,9 @@ const api: BrainwaveAPI = {
   getLogHistory: (limit?: number) =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_GET_LOG_HISTORY, limit),
 
+  clearLogHistory: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_CLEAR_LOG_HISTORY) as Promise<void>,
+
   // ─── Events (main → renderer) ───
   onTaskUpdate: (callback: (update: TaskUpdate) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, update: TaskUpdate) => callback(update)
