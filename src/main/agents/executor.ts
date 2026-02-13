@@ -1,40 +1,46 @@
 /**
- * Executor Agent — Calls MCP tools to perform real-world actions
+ * Executor Agent — Calls tools to perform real-world actions
  *
  * When the planner assigns a task to the executor, this agent:
- * 1. Reviews the available MCP tools
- * 2. Uses the LLM to decide which tool(s) to call and with what arguments
- * 3. Calls the tool(s) via the MCP registry
+ * 1. Reviews available tools (built-in local tools + MCP tools)
+ * 2. Uses the LLM to decide which tool to call and with what arguments
+ * 3. Calls the tool via the local provider or MCP registry
  * 4. Returns the results as an AgentResult
  *
- * If no MCP tools are available, falls back to LLM-only reasoning.
+ * Built-in local tools: file_read, file_write, file_delete, shell_execute
+ * All local tool calls are gated through the Hard Rules Engine.
+ *
+ * If no tools are available at all, falls back to LLM-only reasoning.
  */
 import type { AgentType } from './event-bus'
 import { BaseAgent, type SubTask, type AgentContext, type AgentResult, type Artifact } from './base-agent'
 import { LLMFactory, type LLMResponse } from '../llm'
 import { getMcpRegistry } from '../mcp'
+import { getLocalToolProvider } from '../tools'
 
 export class ExecutorAgent extends BaseAgent {
   readonly type: AgentType = 'executor'
-  readonly capabilities = ['execution', 'automation', 'tooling', 'mcp-tools']
-  readonly description = 'Task execution via MCP tools — file ops, web search, API calls, and more'
+  readonly capabilities = ['execution', 'automation', 'tooling', 'mcp-tools', 'file-ops', 'shell']
+  readonly description = 'Task execution via built-in tools (file read/write/delete, shell) and MCP tools'
 
   protected getSystemPrompt(context: AgentContext): string {
-    const registry = getMcpRegistry()
-    const catalog = registry.getToolCatalog()
+    const localCatalog = getLocalToolProvider().getToolCatalog()
+    const mcpCatalog = getMcpRegistry().getToolCatalog()
+    const fullCatalog = [localCatalog, mcpCatalog].filter(Boolean).join('\n\n')
 
-    const toolSection = catalog
-      ? `\n\n${catalog}\n\nTo call a tool, respond with a JSON object:\n` +
+    const toolSection = fullCatalog
+      ? `\n\n${fullCatalog}\n\nTo call a tool, respond with a JSON object:\n` +
         `{ "tool": "<tool_key>", "args": { ... } }\n\n` +
-        `- tool_key format is "serverId::toolName"\n` +
+        `- tool_key format is "serverId::toolName" (e.g. "local::file_read" or "abc123::search")\n` +
         `- args must match the tool's input schema\n` +
         `- You can call ONE tool per response\n` +
-        `- After seeing the tool result, provide your final answer`
-      : '\n\nNo MCP tools are currently connected. Answer using your knowledge only.'
+        `- After seeing the tool result, provide your final answer\n` +
+        `- For file paths, always use absolute paths`
+      : '\n\nNo tools are currently available. Answer using your knowledge only.'
 
     return `You are the Executor agent in the Brainwave system.
 
-Your role is to complete tasks by calling MCP tools when available,
+Your role is to complete tasks by calling tools (built-in or MCP),
 or providing the best possible answer using your knowledge.
 
 Be precise with tool arguments. Report errors clearly.
@@ -45,10 +51,13 @@ Always provide a clear summary of what was accomplished.${toolSection}`
     const startTime = Date.now()
     const modelConfig = LLMFactory.getAgentConfig(this.type)
     const registry = getMcpRegistry()
-    const tools = registry.getAllTools()
+    const localProvider = getLocalToolProvider()
+    const mcpTools = registry.getAllTools()
+    const localTools = localProvider.getTools()
+    const allTools = [...localTools, ...mcpTools]
 
-    // If no tools available, use standard LLM-only execution
-    if (tools.length === 0) {
+    // If no tools available at all, use standard LLM-only execution
+    if (allTools.length === 0) {
       return super.execute(task, context)
     }
 
@@ -93,14 +102,16 @@ Always provide a clear summary of what was accomplished.${toolSection}`
         )
       }
 
-      // Step 3: Execute the tool
+      // Step 3: Execute the tool — route to local provider or MCP registry
       this.bus.emitEvent('agent:acting', {
         agentType: this.type,
         taskId: context.taskId,
         action: `Calling tool: ${toolCall.tool}`,
       })
 
-      const result = await registry.callTool(toolCall.tool, toolCall.args)
+      const result = toolCall.tool.startsWith('local::')
+        ? await localProvider.callTool(toolCall.tool.split('::')[1], toolCall.args)
+        : await registry.callTool(toolCall.tool, toolCall.args)
       toolResults.push({
         tool: toolCall.tool,
         success: result.success,

@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X } from 'lucide-react'
-import type { PluginInfoData } from '@shared/types'
+import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2 } from 'lucide-react'
+import type { PluginInfoData, McpServerConfigInfo, McpServerStatusInfo } from '@shared/types'
 
-type SettingsTab = 'general' | 'models' | 'rules' | 'storage' | 'plugins'
+type SettingsTab = 'general' | 'models' | 'rules' | 'storage' | 'plugins' | 'tools'
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Key }[] = [
   { id: 'general', label: 'General', icon: SettingsIcon },
@@ -10,6 +10,7 @@ const TABS: { id: SettingsTab; label: string; icon: typeof Key }[] = [
   { id: 'rules', label: 'Rules Engine', icon: Shield },
   { id: 'storage', label: 'Storage', icon: Database },
   { id: 'plugins', label: 'Plugins', icon: Plug },
+  { id: 'tools', label: 'Tools', icon: Wrench },
 ]
 
 export function Settings() {
@@ -52,6 +53,7 @@ export function Settings() {
         {activeTab === 'rules' && <RulesSettings />}
         {activeTab === 'storage' && <StorageSettings />}
         {activeTab === 'plugins' && <PluginSettings />}
+        {activeTab === 'tools' && <ToolsSettings />}
       </div>
     </div>
   )
@@ -847,6 +849,313 @@ function PluginSettings() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── Tools Settings (Local Tools + MCP Servers) ───
+
+const LOCAL_TOOLS = [
+  { name: 'file_read', icon: FileText, desc: 'Read file contents' },
+  { name: 'file_write', icon: FolderOpen, desc: 'Write/create files' },
+  { name: 'file_delete', icon: Trash2, desc: 'Delete files' },
+  { name: 'shell_execute', icon: Terminal, desc: 'Execute shell commands' },
+]
+
+interface McpFormState {
+  name: string
+  transport: 'stdio' | 'sse'
+  command: string
+  args: string
+  url: string
+  autoConnect: boolean
+}
+
+const emptyMcpForm: McpFormState = {
+  name: '',
+  transport: 'stdio',
+  command: '',
+  args: '',
+  url: '',
+  autoConnect: true,
+}
+
+function ToolsSettings() {
+  const [servers, setServers] = useState<McpServerConfigInfo[]>([])
+  const [statuses, setStatuses] = useState<McpServerStatusInfo[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState<McpFormState>(emptyMcpForm)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [connecting, setConnecting] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => {
+    try {
+      const [s, st] = await Promise.all([
+        window.brainwave.mcpGetServers(),
+        window.brainwave.mcpGetStatuses(),
+      ])
+      setServers(s)
+      setStatuses(st)
+    } catch (err) {
+      console.error('[ToolsSettings] Failed to load:', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { refresh() }, [refresh])
+
+  const getStatus = (id: string) => statuses.find((s) => s.id === id)
+
+  const handleAdd = async () => {
+    setError(null)
+    setSaving(true)
+    try {
+      const config: Omit<McpServerConfigInfo, 'id'> = {
+        name: form.name.trim(),
+        transport: form.transport,
+        command: form.transport === 'stdio' ? form.command.trim() : undefined,
+        args: form.transport === 'stdio' && form.args.trim()
+          ? form.args.split(',').map((a) => a.trim()).filter(Boolean)
+          : undefined,
+        url: form.transport === 'sse' ? form.url.trim() : undefined,
+        autoConnect: form.autoConnect,
+        enabled: true,
+      }
+      if (!config.name) throw new Error('Server name is required')
+      if (form.transport === 'stdio' && !config.command) throw new Error('Command is required for stdio')
+      if (form.transport === 'sse' && !config.url) throw new Error('URL is required for SSE')
+
+      await window.brainwave.mcpAddServer(config)
+      setShowForm(false)
+      setForm(emptyMcpForm)
+      await refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to add server')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleRemove = async (id: string) => {
+    try {
+      await window.brainwave.mcpDisconnect(id).catch(() => {})
+      await window.brainwave.mcpRemoveServer(id)
+      await refresh()
+    } catch (err) {
+      console.error('Failed to remove server:', err)
+    }
+  }
+
+  const handleConnect = async (id: string) => {
+    setConnecting(id)
+    try {
+      await window.brainwave.mcpConnect(id)
+    } catch (err) {
+      console.error('Failed to connect:', err)
+    }
+    await refresh()
+    setConnecting(null)
+  }
+
+  const handleDisconnect = async (id: string) => {
+    setConnecting(id)
+    try {
+      await window.brainwave.mcpDisconnect(id)
+    } catch (err) {
+      console.error('Failed to disconnect:', err)
+    }
+    await refresh()
+    setConnecting(null)
+  }
+
+  if (loading) {
+    return <div className="flex items-center gap-2 text-gray-500 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* ── Local Built-in Tools ── */}
+      <div>
+        <h3 className="text-sm font-semibold text-white mb-1">Built-in Local Tools</h3>
+        <p className="text-xs text-gray-500 mb-3">
+          File and shell tools available to the Executor agent. Gated by{' '}
+          <span className="text-accent">Safety Rules</span>.
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          {LOCAL_TOOLS.map((t) => {
+            const Icon = t.icon
+            return (
+              <div key={t.name} className="flex items-center gap-2.5 p-2.5 bg-white/[0.02] rounded-lg border border-white/[0.06]">
+                <Icon className="w-4 h-4 text-accent flex-shrink-0" />
+                <div>
+                  <p className="text-xs font-medium text-white">local::{t.name}</p>
+                  <p className="text-[10px] text-gray-500">{t.desc}</p>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="border-t border-white/[0.06]" />
+
+      {/* ── MCP Servers ── */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h3 className="text-sm font-semibold text-white">MCP Servers</h3>
+            <p className="text-xs text-gray-500 mt-0.5">Connect external tool servers via Model Context Protocol</p>
+          </div>
+          <button
+            onClick={() => { setForm(emptyMcpForm); setError(null); setShowForm(true) }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent/10 text-accent text-xs font-medium hover:bg-accent/20 transition-all"
+          >
+            <Plus className="w-3.5 h-3.5" /> Add Server
+          </button>
+        </div>
+
+        {/* Server list */}
+        {servers.length === 0 && !showForm && (
+          <div className="text-center py-6 text-gray-600 text-sm">
+            No MCP servers configured. Add one to extend the AI&apos;s capabilities.
+          </div>
+        )}
+
+        {servers.map((srv) => {
+          const status = getStatus(srv.id)
+          const isConnected = status?.state === 'connected'
+          const isError = status?.state === 'error'
+          const isBusy = connecting === srv.id
+
+          return (
+            <div key={srv.id} className="flex items-center gap-3 p-3 mb-2 bg-white/[0.02] rounded-lg border border-white/[0.06]">
+              {/* Status dot */}
+              <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                isConnected ? 'bg-green-400' : isError ? 'bg-red-400' : 'bg-gray-600'
+              }`} />
+
+              {/* Info */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-medium text-white truncate">{srv.name}</p>
+                  <span className="text-[10px] text-gray-600 bg-white/[0.04] px-1.5 py-0.5 rounded">{srv.transport}</span>
+                  {isConnected && status?.toolCount !== undefined && (
+                    <span className="text-[10px] text-accent">{status.toolCount} tools</span>
+                  )}
+                </div>
+                <p className="text-[10px] text-gray-500 truncate mt-0.5">
+                  {srv.transport === 'stdio'
+                    ? `${srv.command}${srv.args?.length ? ' ' + srv.args.join(' ') : ''}`
+                    : srv.url}
+                </p>
+                {isError && status?.error && (
+                  <p className="text-[10px] text-red-400 truncate mt-0.5">{status.error}</p>
+                )}
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center gap-1">
+                {isBusy ? (
+                  <Loader2 className="w-4 h-4 text-gray-500 animate-spin" />
+                ) : isConnected ? (
+                  <button
+                    onClick={() => handleDisconnect(srv.id)}
+                    className="p-1.5 text-green-400 hover:text-red-400 transition-colors"
+                    title="Disconnect"
+                  >
+                    <Unlink2 className="w-3.5 h-3.5" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => handleConnect(srv.id)}
+                    className="p-1.5 text-gray-600 hover:text-green-400 transition-colors"
+                    title="Connect"
+                  >
+                    <Link2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                <button
+                  onClick={() => handleRemove(srv.id)}
+                  className="p-1.5 text-gray-600 hover:text-red-400 transition-colors"
+                  title="Remove"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )
+        })}
+
+        {/* Add server form */}
+        {showForm && (
+          <div className="p-4 bg-white/[0.03] rounded-lg border border-accent/20 space-y-3 mt-2">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-medium text-white">Add MCP Server</h4>
+              <button onClick={() => setShowForm(false)} className="text-gray-500 hover:text-gray-300"><X className="w-4 h-4" /></button>
+            </div>
+
+            {error && <p className="text-xs text-red-400 bg-red-500/10 px-3 py-1.5 rounded">{error}</p>}
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-[11px] text-gray-500 mb-1 block">Server Name *</label>
+                <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40" placeholder="e.g. filesystem" />
+              </div>
+              <div>
+                <label className="text-[11px] text-gray-500 mb-1 block">Transport *</label>
+                <select value={form.transport} onChange={(e) => setForm({ ...form, transport: e.target.value as 'stdio' | 'sse' })}
+                  className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40">
+                  <option value="stdio">stdio (local process)</option>
+                  <option value="sse">SSE (remote URL)</option>
+                </select>
+              </div>
+            </div>
+
+            {form.transport === 'stdio' ? (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] text-gray-500 mb-1 block">Command *</label>
+                  <input value={form.command} onChange={(e) => setForm({ ...form, command: e.target.value })}
+                    className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40" placeholder="npx, node, python..." />
+                </div>
+                <div>
+                  <label className="text-[11px] text-gray-500 mb-1 block">Arguments (comma-separated)</label>
+                  <input value={form.args} onChange={(e) => setForm({ ...form, args: e.target.value })}
+                    className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40" placeholder="-y, @modelcontextprotocol/server-filesystem, /path" />
+                </div>
+              </div>
+            ) : (
+              <div>
+                <label className="text-[11px] text-gray-500 mb-1 block">Server URL *</label>
+                <input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })}
+                  className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40" placeholder="http://localhost:3001/sse" />
+              </div>
+            )}
+
+            <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+              <input type="checkbox" checked={form.autoConnect} onChange={(e) => setForm({ ...form, autoConnect: e.target.checked })}
+                className="rounded border-white/20 bg-white/[0.03] text-accent focus:ring-accent/30" />
+              Auto-connect on startup
+            </label>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setShowForm(false)} className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors">Cancel</button>
+              <button
+                onClick={handleAdd}
+                disabled={saving || !form.name.trim()}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+              >
+                {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                Add Server
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
