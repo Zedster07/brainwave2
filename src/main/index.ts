@@ -91,12 +91,20 @@ app.whenReady().then(() => {
       console.log('[Main] Replicate API key loaded')
     }
 
-    // Restore saved model mode (beast / normal / economy)
+    // ── Load Ollama config (host URL — no API key needed) ──
+    const ollamaHost = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'ollama_host')
+    const ollamaModel = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'ollama_default_model')
+    const host = ollamaHost?.value ? JSON.parse(ollamaHost.value) : 'http://localhost:11434'
+    const ollamaDefaultModel = ollamaModel?.value ? JSON.parse(ollamaModel.value) : undefined
+    LLMFactory.configure('ollama', { apiKey: host, defaultModel: ollamaDefaultModel })
+    console.log(`[Main] Ollama configured at ${host}`)
+
+    // Restore saved model mode (beast / normal / economy / local)
     const savedMode = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'model_mode')
     if (savedMode?.value) {
       const mode = JSON.parse(savedMode.value) as string
-      if (['beast', 'normal', 'economy'].includes(mode)) {
-        LLMFactory.setMode(mode as 'beast' | 'normal' | 'economy')
+      if (['beast', 'normal', 'economy', 'local'].includes(mode)) {
+        LLMFactory.setMode(mode as 'beast' | 'normal' | 'economy' | 'local')
         console.log(`[Main] Model mode restored: ${mode}`)
       }
     }

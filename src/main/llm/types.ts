@@ -1,7 +1,8 @@
 /**
  * LLM Adapter — Provider-agnostic interface for language model access
  *
- * Supports OpenRouter (200+ models) and Replicate (open-source/specialist).
+ * Supports OpenRouter (200+ models), Replicate (open-source/specialist),
+ * and Ollama (local LLMs — fully offline, no API key needed).
  * Each agent can be assigned a different model via per-agent config.
  */
 
@@ -39,10 +40,10 @@ export interface LLMConfig {
 
 // ─── Per-Agent Model Configuration ──────────────────────────
 
-export type ModelMode = 'beast' | 'normal' | 'economy'
+export type ModelMode = 'beast' | 'normal' | 'economy' | 'local'
 
 export interface AgentModelConfig {
-  provider: 'openrouter' | 'replicate'
+  provider: 'openrouter' | 'replicate' | 'ollama'
   model: string
   temperature?: number
   maxTokens?: number
@@ -90,11 +91,26 @@ export const ECONOMY_MODE_MODELS: Record<string, AgentModelConfig> = {
   executor:     { provider: 'openrouter', model: 'openai/gpt-4.1-nano', temperature: 0.1 },
 }
 
+// ─── Local Mode: Fully offline via Ollama ───────────────────
+export const LOCAL_MODE_MODELS: Record<string, AgentModelConfig> = {
+  orchestrator: { provider: 'ollama', model: 'llama3.1', temperature: 0.3, maxTokens: 8192 },
+  planner:      { provider: 'ollama', model: 'llama3.1', temperature: 0.4, maxTokens: 8192 },
+  researcher:   { provider: 'ollama', model: 'llama3.1', temperature: 0.5 },
+  coder:        { provider: 'ollama', model: 'qwen2.5-coder', temperature: 0.2, maxTokens: 8192 },
+  writer:       { provider: 'ollama', model: 'llama3.1', temperature: 0.7 },
+  analyst:      { provider: 'ollama', model: 'llama3.1', temperature: 0.3 },
+  critic:       { provider: 'ollama', model: 'llama3.1', temperature: 0.2 },
+  reviewer:     { provider: 'ollama', model: 'llama3.1', temperature: 0.2, maxTokens: 4096 },
+  reflection:   { provider: 'ollama', model: 'llama3.1', temperature: 0.4, maxTokens: 4096 },
+  executor:     { provider: 'ollama', model: 'llama3.1', temperature: 0.1 },
+}
+
 // ─── Preset Map ─────────────────────────────────────────────
 export const MODEL_MODE_PRESETS: Record<ModelMode, Record<string, AgentModelConfig>> = {
   beast: BEAST_MODE_MODELS,
   normal: NORMAL_MODE_MODELS,
   economy: ECONOMY_MODE_MODELS,
+  local: LOCAL_MODE_MODELS,
 }
 
 // Default = Normal mode

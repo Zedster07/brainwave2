@@ -157,6 +157,13 @@ const api: BrainwaveAPI = {
   getModelConfigs: () =>
     ipcRenderer.invoke(IPC_CHANNELS.MODEL_MODE_GET_CONFIGS) as Promise<Record<string, { provider: string; model: string }>>,
 
+  // ─── Ollama (Local LLM) ───
+  ollamaHealthCheck: (host?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OLLAMA_HEALTH, host) as Promise<boolean>,
+
+  ollamaListModels: (host?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.OLLAMA_MODELS, host) as Promise<Array<{ name: string; size: number; modified: string }>>,
+
   // ─── Scheduler ───
   getScheduledJobs: () =>
     ipcRenderer.invoke(IPC_CHANNELS.SCHEDULER_GET_JOBS),

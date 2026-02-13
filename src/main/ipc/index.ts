@@ -6,6 +6,7 @@ import type { TaskSubmission, MemoryQuery, CreateScheduledJobInput } from '@shar
 import { getScheduler } from '../services/scheduler.service'
 import { getDatabase } from '../db/database'
 import { LLMFactory, getAllCircuitBreakerStatus } from '../llm'
+import { OllamaProvider } from '../llm/ollama'
 import { getOrchestrator } from '../agents/orchestrator'
 import { getAgentPool } from '../agents/agent-pool'
 import { getEventBus } from '../agents/event-bus'
@@ -418,6 +419,16 @@ export function registerIpcHandlers(): void {
       LLMFactory.configure('openrouter', { apiKey: value })
     } else if (key === 'replicate_api_key' && typeof value === 'string') {
       LLMFactory.configure('replicate', { apiKey: value })
+    } else if (key === 'ollama_host' && typeof value === 'string') {
+      // Re-configure Ollama with the new host URL
+      const modelRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'ollama_default_model')
+      const defaultModel = modelRow?.value ? JSON.parse(modelRow.value) : undefined
+      LLMFactory.configure('ollama', { apiKey: value, defaultModel })
+    } else if (key === 'ollama_default_model' && typeof value === 'string') {
+      // Re-configure Ollama with the new default model
+      const hostRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'ollama_host')
+      const host = hostRow?.value ? JSON.parse(hostRow.value) : 'http://localhost:11434'
+      LLMFactory.configure('ollama', { apiKey: host, defaultModel: value })
     }
   })
 
@@ -427,11 +438,11 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC_CHANNELS.MODEL_MODE_SET, async (_event, mode: string) => {
-    const validModes = ['beast', 'normal', 'economy']
+    const validModes = ['beast', 'normal', 'economy', 'local']
     if (!validModes.includes(mode)) {
       throw new Error(`Invalid model mode: ${mode}. Must be one of: ${validModes.join(', ')}`)
     }
-    LLMFactory.setMode(mode as 'beast' | 'normal' | 'economy')
+    LLMFactory.setMode(mode as 'beast' | 'normal' | 'economy' | 'local')
 
     // Persist the mode to DB so it survives restarts
     db.run(
@@ -449,6 +460,15 @@ export function registerIpcHandlers(): void {
   // ─── LLM Health ───
   ipcMain.handle(IPC_CHANNELS.LLM_CIRCUIT_STATUS, async () => {
     return getAllCircuitBreakerStatus()
+  })
+
+  // ─── Ollama ───
+  ipcMain.handle(IPC_CHANNELS.OLLAMA_HEALTH, async (_event, host?: string) => {
+    return OllamaProvider.healthCheck(host)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.OLLAMA_MODELS, async (_event, host?: string) => {
+    return OllamaProvider.listModels(host)
   })
 
   // ─── Scheduler ───

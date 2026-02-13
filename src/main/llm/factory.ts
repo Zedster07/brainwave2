@@ -6,6 +6,7 @@
  */
 import { OpenRouterProvider } from './openrouter'
 import { ReplicateProvider } from './replicate'
+import { OllamaProvider } from './ollama'
 import { FallbackLLMAdapter } from './fallback-adapter'
 import type { LLMAdapter, LLMConfig, AgentModelConfig, ModelMode } from './types'
 import { DEFAULT_AGENT_MODELS, MODEL_MODE_PRESETS } from './types'
@@ -16,25 +17,34 @@ export class LLMFactory {
   private static agentModels: Record<string, AgentModelConfig> = { ...DEFAULT_AGENT_MODELS }
   private static currentMode: ModelMode = 'normal'
 
-  /** Register API keys for providers */
-  static configure(provider: 'openrouter' | 'replicate', config: LLMConfig): void {
+  /** Register API keys / config for providers */
+  static configure(provider: 'openrouter' | 'replicate' | 'ollama', config: LLMConfig): void {
     this.configs[provider] = config
     // Invalidate cached provider so next call creates fresh instance
     this.providers.delete(provider)
   }
 
-  /** Check if a provider is configured (has API key) */
-  static isConfigured(provider: 'openrouter' | 'replicate'): boolean {
+  /** Check if a provider is configured */
+  static isConfigured(provider: 'openrouter' | 'replicate' | 'ollama'): boolean {
+    if (provider === 'ollama') return !!this.configs[provider] // Ollama doesn't need an API key
     return !!this.configs[provider]?.apiKey
   }
 
   /** Get or create a provider instance */
-  static getProvider(provider: 'openrouter' | 'replicate'): LLMAdapter {
+  static getProvider(provider: 'openrouter' | 'replicate' | 'ollama'): LLMAdapter {
     const cached = this.providers.get(provider)
     if (cached) return cached
 
     const config = this.configs[provider]
-    if (!config?.apiKey) {
+    if (!config) {
+      if (provider === 'ollama') {
+        // Auto-configure Ollama with defaults if not explicitly configured
+        const defaultConfig: LLMConfig = { apiKey: 'http://localhost:11434' }
+        this.configs[provider] = defaultConfig
+        const instance: LLMAdapter = new OllamaProvider(defaultConfig)
+        this.providers.set(provider, instance)
+        return instance
+      }
       throw new Error(
         `No API key configured for ${provider}. Call LLMFactory.configure() first.`
       )
@@ -47,6 +57,9 @@ export class LLMFactory {
         break
       case 'replicate':
         instance = new ReplicateProvider(config)
+        break
+      case 'ollama':
+        instance = new OllamaProvider(config)
         break
     }
 
@@ -68,16 +81,19 @@ export class LLMFactory {
 
     const primary = this.getProvider(agentConfig.provider)
 
-    // Determine fallback provider (the other one)
-    const fallbackProviderName: 'openrouter' | 'replicate' =
-      agentConfig.provider === 'openrouter' ? 'replicate' : 'openrouter'
+    // Try fallback providers (exclude the primary)
+    const allProviders: Array<'openrouter' | 'replicate' | 'ollama'> = ['openrouter', 'replicate', 'ollama']
+    const fallbackCandidates = allProviders.filter(p => p !== agentConfig.provider)
 
     let fallback: LLMAdapter | null = null
-    if (this.isConfigured(fallbackProviderName)) {
-      try {
-        fallback = this.getProvider(fallbackProviderName)
-      } catch {
-        // Fallback provider not available, proceed without it
+    for (const candidate of fallbackCandidates) {
+      if (this.isConfigured(candidate)) {
+        try {
+          fallback = this.getProvider(candidate)
+          break
+        } catch {
+          // Fallback provider not available, try next
+        }
       }
     }
 

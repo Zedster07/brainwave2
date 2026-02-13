@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload } from 'lucide-react'
+import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw } from 'lucide-react'
 
 type SettingsTab = 'general' | 'models' | 'rules' | 'storage'
 
@@ -98,17 +98,38 @@ function ModelSettings() {
   const [openrouterKey, setOpenrouterKey] = useSetting<string>('openrouter_api_key', '')
   const [replicateKey, setReplicateKey] = useSetting<string>('replicate_api_key', '')
   const [defaultModel, setDefaultModel] = useSetting<string>('default_model', 'anthropic/claude-sonnet-4-20250514')
+  const [ollamaHost, setOllamaHost] = useSetting<string>('ollama_host', 'http://localhost:11434')
+  const [ollamaModel, setOllamaModel] = useSetting<string>('ollama_default_model', 'llama3.1')
   const [showOpenRouter, setShowOpenRouter] = useState(false)
   const [showReplicate, setShowReplicate] = useState(false)
   const [modelMode, setModelMode] = useState<string>('normal')
   const [agentConfigs, setAgentConfigs] = useState<Record<string, { provider: string; model: string }> | null>(null)
   const [modeLoading, setModeLoading] = useState(false)
+  const [ollamaStatus, setOllamaStatus] = useState<'unknown' | 'checking' | 'online' | 'offline'>('unknown')
+  const [ollamaModels, setOllamaModels] = useState<Array<{ name: string; size: number }>>([]) 
 
   // Load current mode and agent configs on mount
   useEffect(() => {
     window.brainwave.getModelMode().then(setModelMode).catch(console.error)
     window.brainwave.getModelConfigs().then(setAgentConfigs).catch(console.error)
+    // Auto-check Ollama status
+    checkOllamaStatus()
   }, [])
+
+  const checkOllamaStatus = useCallback(async () => {
+    setOllamaStatus('checking')
+    try {
+      const host = ollamaHost || 'http://localhost:11434'
+      const healthy = await window.brainwave.ollamaHealthCheck(host)
+      setOllamaStatus(healthy ? 'online' : 'offline')
+      if (healthy) {
+        const models = await window.brainwave.ollamaListModels(host)
+        setOllamaModels(models)
+      }
+    } catch {
+      setOllamaStatus('offline')
+    }
+  }, [ollamaHost])
 
   const handleModeChange = useCallback(async (mode: string) => {
     setModeLoading(true)
@@ -128,6 +149,7 @@ function ModelSettings() {
     { id: 'beast', label: 'Beast', icon: Zap, color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/20', desc: 'Max quality — Opus 4.6, Sonnet 4.5, Gemini Pro' },
     { id: 'normal', label: 'Normal', icon: Activity, color: 'text-accent', bg: 'bg-accent/10 border-accent/20', desc: 'Balanced — Sonnet 4, Gemini Pro/Flash, Haiku' },
     { id: 'economy', label: 'Economy', icon: Wallet, color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/20', desc: 'Budget — DeepSeek, Qwen, GPT-4.1 Mini/Nano' },
+    { id: 'local', label: 'Local', icon: Monitor, color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/20', desc: 'Offline — Ollama local models, free & private' },
   ]
 
   return (
@@ -139,7 +161,7 @@ function ModelSettings() {
           Choose a preset that assigns different models to each agent based on cost/quality.
           {openrouterKey && replicateKey && ' Both API keys set — automatic provider failover is active.'}
         </p>
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-4 gap-3">
           {MODE_INFO.map((m) => {
             const Icon = m.icon
             const isActive = modelMode === m.id
@@ -222,6 +244,71 @@ function ModelSettings() {
             onChange={(e) => setDefaultModel(e.target.value)}
             className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-accent/40"
           />
+        </SettingRow>
+      </div>
+
+      {/* Ollama (Local LLM) Section */}
+      <div className="border-t border-white/[0.04] pt-4 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-white font-medium">Ollama (Local LLM)</p>
+            <p className="text-xs text-gray-500 mt-0.5">Run models locally — fully offline, free, private</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`flex items-center gap-1.5 text-xs ${
+              ollamaStatus === 'online' ? 'text-green-400' :
+              ollamaStatus === 'offline' ? 'text-red-400' :
+              ollamaStatus === 'checking' ? 'text-yellow-400' : 'text-gray-500'
+            }`}>
+              {ollamaStatus === 'online' ? <Wifi className="w-3.5 h-3.5" /> :
+               ollamaStatus === 'offline' ? <WifiOff className="w-3.5 h-3.5" /> :
+               ollamaStatus === 'checking' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+              {ollamaStatus === 'online' ? 'Connected' :
+               ollamaStatus === 'offline' ? 'Offline' :
+               ollamaStatus === 'checking' ? 'Checking...' : 'Unknown'}
+            </span>
+            <button
+              onClick={checkOllamaStatus}
+              className="text-gray-500 hover:text-gray-300 transition-colors"
+              title="Test connection"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${ollamaStatus === 'checking' ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+        </div>
+
+        <SettingRow label="Host URL" description="Ollama server address (default: localhost:11434)">
+          <input
+            type="text"
+            value={ollamaHost ?? 'http://localhost:11434'}
+            onChange={(e) => setOllamaHost(e.target.value)}
+            placeholder="http://localhost:11434"
+            className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-accent/40"
+          />
+        </SettingRow>
+
+        <SettingRow label="Default Model" description={`${ollamaModels.length} model(s) available`}>
+          {ollamaModels.length > 0 ? (
+            <select
+              value={ollamaModel ?? 'llama3.1'}
+              onChange={(e) => setOllamaModel(e.target.value)}
+              className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-accent/40"
+            >
+              {ollamaModels.map((m) => (
+                <option key={m.name} value={m.name} className="bg-gray-800">
+                  {m.name} ({(m.size / 1e9).toFixed(1)}GB)
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={ollamaModel ?? 'llama3.1'}
+              onChange={(e) => setOllamaModel(e.target.value)}
+              placeholder="llama3.1"
+              className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-accent/40"
+            />
+          )}
         </SettingRow>
       </div>
     </div>

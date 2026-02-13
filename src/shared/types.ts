@@ -97,6 +97,10 @@ export const IPC_CHANNELS = {
   // LLM Health
   LLM_CIRCUIT_STATUS: 'llm:circuit-status',
 
+  // Ollama (Local LLM)
+  OLLAMA_HEALTH: 'ollama:health',
+  OLLAMA_MODELS: 'ollama:models',
+
   // Calibration / Feedback
   CALIBRATION_SUBMIT_FEEDBACK: 'calibration:submit-feedback',
   CALIBRATION_GET_REPORT: 'calibration:get-report',
@@ -302,6 +306,10 @@ export interface BrainwaveAPI {
   getModelMode: () => Promise<string>
   setModelMode: (mode: string) => Promise<void>
   getModelConfigs: () => Promise<Record<string, { provider: string; model: string }>>
+
+  // Ollama (Local LLM)
+  ollamaHealthCheck: (host?: string) => Promise<boolean>
+  ollamaListModels: (host?: string) => Promise<Array<{ name: string; size: number; modified: string }>>
 
   // Scheduler
   getScheduledJobs: () => Promise<ScheduledJobInfo[]>
