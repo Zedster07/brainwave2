@@ -18,6 +18,7 @@ import { getEventBus, type AgentType } from './event-bus'
 import { getDatabase } from '../db/database'
 import { getMemoryManager } from '../memory'
 import { getWorkingMemory } from '../memory/working-memory'
+import { getPeopleStore } from '../memory/people'
 import { ReflectionAgent } from './reflection'
 
 // ─── Task Record (stored in DB) ────────────────────────────
@@ -43,6 +44,11 @@ interface TriageResult {
   reply?: string          // only for conversational
   agent?: AgentType       // only for direct
   shouldRemember?: boolean // whether this interaction is worth storing in memory
+  personInfo?: {           // extracted person data — auto-creates/updates People entries
+    name: string
+    relationship?: string
+    traits?: string[]
+  }
   reasoning: string
 }
 
@@ -114,12 +120,21 @@ Remember ONLY if the user shares something meaningful:
 - Context that would be useful in future conversations
 Do NOT remember: greetings, small talk, thanks, trivial questions, generic requests.
 
+PERSON EXTRACTION:
+If the user mentions a person (themselves or someone else) by name, extract their info into "personInfo".
+This includes: user introducing themselves, mentioning colleagues, friends, etc.
+Examples:
+- "my name is Dada" → { "name": "Dada", "relationship": "owner/creator", "traits": ["developer"] }
+- "my friend John is a designer" → { "name": "John", "relationship": "friend", "traits": ["designer"] }
+Only include "personInfo" if a person's name is clearly stated.
+
 OUTPUT FORMAT (JSON):
 {
   "lane": "conversational" | "direct" | "complex",
   "reply": "your response (only for conversational)",
   "agent": "researcher" | "coder" | "reviewer" (only for direct),
   "shouldRemember": true/false,
+  "personInfo": { "name": "...", "relationship": "...", "traits": ["..."] } (only if a person is mentioned),
   "reasoning": "one-line explanation of why this lane was chosen"
 }
 
@@ -332,7 +347,22 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
 
     this.bus.emitEvent('task:completed', { taskId: task.id, result: reply })
 
-    // Only store memory if triage decided this interaction is worth remembering
+    // Auto-create/update person if triage extracted person info
+    if (triage.personInfo?.name) {
+      try {
+        const peopleStore = getPeopleStore()
+        const person = peopleStore.store({
+          name: triage.personInfo.name,
+          relationship: triage.personInfo.relationship,
+          traits: triage.personInfo.traits,
+        })
+        console.log(`[Orchestrator] Created/updated person: ${person.name} (${person.id})`)
+      } catch (err) {
+        console.warn('[Orchestrator] Failed to store person:', err)
+      }
+    }
+
+    // Only store episodic memory if triage decided this interaction is worth remembering
     if (triage.shouldRemember) {
       try {
         await memoryManager.storeEpisodic({
