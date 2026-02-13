@@ -1,12 +1,15 @@
 import { ReactNode } from 'react'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
+import { useKeyboardShortcuts } from '@renderer/hooks/useKeyboardShortcuts'
 
 interface AppShellProps {
   children: ReactNode
 }
 
 export function AppShell({ children }: AppShellProps) {
+  useKeyboardShortcuts()
+
   return (
     <div className="flex h-screen w-screen overflow-hidden">
       {/* Sidebar */}
