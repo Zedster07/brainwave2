@@ -17,7 +17,34 @@ export function CommandCenter() {
   const [input, setInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [tasks, setTasks] = useState<LiveTask[]>([])
+  const [loaded, setLoaded] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // Load persisted task history on mount
+  useEffect(() => {
+    if (loaded) return
+    window.brainwave.getTaskHistory(50).then((history) => {
+      setTasks((prev) => {
+        // Merge: keep live tasks, append historical ones not already present
+        const liveIds = new Set(prev.map((t) => t.id))
+        const historical = history
+          .filter((h) => !liveIds.has(h.id))
+          .map((h) => ({
+            id: h.id,
+            prompt: h.prompt,
+            status: h.status,
+            result: h.result,
+            error: h.error,
+            timestamp: h.createdAt,
+          }))
+        return [...prev, ...historical]
+      })
+      setLoaded(true)
+    }).catch((err) => {
+      console.warn('[CommandCenter] Failed to load history:', err)
+      setLoaded(true)
+    })
+  }, [loaded])
 
   // Subscribe to real-time task updates
   useEffect(() => {

@@ -42,6 +42,7 @@ interface TriageResult {
   lane: TriageLane
   reply?: string          // only for conversational
   agent?: AgentType       // only for direct
+  shouldRemember?: boolean // whether this interaction is worth storing in memory
   reasoning: string
 }
 
@@ -105,11 +106,20 @@ LANES:
 3. "complex" — multi-step tasks requiring planning, multiple agents, or coordination.
    Examples: "build a REST API with auth", "research X then write code for it"
 
+MEMORY DECISION:
+Decide if this interaction is worth remembering long-term ("shouldRemember").
+Remember ONLY if the user shares something meaningful:
+- Personal info (their name, preferences, background)
+- Important facts or decisions
+- Context that would be useful in future conversations
+Do NOT remember: greetings, small talk, thanks, trivial questions, generic requests.
+
 OUTPUT FORMAT (JSON):
 {
   "lane": "conversational" | "direct" | "complex",
   "reply": "your response (only for conversational)",
   "agent": "researcher" | "coder" | "reviewer" (only for direct),
+  "shouldRemember": true/false,
   "reasoning": "one-line explanation of why this lane was chosen"
 }
 
@@ -184,6 +194,58 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
   /** Get all active tasks */
   getActiveTasks(): TaskRecord[] {
     return [...this.activeTasks.values()]
+  }
+
+  /** Get recent task history from DB (persisted across restarts) */
+  getTaskHistory(limit = 50): TaskRecord[] {
+    const rows = this.db.all(
+      `SELECT id, title, description, status, priority, result, error, created_at, completed_at
+       FROM tasks ORDER BY created_at DESC LIMIT ?`,
+      limit
+    ) as Array<{
+      id: string
+      title: string
+      description: string
+      status: string
+      priority: number
+      result: string | null
+      error: string | null
+      created_at: string
+      completed_at: string | null
+    }>
+
+    return rows.map((row) => ({
+      id: row.id,
+      prompt: row.description || row.title,
+      priority: row.priority >= 0.8 ? 'high' as const : row.priority >= 0.4 ? 'normal' as const : 'low' as const,
+      status: this.mapDbStatus(row.status),
+      result: row.result ? this.safeParseJSON(row.result) : undefined,
+      error: row.error ?? undefined,
+      createdAt: new Date(row.created_at).getTime(),
+      completedAt: row.completed_at ? new Date(row.completed_at).getTime() : undefined,
+    }))
+  }
+
+  private mapDbStatus(dbStatus: string): TaskRecord['status'] {
+    const map: Record<string, TaskRecord['status']> = {
+      pending: 'pending',
+      planning: 'planning',
+      in_progress: 'in_progress',
+      delegated: 'in_progress',
+      blocked: 'pending',
+      completed: 'completed',
+      failed: 'failed',
+      cancelled: 'cancelled',
+    }
+    return map[dbStatus] ?? 'pending'
+  }
+
+  private safeParseJSON(str: string): unknown {
+    try {
+      return JSON.parse(str)
+    } catch {
+      return str
+    }
   }
 
   /** Get a specific task */
@@ -270,18 +332,23 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
 
     this.bus.emitEvent('task:completed', { taskId: task.id, result: reply })
 
-    // Light memory storage for conversational context
-    try {
-      await memoryManager.storeEpisodic({
-        content: `User said: "${task.prompt.slice(0, 100)}". Replied directly (conversational).`,
-        source: 'orchestrator',
-        importance: 0.1,
-        emotionalValence: 0.5,
-        tags: ['conversational'],
-        participants: ['orchestrator'],
-      })
-    } catch {
-      // Not critical
+    // Only store memory if triage decided this interaction is worth remembering
+    if (triage.shouldRemember) {
+      try {
+        await memoryManager.storeEpisodic({
+          content: `User said: "${task.prompt.slice(0, 200)}". Replied directly (conversational).`,
+          source: 'orchestrator',
+          importance: 0.3,
+          emotionalValence: 0.5,
+          tags: ['conversational', 'remembered'],
+          participants: ['orchestrator'],
+        })
+        console.log('[Orchestrator] Stored conversational memory — triage deemed worth remembering')
+      } catch {
+        // Not critical
+      }
+    } else {
+      console.log('[Orchestrator] Skipped memory storage — trivial conversational input')
     }
   }
 

@@ -68,6 +68,10 @@ export function registerIpcHandlers(): void {
     return orchestrator.getActiveTasks()
   })
 
+  ipcMain.handle(IPC_CHANNELS.AGENT_GET_TASK_HISTORY, async (_event, limit?: number) => {
+    return orchestrator.getTaskHistory(limit)
+  })
+
   // Forward agent events to renderer
   const forwardToRenderer = (channel: string, data: unknown) => {
     BrowserWindow.getAllWindows().forEach((win) => {

@@ -17,6 +17,7 @@ export const IPC_CHANNELS = {
   AGENT_CANCEL_TASK: 'agent:cancel-task',
   AGENT_GET_STATUS: 'agent:get-status',
   AGENT_GET_TASKS: 'agent:get-tasks',
+  AGENT_GET_TASK_HISTORY: 'agent:get-task-history',
 
   // Agent events (main → renderer)
   AGENT_EVENT: 'agent:event',
@@ -215,6 +216,7 @@ export interface BrainwaveAPI {
   cancelTask: (taskId: string) => Promise<void>
   getAgentStatus: () => Promise<AgentStatus[]>
   getActiveTasks: () => Promise<TaskRecord[]>
+  getTaskHistory: (limit?: number) => Promise<TaskRecord[]>
 
   // Events (main → renderer)
   onTaskUpdate: (callback: (update: TaskUpdate) => void) => () => void
