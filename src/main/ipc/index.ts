@@ -134,32 +134,16 @@ function importMcpServersFromJson(
       const rawType = String(srv.type ?? 'stdio').toLowerCase()
       const transport: 'stdio' | 'sse' = (rawType === 'http' || rawType === 'sse') ? 'sse' : 'stdio'
 
-      // Extract env vars — from explicit env object or from Docker -e args
+      // Extract env vars from explicit env object only
       let env: Record<string, string> = {}
       if (srv.env && typeof srv.env === 'object') {
         env = { ...(srv.env as Record<string, string>) }
       }
 
-      // Parse args
+      // Parse args — keep them exactly as provided (Docker -e flags stay in args)
       let args: string[] = []
       if (Array.isArray(srv.args)) {
-        const rawArgs = srv.args.map(String)
-
-        // Extract -e KEY=VAL patterns (Docker style) into env
-        const cleanArgs: string[] = []
-        for (let i = 0; i < rawArgs.length; i++) {
-          if (rawArgs[i] === '-e' && i + 1 < rawArgs.length) {
-            const kvPair = rawArgs[i + 1]
-            const eqIdx = kvPair.indexOf('=')
-            if (eqIdx > 0) {
-              env[kvPair.slice(0, eqIdx)] = kvPair.slice(eqIdx + 1)
-            }
-            i++ // skip the value
-          } else {
-            cleanArgs.push(rawArgs[i])
-          }
-        }
-        args = cleanArgs
+        args = srv.args.map(String)
       }
 
       if (transport === 'stdio') {
