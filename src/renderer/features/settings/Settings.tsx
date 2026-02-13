@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle } from 'lucide-react'
+import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X } from 'lucide-react'
+import type { PluginInfoData } from '@shared/types'
 
-type SettingsTab = 'general' | 'models' | 'rules' | 'storage'
+type SettingsTab = 'general' | 'models' | 'rules' | 'storage' | 'plugins'
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Key }[] = [
   { id: 'general', label: 'General', icon: SettingsIcon },
   { id: 'models', label: 'AI Models', icon: Cpu },
   { id: 'rules', label: 'Rules Engine', icon: Shield },
   { id: 'storage', label: 'Storage', icon: Database },
+  { id: 'plugins', label: 'Plugins', icon: Plug },
 ]
 
 export function Settings() {
@@ -49,6 +51,7 @@ export function Settings() {
         {activeTab === 'models' && <ModelSettings />}
         {activeTab === 'rules' && <RulesSettings />}
         {activeTab === 'storage' && <StorageSettings />}
+        {activeTab === 'plugins' && <PluginSettings />}
       </div>
     </div>
   )
@@ -593,6 +596,257 @@ function SettingRow({ label, description, children }: {
         <p className="text-xs text-gray-500 mt-0.5">{description}</p>
       </div>
       {children}
+    </div>
+  )
+}
+
+// ─── Plugin Settings ───
+
+interface PluginFormState {
+  name: string
+  version: string
+  description: string
+  author: string
+  agentType: string
+  capabilities: string
+  systemPrompt: string
+  icon: string
+}
+
+const emptyForm: PluginFormState = {
+  name: '',
+  version: '1.0.0',
+  description: '',
+  author: '',
+  agentType: '',
+  capabilities: '',
+  systemPrompt: '',
+  icon: '🔌',
+}
+
+function PluginSettings() {
+  const [plugins, setPlugins] = useState<PluginInfoData[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [form, setForm] = useState<PluginFormState>(emptyForm)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const loadPlugins = useCallback(async () => {
+    try {
+      const list = await window.brainwave.pluginList()
+      setPlugins(list)
+    } catch (err) {
+      console.error('[PluginSettings] Failed to load plugins:', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { loadPlugins() }, [loadPlugins])
+
+  const openNew = () => {
+    setForm(emptyForm)
+    setEditingId(null)
+    setError(null)
+    setShowForm(true)
+  }
+
+  const openEdit = (plugin: PluginInfoData) => {
+    setForm({
+      name: plugin.name,
+      version: plugin.version,
+      description: plugin.description,
+      author: plugin.author ?? '',
+      agentType: plugin.agentType,
+      capabilities: plugin.capabilities.join(', '),
+      systemPrompt: plugin.systemPrompt,
+      icon: plugin.icon ?? '🔌',
+    })
+    setEditingId(plugin.id)
+    setError(null)
+    setShowForm(true)
+  }
+
+  const handleSave = async () => {
+    setError(null)
+    setSaving(true)
+    try {
+      const manifest = {
+        name: form.name.trim(),
+        version: form.version.trim(),
+        description: form.description.trim(),
+        author: form.author.trim() || undefined,
+        agentType: form.agentType.trim().toLowerCase().replace(/\s+/g, '-'),
+        capabilities: form.capabilities.split(',').map((c) => c.trim()).filter(Boolean),
+        systemPrompt: form.systemPrompt.trim(),
+        icon: form.icon.trim() || '🔌',
+      }
+
+      if (editingId) {
+        await window.brainwave.pluginUpdate(editingId, manifest)
+      } else {
+        await window.brainwave.pluginInstall(manifest)
+      }
+
+      setShowForm(false)
+      setEditingId(null)
+      await loadPlugins()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save plugin')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleRemove = async (id: string) => {
+    await window.brainwave.pluginRemove(id)
+    await loadPlugins()
+  }
+
+  const handleToggle = async (plugin: PluginInfoData) => {
+    if (plugin.enabled) {
+      await window.brainwave.pluginDisable(plugin.id)
+    } else {
+      await window.brainwave.pluginEnable(plugin.id)
+    }
+    await loadPlugins()
+  }
+
+  if (loading) {
+    return <div className="flex items-center gap-2 text-gray-500 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Loading plugins…</div>
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-white">Custom Agent Plugins</h3>
+          <p className="text-xs text-gray-500 mt-1">Create custom agents with their own system prompts and capabilities</p>
+        </div>
+        <button
+          onClick={openNew}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent/10 text-accent text-xs font-medium hover:bg-accent/20 transition-all"
+        >
+          <Plus className="w-3.5 h-3.5" /> New Plugin
+        </button>
+      </div>
+
+      {/* Plugin list */}
+      {plugins.length === 0 && !showForm && (
+        <div className="text-center py-8 text-gray-600 text-sm">
+          No plugins installed. Click "New Plugin" to create a custom agent.
+        </div>
+      )}
+
+      {plugins.map((plugin) => (
+        <div key={plugin.id} className="flex items-center gap-3 p-3 bg-white/[0.02] rounded-lg border border-white/[0.06]">
+          <span className="text-lg">{plugin.icon ?? '🔌'}</span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-medium text-white truncate">{plugin.name}</p>
+              <span className="text-[10px] text-gray-600">v{plugin.version}</span>
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${plugin.enabled ? 'bg-green-500/10 text-green-400' : 'bg-gray-500/10 text-gray-500'}`}>
+                {plugin.enabled ? 'active' : 'disabled'}
+              </span>
+            </div>
+            <p className="text-xs text-gray-500 truncate mt-0.5">{plugin.description}</p>
+            <p className="text-[10px] text-gray-600 mt-0.5">
+              Type: <span className="text-gray-400">{plugin.agentType}</span>
+              {' · '}
+              Capabilities: <span className="text-gray-400">{plugin.capabilities.join(', ')}</span>
+            </p>
+          </div>
+          <div className="flex items-center gap-1">
+            <button onClick={() => openEdit(plugin)} className="p-1.5 text-gray-600 hover:text-gray-300 transition-colors" title="Edit">
+              <Pencil className="w-3.5 h-3.5" />
+            </button>
+            <button onClick={() => handleToggle(plugin)} className="p-1.5 text-gray-600 hover:text-gray-300 transition-colors" title={plugin.enabled ? 'Disable' : 'Enable'}>
+              {plugin.enabled ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}
+            </button>
+            <button onClick={() => handleRemove(plugin.id)} className="p-1.5 text-gray-600 hover:text-red-400 transition-colors" title="Remove">
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      ))}
+
+      {/* Plugin form */}
+      {showForm && (
+        <div className="p-4 bg-white/[0.03] rounded-lg border border-accent/20 space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-medium text-white">{editingId ? 'Edit Plugin' : 'Create Plugin'}</h4>
+            <button onClick={() => setShowForm(false)} className="text-gray-500 hover:text-gray-300"><X className="w-4 h-4" /></button>
+          </div>
+
+          {error && <p className="text-xs text-red-400 bg-red-500/10 px-3 py-1.5 rounded">{error}</p>}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[11px] text-gray-500 mb-1 block">Name *</label>
+              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+                className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40" placeholder="My Custom Agent" />
+            </div>
+            <div>
+              <label className="text-[11px] text-gray-500 mb-1 block">Agent Type *</label>
+              <input value={form.agentType} onChange={(e) => setForm({ ...form, agentType: e.target.value })}
+                className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40" placeholder="my-agent" disabled={!!editingId} />
+            </div>
+            <div>
+              <label className="text-[11px] text-gray-500 mb-1 block">Version</label>
+              <input value={form.version} onChange={(e) => setForm({ ...form, version: e.target.value })}
+                className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40" placeholder="1.0.0" />
+            </div>
+            <div>
+              <label className="text-[11px] text-gray-500 mb-1 block">Icon (emoji)</label>
+              <input value={form.icon} onChange={(e) => setForm({ ...form, icon: e.target.value })}
+                className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40" placeholder="🔌" />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[11px] text-gray-500 mb-1 block">Description *</label>
+            <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })}
+              className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40" placeholder="What this agent does" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[11px] text-gray-500 mb-1 block">Author</label>
+              <input value={form.author} onChange={(e) => setForm({ ...form, author: e.target.value })}
+                className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40" placeholder="Your name" />
+            </div>
+            <div>
+              <label className="text-[11px] text-gray-500 mb-1 block">Capabilities * (comma-separated)</label>
+              <input value={form.capabilities} onChange={(e) => setForm({ ...form, capabilities: e.target.value })}
+                className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40" placeholder="summarization, translation" />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[11px] text-gray-500 mb-1 block">System Prompt *</label>
+            <textarea value={form.systemPrompt} onChange={(e) => setForm({ ...form, systemPrompt: e.target.value })}
+              rows={6}
+              className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40 resize-y font-mono"
+              placeholder="You are a specialist agent that...&#10;&#10;Your task is to..." />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-1">
+            <button onClick={() => setShowForm(false)} className="px-4 py-2 text-sm text-gray-400 hover:text-white transition-colors">
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving || !form.name.trim() || !form.agentType.trim() || !form.systemPrompt.trim() || !form.description.trim() || !form.capabilities.trim()}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent text-white text-sm font-medium hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            >
+              {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              {editingId ? 'Update' : 'Install'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -14,6 +14,7 @@ import { getHardEngine, getSoftEngine } from './rules'
 import { getOrchestrator } from './agents/orchestrator'
 import { initAutoUpdater } from './updater'
 import { getMcpRegistry } from './mcp'
+import { getPluginRegistry } from './plugins'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -133,6 +134,9 @@ app.whenReady().then(() => {
   getMcpRegistry().initialize().catch((err) => {
     console.warn('[Main] MCP initialization error:', err)
   })
+
+  // ── Initialize Plugins (load and register custom agents) ──
+  getPluginRegistry().initialize()
 
   // ── Auto-Update (checks GitHub Releases on launch) ──
   initAutoUpdater()

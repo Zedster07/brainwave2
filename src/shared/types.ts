@@ -125,6 +125,14 @@ export const IPC_CHANNELS = {
 
   // Prompt Versioning
   PROMPT_LIST_VERSIONS: 'prompt:list-versions',
+
+  // Plugins
+  PLUGIN_LIST: 'plugin:list',
+  PLUGIN_INSTALL: 'plugin:install',
+  PLUGIN_UPDATE: 'plugin:update',
+  PLUGIN_REMOVE: 'plugin:remove',
+  PLUGIN_ENABLE: 'plugin:enable',
+  PLUGIN_DISABLE: 'plugin:disable',
 } as const
 
 // ─── IPC Payload Types ───
@@ -372,6 +380,14 @@ export interface BrainwaveAPI {
   mcpDisconnect: (serverId: string) => Promise<void>
   mcpGetStatuses: () => Promise<McpServerStatusInfo[]>
   mcpGetTools: () => Promise<McpToolInfo[]>
+
+  // Plugins
+  pluginList: () => Promise<PluginInfoData[]>
+  pluginInstall: (manifest: Omit<PluginInfoData, 'id' | 'enabled' | 'installedAt' | 'updatedAt'>) => Promise<PluginInfoData>
+  pluginUpdate: (id: string, updates: Partial<PluginInfoData>) => Promise<PluginInfoData | null>
+  pluginRemove: (id: string) => Promise<boolean>
+  pluginEnable: (id: string) => Promise<PluginInfoData | null>
+  pluginDisable: (id: string) => Promise<PluginInfoData | null>
 }
 
 // ─── Update Types ───
@@ -413,6 +429,28 @@ export interface McpToolInfo {
   serverName: string
   name: string
   description: string
+}
+
+// ─── Plugin Types ───
+
+export interface PluginInfoData {
+  id: string
+  name: string
+  version: string
+  description: string
+  author?: string
+  agentType: string
+  capabilities: string[]
+  systemPrompt: string
+  modelPreference?: {
+    provider?: 'openrouter' | 'replicate' | 'ollama'
+    model?: string
+  }
+  icon?: string
+  tags?: string[]
+  enabled: boolean
+  installedAt: number
+  updatedAt: number
 }
 
 // ─── Calibration Types ───

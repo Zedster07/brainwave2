@@ -19,6 +19,7 @@ export type AgentType =
   | 'reviewer'
   | 'reflection'
   | 'executor'
+  | (string & {}) // allow custom plugin agent types
 
 export interface AgentMessage {
   id: string

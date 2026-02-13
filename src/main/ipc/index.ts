@@ -9,6 +9,7 @@ import { LLMFactory, getAllCircuitBreakerStatus } from '../llm'
 import { OllamaProvider } from '../llm/ollama'
 import { getMcpRegistry } from '../mcp'
 import type { McpServerConfig } from '../mcp'
+import { getPluginRegistry } from '../plugins'
 import { getOrchestrator } from '../agents/orchestrator'
 import { getAgentPool } from '../agents/agent-pool'
 import { getEventBus } from '../agents/event-bus'
@@ -612,5 +613,32 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.PROMPT_LIST_VERSIONS, async () => {
     return getPromptRegistry().listAll()
+  })
+
+  // ─── Plugins ───
+  const pluginRegistry = getPluginRegistry()
+
+  ipcMain.handle(IPC_CHANNELS.PLUGIN_LIST, async () => {
+    return pluginRegistry.getPlugins()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PLUGIN_INSTALL, async (_event, manifest) => {
+    return pluginRegistry.install(manifest)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PLUGIN_UPDATE, async (_event, id: string, updates) => {
+    return pluginRegistry.update(id, updates)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PLUGIN_REMOVE, async (_event, id: string) => {
+    return pluginRegistry.remove(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PLUGIN_ENABLE, async (_event, id: string) => {
+    return pluginRegistry.enable(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PLUGIN_DISABLE, async (_event, id: string) => {
+    return pluginRegistry.disable(id)
   })
 }

@@ -270,6 +270,25 @@ const api: BrainwaveAPI = {
 
   mcpGetTools: () =>
     ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_TOOLS),
+
+  // ─── Plugins ───
+  pluginList: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.PLUGIN_LIST),
+
+  pluginInstall: (manifest: Record<string, unknown>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PLUGIN_INSTALL, manifest),
+
+  pluginUpdate: (id: string, updates: Record<string, unknown>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PLUGIN_UPDATE, id, updates),
+
+  pluginRemove: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PLUGIN_REMOVE, id) as Promise<boolean>,
+
+  pluginEnable: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PLUGIN_ENABLE, id),
+
+  pluginDisable: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PLUGIN_DISABLE, id),
 }
 
 // Expose typed API to renderer
