@@ -60,15 +60,20 @@ export class FTSService {
 
   /**
    * Search memories using FTS5 full-text search.
-   * Supports standard FTS5 query syntax: AND, OR, NOT, "phrase", prefix*
+   * Pass '*' to retrieve all indexed memories (no MATCH filter).
    */
   search(query: string, options: { memoryType?: string; limit?: number } = {}): FTSResult[] {
     const { memoryType, limit = 20 } = options
+    const trimmed = query.trim()
 
-    // Sanitize query for FTS5 — wrap in quotes if it contains special chars
-    const sanitized = this.sanitizeQuery(query)
+    // Wildcard / get-all: return rows without FTS MATCH
+    if (trimmed === '*' || !trimmed) {
+      return this.getAll(memoryType, limit)
+    }
 
-    if (!sanitized) return []
+    // Sanitize query for FTS5 safety
+    const sanitized = this.sanitizeQuery(trimmed)
+    if (!sanitized) return this.getAll(memoryType, limit)
 
     try {
       if (memoryType) {
@@ -97,7 +102,10 @@ export class FTSService {
       // FTS5 match can throw if query syntax is invalid
       console.warn('[FTS] Search failed, trying simple query:', err)
 
-      // Fallback: treat entire query as a simple term
+      // Fallback: treat entire query as a simple term (strip everything except alphanumeric)
+      const fallbackTerm = trimmed.replace(/[^a-zA-Z0-9\s]/g, '').trim()
+      if (!fallbackTerm) return this.getAll(memoryType, limit)
+
       try {
         return this.db.all<FTSResult>(
           `SELECT memory_id as memoryId, memory_type as memoryType, content, rank
@@ -105,13 +113,35 @@ export class FTSService {
            WHERE memory_fts MATCH ?
            ORDER BY rank
            LIMIT ?`,
-          `"${query.replace(/"/g, '')}"`,
+          `"${fallbackTerm}"`,
           limit
         )
       } catch {
         return []
       }
     }
+  }
+
+  /** Return rows without FTS MATCH (for wildcard / browse queries) */
+  private getAll(memoryType?: string, limit = 20): FTSResult[] {
+    if (memoryType) {
+      return this.db.all<FTSResult>(
+        `SELECT memory_id as memoryId, memory_type as memoryType, content, 0 as rank
+         FROM memory_fts
+         WHERE memory_type = ?
+         ORDER BY rowid DESC
+         LIMIT ?`,
+        memoryType,
+        limit
+      )
+    }
+    return this.db.all<FTSResult>(
+      `SELECT memory_id as memoryId, memory_type as memoryType, content, 0 as rank
+       FROM memory_fts
+       ORDER BY rowid DESC
+       LIMIT ?`,
+      limit
+    )
   }
 
   /**
@@ -122,8 +152,17 @@ export class FTSService {
     options: { memoryType?: string; limit?: number } = {}
   ): Array<FTSResult & { snippet: string }> {
     const { memoryType, limit = 20 } = options
-    const sanitized = this.sanitizeQuery(query)
-    if (!sanitized) return []
+    const trimmed = query.trim()
+
+    // Wildcard / empty — snippets don't apply, return content as-is
+    if (trimmed === '*' || !trimmed) {
+      return this.getAll(memoryType, limit).map((r) => ({ ...r, snippet: r.content.slice(0, 200) }))
+    }
+
+    const sanitized = this.sanitizeQuery(trimmed)
+    if (!sanitized) {
+      return this.getAll(memoryType, limit).map((r) => ({ ...r, snippet: r.content.slice(0, 200) }))
+    }
 
     try {
       const sql = memoryType
@@ -171,20 +210,17 @@ export class FTSService {
 
   /** Sanitize a user query for FTS5 safety */
   private sanitizeQuery(query: string): string {
-    const trimmed = query.trim()
-    if (!trimmed) return ''
+    // Strip FTS5 special characters and operators, keep only real words
+    const words = query
+      .replace(/[*"(){}[\]:^~]/g, '') // Remove special FTS chars
+      .replace(/\b(AND|OR|NOT|NEAR)\b/gi, '') // Remove FTS operators
+      .split(/\s+/)
+      .filter((w) => w.length > 0)
 
-    // If the query looks like plain text (no FTS operators), convert to prefix search
-    if (!/[*"()]|AND|OR|NOT|NEAR/.test(trimmed)) {
-      // Split into words, add prefix matching to each
-      return trimmed
-        .split(/\s+/)
-        .filter((w) => w.length > 0)
-        .map((w) => `"${w.replace(/"/g, '')}"`)
-        .join(' ')
-    }
+    if (words.length === 0) return ''
 
-    return trimmed
+    // Wrap each word in quotes for safe phrase matching
+    return words.map((w) => `"${w}"`).join(' ')
   }
 }
 
