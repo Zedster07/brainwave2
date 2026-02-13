@@ -90,6 +90,16 @@ app.whenReady().then(() => {
       LLMFactory.configure('replicate', { apiKey: JSON.parse(repKey.value) })
       console.log('[Main] Replicate API key loaded')
     }
+
+    // Restore saved model mode (beast / normal / economy)
+    const savedMode = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'model_mode')
+    if (savedMode?.value) {
+      const mode = JSON.parse(savedMode.value) as string
+      if (['beast', 'normal', 'economy'].includes(mode)) {
+        LLMFactory.setMode(mode as 'beast' | 'normal' | 'economy')
+        console.log(`[Main] Model mode restored: ${mode}`)
+      }
+    }
   } catch (err) {
     console.warn('[Main] Failed to load LLM keys from DB:', err)
   }

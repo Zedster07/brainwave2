@@ -1,11 +1,19 @@
 export { LLMFactory } from './factory'
 export { OpenRouterProvider } from './openrouter'
 export { ReplicateProvider } from './replicate'
+export { FallbackLLMAdapter } from './fallback-adapter'
 export type {
   LLMAdapter,
   LLMConfig,
   LLMRequest,
   LLMResponse,
   AgentModelConfig,
+  ModelMode,
 } from './types'
-export { DEFAULT_AGENT_MODELS } from './types'
+export {
+  DEFAULT_AGENT_MODELS,
+  BEAST_MODE_MODELS,
+  NORMAL_MODE_MODELS,
+  ECONOMY_MODE_MODELS,
+  MODEL_MODE_PRESETS,
+} from './types'

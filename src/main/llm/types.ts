@@ -39,6 +39,8 @@ export interface LLMConfig {
 
 // ─── Per-Agent Model Configuration ──────────────────────────
 
+export type ModelMode = 'beast' | 'normal' | 'economy'
+
 export interface AgentModelConfig {
   provider: 'openrouter' | 'replicate'
   model: string
@@ -46,60 +48,54 @@ export interface AgentModelConfig {
   maxTokens?: number
 }
 
-export const DEFAULT_AGENT_MODELS: Record<string, AgentModelConfig> = {
-  orchestrator: {
-    provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4-20250514',
-    temperature: 0.3,
-    maxTokens: 8192,
-  },
-  planner: {
-    provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4-20250514',
-    temperature: 0.4,
-    maxTokens: 8192,
-  },
-  researcher: {
-    provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4-20250514',
-    temperature: 0.5,
-  },
-  coder: {
-    provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4-20250514',
-    temperature: 0.2,
-    maxTokens: 8192,
-  },
-  writer: {
-    provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4-20250514',
-    temperature: 0.7,
-  },
-  analyst: {
-    provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4-20250514',
-    temperature: 0.3,
-  },
-  critic: {
-    provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4-20250514',
-    temperature: 0.2,
-  },
-  reviewer: {
-    provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4-20250514',
-    temperature: 0.2,
-    maxTokens: 4096,
-  },
-  reflection: {
-    provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4-20250514',
-    temperature: 0.4,
-    maxTokens: 4096,
-  },
-  executor: {
-    provider: 'openrouter',
-    model: 'anthropic/claude-sonnet-4-20250514',
-    temperature: 0.1,
-  },
+// ─── Beast Mode: Maximum quality, cost no object ────────────
+export const BEAST_MODE_MODELS: Record<string, AgentModelConfig> = {
+  orchestrator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.6', temperature: 0.3, maxTokens: 8192 },
+  planner:      { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5', temperature: 0.4, maxTokens: 8192 },
+  researcher:   { provider: 'openrouter', model: 'google/gemini-2.5-pro', temperature: 0.5 },
+  coder:        { provider: 'openrouter', model: 'anthropic/claude-opus-4.6', temperature: 0.2, maxTokens: 8192 },
+  writer:       { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5', temperature: 0.7 },
+  analyst:      { provider: 'openrouter', model: 'google/gemini-2.5-pro', temperature: 0.3 },
+  critic:       { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5', temperature: 0.2 },
+  reviewer:     { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5', temperature: 0.2, maxTokens: 4096 },
+  reflection:   { provider: 'openrouter', model: 'google/gemini-2.5-pro', temperature: 0.4, maxTokens: 4096 },
+  executor:     { provider: 'openrouter', model: 'anthropic/claude-sonnet-4-20250514', temperature: 0.1 },
 }
+
+// ─── Normal Mode: Balanced quality & cost ───────────────────
+export const NORMAL_MODE_MODELS: Record<string, AgentModelConfig> = {
+  orchestrator: { provider: 'openrouter', model: 'anthropic/claude-sonnet-4-20250514', temperature: 0.3, maxTokens: 8192 },
+  planner:      { provider: 'openrouter', model: 'google/gemini-2.5-pro', temperature: 0.4, maxTokens: 8192 },
+  researcher:   { provider: 'openrouter', model: 'google/gemini-2.5-flash', temperature: 0.5 },
+  coder:        { provider: 'openrouter', model: 'anthropic/claude-sonnet-4-20250514', temperature: 0.2, maxTokens: 8192 },
+  writer:       { provider: 'openrouter', model: 'anthropic/claude-haiku-4.5', temperature: 0.7 },
+  analyst:      { provider: 'openrouter', model: 'google/gemini-2.5-flash', temperature: 0.3 },
+  critic:       { provider: 'openrouter', model: 'anthropic/claude-haiku-4.5', temperature: 0.2 },
+  reviewer:     { provider: 'openrouter', model: 'anthropic/claude-haiku-4.5', temperature: 0.2, maxTokens: 4096 },
+  reflection:   { provider: 'openrouter', model: 'google/gemini-2.5-flash', temperature: 0.4, maxTokens: 4096 },
+  executor:     { provider: 'openrouter', model: 'openai/gpt-4.1-mini', temperature: 0.1 },
+}
+
+// ─── Economy Mode: Maximum savings, minimum viable quality ──
+export const ECONOMY_MODE_MODELS: Record<string, AgentModelConfig> = {
+  orchestrator: { provider: 'openrouter', model: 'google/gemini-2.5-flash', temperature: 0.3, maxTokens: 8192 },
+  planner:      { provider: 'openrouter', model: 'deepseek/deepseek-chat', temperature: 0.4, maxTokens: 8192 },
+  researcher:   { provider: 'openrouter', model: 'deepseek/deepseek-chat', temperature: 0.5 },
+  coder:        { provider: 'openrouter', model: 'qwen/qwen3-coder', temperature: 0.2, maxTokens: 8192 },
+  writer:       { provider: 'openrouter', model: 'deepseek/deepseek-chat', temperature: 0.7 },
+  analyst:      { provider: 'openrouter', model: 'deepseek/deepseek-r1', temperature: 0.3 },
+  critic:       { provider: 'openrouter', model: 'openai/gpt-4.1-mini', temperature: 0.2 },
+  reviewer:     { provider: 'openrouter', model: 'openai/gpt-4.1-mini', temperature: 0.2, maxTokens: 4096 },
+  reflection:   { provider: 'openrouter', model: 'openai/gpt-4.1-nano', temperature: 0.4, maxTokens: 4096 },
+  executor:     { provider: 'openrouter', model: 'openai/gpt-4.1-nano', temperature: 0.1 },
+}
+
+// ─── Preset Map ─────────────────────────────────────────────
+export const MODEL_MODE_PRESETS: Record<ModelMode, Record<string, AgentModelConfig>> = {
+  beast: BEAST_MODE_MODELS,
+  normal: NORMAL_MODE_MODELS,
+  economy: ECONOMY_MODE_MODELS,
+}
+
+// Default = Normal mode
+export const DEFAULT_AGENT_MODELS: Record<string, AgentModelConfig> = { ...NORMAL_MODE_MODELS }

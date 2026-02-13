@@ -6,13 +6,15 @@
  */
 import { OpenRouterProvider } from './openrouter'
 import { ReplicateProvider } from './replicate'
-import type { LLMAdapter, LLMConfig, AgentModelConfig } from './types'
-import { DEFAULT_AGENT_MODELS } from './types'
+import { FallbackLLMAdapter } from './fallback-adapter'
+import type { LLMAdapter, LLMConfig, AgentModelConfig, ModelMode } from './types'
+import { DEFAULT_AGENT_MODELS, MODEL_MODE_PRESETS } from './types'
 
 export class LLMFactory {
   private static providers = new Map<string, LLMAdapter>()
   private static configs: Record<string, LLMConfig> = {}
   private static agentModels: Record<string, AgentModelConfig> = { ...DEFAULT_AGENT_MODELS }
+  private static currentMode: ModelMode = 'normal'
 
   /** Register API keys for providers */
   static configure(provider: 'openrouter' | 'replicate', config: LLMConfig): void {
@@ -52,15 +54,34 @@ export class LLMFactory {
     return instance
   }
 
-  /** Get the LLM adapter for a specific agent type */
+  /**
+   * Get the LLM adapter for a specific agent type.
+   * Returns a FallbackLLMAdapter that tries the primary provider first,
+   * then falls back to the alternate provider if both are configured.
+   */
   static getForAgent(agentType: string): LLMAdapter {
     const agentConfig = this.agentModels[agentType]
     if (!agentConfig) {
-      // Fallback to orchestrator's provider
       console.warn(`[LLM] No model config for agent "${agentType}", using orchestrator defaults`)
       return this.getProvider('openrouter')
     }
-    return this.getProvider(agentConfig.provider)
+
+    const primary = this.getProvider(agentConfig.provider)
+
+    // Determine fallback provider (the other one)
+    const fallbackProviderName: 'openrouter' | 'replicate' =
+      agentConfig.provider === 'openrouter' ? 'replicate' : 'openrouter'
+
+    let fallback: LLMAdapter | null = null
+    if (this.isConfigured(fallbackProviderName)) {
+      try {
+        fallback = this.getProvider(fallbackProviderName)
+      } catch {
+        // Fallback provider not available, proceed without it
+      }
+    }
+
+    return new FallbackLLMAdapter(primary, fallback, agentConfig.model)
   }
 
   /** Get the model config for a specific agent */
@@ -78,10 +99,28 @@ export class LLMFactory {
     return { ...this.agentModels }
   }
 
+  /** Switch all agents to a preset mode (beast / normal / economy) */
+  static setMode(mode: ModelMode): void {
+    const preset = MODEL_MODE_PRESETS[mode]
+    if (!preset) {
+      console.warn(`[LLM] Unknown mode "${mode}", keeping current config`)
+      return
+    }
+    this.currentMode = mode
+    this.agentModels = { ...preset }
+    console.log(`[LLM] Switched to ${mode} mode — ${Object.keys(preset).length} agents reconfigured`)
+  }
+
+  /** Get the current model mode */
+  static getMode(): ModelMode {
+    return this.currentMode
+  }
+
   /** Reset all configurations (useful for testing) */
   static reset(): void {
     this.providers.clear()
     this.configs = {}
     this.agentModels = { ...DEFAULT_AGENT_MODELS }
+    this.currentMode = 'normal'
   }
 }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff } from 'lucide-react'
+import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet } from 'lucide-react'
 
 type SettingsTab = 'general' | 'models' | 'rules' | 'storage'
 
@@ -100,49 +100,130 @@ function ModelSettings() {
   const [defaultModel, setDefaultModel] = useSetting<string>('default_model', 'anthropic/claude-sonnet-4-20250514')
   const [showOpenRouter, setShowOpenRouter] = useState(false)
   const [showReplicate, setShowReplicate] = useState(false)
+  const [modelMode, setModelMode] = useState<string>('normal')
+  const [agentConfigs, setAgentConfigs] = useState<Record<string, { provider: string; model: string }> | null>(null)
+  const [modeLoading, setModeLoading] = useState(false)
+
+  // Load current mode and agent configs on mount
+  useEffect(() => {
+    window.brainwave.getModelMode().then(setModelMode).catch(console.error)
+    window.brainwave.getModelConfigs().then(setAgentConfigs).catch(console.error)
+  }, [])
+
+  const handleModeChange = useCallback(async (mode: string) => {
+    setModeLoading(true)
+    try {
+      await window.brainwave.setModelMode(mode)
+      setModelMode(mode)
+      const configs = await window.brainwave.getModelConfigs()
+      setAgentConfigs(configs)
+    } catch (err) {
+      console.error('Failed to set model mode:', err)
+    } finally {
+      setModeLoading(false)
+    }
+  }, [])
+
+  const MODE_INFO = [
+    { id: 'beast', label: 'Beast', icon: Zap, color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/20', desc: 'Max quality — Opus 4.6, Sonnet 4.5, Gemini Pro' },
+    { id: 'normal', label: 'Normal', icon: Activity, color: 'text-accent', bg: 'bg-accent/10 border-accent/20', desc: 'Balanced — Sonnet 4, Gemini Pro/Flash, Haiku' },
+    { id: 'economy', label: 'Economy', icon: Wallet, color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/20', desc: 'Budget — DeepSeek, Qwen, GPT-4.1 Mini/Nano' },
+  ]
 
   return (
     <div className="space-y-6">
-      <SettingRow label="OpenRouter API Key" description="Required for LLM access">
-        <div className="flex items-center gap-2">
-          <input
-            type={showOpenRouter ? 'text' : 'password'}
-            value={openrouterKey ?? ''}
-            onChange={(e) => setOpenrouterKey(e.target.value)}
-            placeholder="sk-or-..."
-            className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-accent/40"
-          />
-          <button onClick={() => setShowOpenRouter(!showOpenRouter)} className="text-gray-500 hover:text-gray-300">
-            {showOpenRouter ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-          </button>
-          {openrouterKey && <Check className="w-4 h-4 text-green-400" />}
+      {/* Model Mode Selector */}
+      <div>
+        <p className="text-sm text-white font-medium mb-1">Agent Model Mode</p>
+        <p className="text-xs text-gray-500 mb-3">
+          Choose a preset that assigns different models to each agent based on cost/quality.
+          {openrouterKey && replicateKey && ' Both API keys set — automatic provider failover is active.'}
+        </p>
+        <div className="grid grid-cols-3 gap-3">
+          {MODE_INFO.map((m) => {
+            const Icon = m.icon
+            const isActive = modelMode === m.id
+            return (
+              <button
+                key={m.id}
+                onClick={() => handleModeChange(m.id)}
+                disabled={modeLoading}
+                className={`
+                  flex flex-col items-center gap-2 p-4 rounded-lg border transition-all text-center
+                  ${isActive
+                    ? `${m.bg} border-opacity-100`
+                    : 'bg-white/[0.02] border-white/[0.06] hover:border-white/[0.12]'
+                  }
+                `}
+              >
+                <Icon className={`w-5 h-5 ${isActive ? m.color : 'text-gray-500'}`} />
+                <span className={`text-sm font-medium ${isActive ? 'text-white' : 'text-gray-400'}`}>
+                  {m.label}
+                </span>
+                <span className="text-[10px] text-gray-500 leading-tight">{m.desc}</span>
+              </button>
+            )
+          })}
         </div>
-      </SettingRow>
+      </div>
 
-      <SettingRow label="Default Chat Model" description="Used by most agents">
-        <input
-          type="text"
-          value={defaultModel ?? 'anthropic/claude-sonnet-4-20250514'}
-          onChange={(e) => setDefaultModel(e.target.value)}
-          className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-accent/40"
-        />
-      </SettingRow>
-
-      <SettingRow label="Replicate API Key" description="For specialist models (optional)">
-        <div className="flex items-center gap-2">
-          <input
-            type={showReplicate ? 'text' : 'password'}
-            value={replicateKey ?? ''}
-            onChange={(e) => setReplicateKey(e.target.value)}
-            placeholder="r8_..."
-            className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-accent/40"
-          />
-          <button onClick={() => setShowReplicate(!showReplicate)} className="text-gray-500 hover:text-gray-300">
-            {showReplicate ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-          </button>
-          {replicateKey && <Check className="w-4 h-4 text-green-400" />}
+      {/* Current Agent Assignments */}
+      {agentConfigs && (
+        <div>
+          <p className="text-xs text-gray-500 mb-2">Current agent → model assignments:</p>
+          <div className="grid grid-cols-2 gap-1.5">
+            {Object.entries(agentConfigs).map(([agent, config]) => (
+              <div key={agent} className="flex items-center justify-between bg-white/[0.03] rounded px-3 py-1.5">
+                <span className="text-[11px] text-gray-400 capitalize">{agent}</span>
+                <span className="text-[10px] text-gray-500 font-mono truncate ml-2 max-w-[180px]">{config.model}</span>
+              </div>
+            ))}
+          </div>
         </div>
-      </SettingRow>
+      )}
+
+      <div className="border-t border-white/[0.04] pt-4 space-y-6">
+        <SettingRow label="OpenRouter API Key" description="Primary LLM provider">
+          <div className="flex items-center gap-2">
+            <input
+              type={showOpenRouter ? 'text' : 'password'}
+              value={openrouterKey ?? ''}
+              onChange={(e) => setOpenrouterKey(e.target.value)}
+              placeholder="sk-or-..."
+              className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-accent/40"
+            />
+            <button onClick={() => setShowOpenRouter(!showOpenRouter)} className="text-gray-500 hover:text-gray-300">
+              {showOpenRouter ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+            {openrouterKey && <Check className="w-4 h-4 text-green-400" />}
+          </div>
+        </SettingRow>
+
+        <SettingRow label="Replicate API Key" description="Fallback provider — used if OpenRouter fails">
+          <div className="flex items-center gap-2">
+            <input
+              type={showReplicate ? 'text' : 'password'}
+              value={replicateKey ?? ''}
+              onChange={(e) => setReplicateKey(e.target.value)}
+              placeholder="r8_..."
+              className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-accent/40"
+            />
+            <button onClick={() => setShowReplicate(!showReplicate)} className="text-gray-500 hover:text-gray-300">
+              {showReplicate ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+            {replicateKey && <Check className="w-4 h-4 text-green-400" />}
+          </div>
+        </SettingRow>
+
+        <SettingRow label="Default Chat Model" description="Override for agents without preset assignment">
+          <input
+            type="text"
+            value={defaultModel ?? 'anthropic/claude-sonnet-4-20250514'}
+            onChange={(e) => setDefaultModel(e.target.value)}
+            className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-accent/40"
+          />
+        </SettingRow>
+      </div>
     </div>
   )
 }

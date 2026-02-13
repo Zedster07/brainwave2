@@ -57,6 +57,11 @@ export const IPC_CHANNELS = {
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
 
+  // Model Mode
+  MODEL_MODE_GET: 'model-mode:get',
+  MODEL_MODE_SET: 'model-mode:set',
+  MODEL_MODE_GET_CONFIGS: 'model-mode:get-configs',
+
   // Rules
   RULES_GET_SAFETY: 'rules:get-safety',
   RULES_SET_SAFETY: 'rules:set-safety',
@@ -257,6 +262,11 @@ export interface BrainwaveAPI {
   // Settings
   getSetting: <T = unknown>(key: string) => Promise<T>
   setSetting: <T = unknown>(key: string, value: T) => Promise<void>
+
+  // Model Mode
+  getModelMode: () => Promise<string>
+  setModelMode: (mode: string) => Promise<void>
+  getModelConfigs: () => Promise<Record<string, { provider: string; model: string }>>
 
   // Scheduler
   getScheduledJobs: () => Promise<ScheduledJobInfo[]>

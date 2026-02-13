@@ -302,6 +302,31 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  // ─── Model Mode ───
+  ipcMain.handle(IPC_CHANNELS.MODEL_MODE_GET, async () => {
+    return LLMFactory.getMode()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MODEL_MODE_SET, async (_event, mode: string) => {
+    const validModes = ['beast', 'normal', 'economy']
+    if (!validModes.includes(mode)) {
+      throw new Error(`Invalid model mode: ${mode}. Must be one of: ${validModes.join(', ')}`)
+    }
+    LLMFactory.setMode(mode as 'beast' | 'normal' | 'economy')
+
+    // Persist the mode to DB so it survives restarts
+    db.run(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+      'model_mode',
+      JSON.stringify(mode)
+    )
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MODEL_MODE_GET_CONFIGS, async () => {
+    return LLMFactory.getAllAgentConfigs()
+  })
+
   // ─── Scheduler ───
   const scheduler = getScheduler()
 

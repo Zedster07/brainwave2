@@ -135,6 +135,16 @@ const api: BrainwaveAPI = {
   setSetting: <T = unknown>(key: string, value: T) =>
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, key, value) as Promise<void>,
 
+  // ─── Model Mode ───
+  getModelMode: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MODEL_MODE_GET) as Promise<string>,
+
+  setModelMode: (mode: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MODEL_MODE_SET, mode) as Promise<void>,
+
+  getModelConfigs: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MODEL_MODE_GET_CONFIGS) as Promise<Record<string, { provider: string; model: string }>>,
+
   // ─── Scheduler ───
   getScheduledJobs: () =>
     ipcRenderer.invoke(IPC_CHANNELS.SCHEDULER_GET_JOBS),
