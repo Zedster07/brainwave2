@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Send, Sparkles, Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, Ban } from 'lucide-react'
+import { Markdown } from '../../components/Markdown'
 import type { TaskUpdate, TaskStatus } from '@shared/types'
 
 interface LiveTask {
@@ -230,8 +231,11 @@ function TaskCard({ task, onCancel }: { task: LiveTask; onCancel: (id: string) =
 
             {/* Result */}
             {task.status === 'completed' && task.result && (
-              <div className="mt-3 text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">
-                {typeof task.result === 'string' ? task.result : JSON.stringify(task.result, null, 2)}
+              <div className="mt-3">
+                {typeof task.result === 'string'
+                  ? <Markdown content={task.result} />
+                  : <Markdown content={JSON.stringify(task.result, null, 2)} />
+                }
               </div>
             )}
 
