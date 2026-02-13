@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type CreateScheduledJobInput, type ScheduledJobInfo } from '@shared/types'
+import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord } from '@shared/types'
 
 const api: BrainwaveAPI = {
   // ─── Window Controls ───
@@ -19,6 +19,9 @@ const api: BrainwaveAPI = {
 
   getAgentStatus: () =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_GET_STATUS),
+
+  getActiveTasks: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_GET_TASKS),
 
   // ─── Events (main → renderer) ───
   onTaskUpdate: (callback: (update: TaskUpdate) => void) => {

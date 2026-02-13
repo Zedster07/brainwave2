@@ -16,6 +16,7 @@ export const IPC_CHANNELS = {
   AGENT_SUBMIT_TASK: 'agent:submit-task',
   AGENT_CANCEL_TASK: 'agent:cancel-task',
   AGENT_GET_STATUS: 'agent:get-status',
+  AGENT_GET_TASKS: 'agent:get-tasks',
 
   // Agent events (main → renderer)
   AGENT_EVENT: 'agent:event',
@@ -119,6 +120,17 @@ export interface AgentStatus {
   model?: string
 }
 
+export interface TaskRecord {
+  id: string
+  prompt: string
+  priority: 'low' | 'normal' | 'high'
+  status: 'pending' | 'planning' | 'in_progress' | 'completed' | 'failed' | 'cancelled'
+  result?: unknown
+  error?: string
+  createdAt: number
+  completedAt?: number
+}
+
 export interface MemoryQuery {
   query: string
   type?: 'episodic' | 'semantic' | 'procedural' | 'people'
@@ -197,6 +209,7 @@ export interface BrainwaveAPI {
   submitTask: (task: TaskSubmission) => Promise<{ taskId: string }>
   cancelTask: (taskId: string) => Promise<void>
   getAgentStatus: () => Promise<AgentStatus[]>
+  getActiveTasks: () => Promise<TaskRecord[]>
 
   // Events (main → renderer)
   onTaskUpdate: (callback: (update: TaskUpdate) => void) => () => void
