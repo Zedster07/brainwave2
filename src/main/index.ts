@@ -11,6 +11,7 @@ import { LLMFactory } from './llm'
 import { initMemoryManager } from './memory/memory-manager'
 import { getDecayService } from './memory/decay'
 import { getHardEngine, getSoftEngine } from './rules'
+import { getOrchestrator } from './agents/orchestrator'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -118,7 +119,6 @@ app.whenReady().then(() => {
   scheduler.start()
 
   // When a scheduled job fires, submit it as a task to the Orchestrator
-  const { getOrchestrator } = require('./agents/orchestrator')
   scheduler.on('job:execute', (payload) => {
     console.log(`[Main] Scheduled job executing: ${payload.jobId} → "${payload.taskPrompt}"`)
     const orchestrator = getOrchestrator()

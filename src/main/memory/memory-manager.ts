@@ -7,9 +7,10 @@
  */
 import { EpisodicMemoryStore, type EpisodicEntry, type StoreEpisodicInput } from './episodic'
 import { SemanticMemoryStore, type SemanticEntry, type StoreSemanticInput } from './semantic'
-import { EmbeddingService, type VectorSearchResult } from './embeddings'
-import { FTSService, type FTSResult } from './fts'
+import { EmbeddingService, getEmbeddingService, type VectorSearchResult } from './embeddings'
+import { FTSService, getFTSService, type FTSResult } from './fts'
 import { WorkingMemory, getWorkingMemory } from './working-memory'
+import { getDatabase } from '../db/database'
 import { getEventBus } from '../agents/event-bus'
 
 // ─── Types ──────────────────────────────────────────────────
@@ -237,7 +238,6 @@ export class MemoryManager {
   // ─── Stats ─────────────────────────────────────────────
 
   getStats(): MemoryStats {
-    const { getDatabase } = require('../db/database')
     const db = getDatabase()
 
     return {
@@ -292,8 +292,6 @@ let instance: MemoryManager | null = null
 
 export function initMemoryManager(): MemoryManager {
   if (!instance) {
-    const { getEmbeddingService } = require('./embeddings')
-    const { getFTSService } = require('./fts')
     instance = new MemoryManager(getEmbeddingService(), getFTSService())
     console.log('[Memory] MemoryManager initialized')
   }
