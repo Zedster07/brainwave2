@@ -50,6 +50,7 @@ interface TriageResult {
     name: string
     relationship?: string
     traits?: string[]
+    preferences?: Record<string, string>
   }
   semanticFacts?: Array<{  // extracted facts/preferences — stored as semantic memory
     subject: string
@@ -160,10 +161,13 @@ Do NOT remember: greetings, small talk, thanks, trivial questions, generic reque
 PERSON EXTRACTION:
 If the user mentions a person (themselves or someone else) by name, extract their info into "personInfo".
 This includes: user introducing themselves, mentioning colleagues, friends, etc.
+IMPORTANT: When the user refers to THEMSELVES with "I", "me", "my" — and you know who they are from the memory/people context — use their known name in personInfo. The owner/creator IS the user speaking.
 Examples:
 - "my name is Dada" → { "name": "Dada", "relationship": "owner/creator", "traits": ["developer"] }
 - "my friend John is a designer" → { "name": "John", "relationship": "friend", "traits": ["designer"] }
-Only include "personInfo" if a person's name is clearly stated.
+- "I love gaming" (and you know user is Dada) → { "name": "Dada", "traits": ["gamer"], "preferences": { "hobby": "gaming" } }
+- "I prefer dark mode" (and you know user is Dada) → { "name": "Dada", "preferences": { "theme": "dark mode" } }
+Include "personInfo" if a person's name is clearly stated OR if the user shares something about themselves and you know who they are.
 
 FACT / PREFERENCE EXTRACTION:
 If the user states facts, preferences, or knowledge worth remembering, extract as "semanticFacts".
@@ -188,7 +192,7 @@ OUTPUT FORMAT (JSON):
   "reply": "your response (only for conversational)",
   "agent": "researcher" | "coder" | "writer" | "analyst" | "critic" | "reviewer" | "executor" (only for direct),
   "shouldRemember": true/false,
-  "personInfo": { "name": "...", "relationship": "...", "traits": ["..."] } (only if a person is mentioned),
+  "personInfo": { "name": "...", "relationship": "...", "traits": ["..."], "preferences": { "key": "value" } } (only if a person is mentioned or user shares about themselves),
   "semanticFacts": [{ "subject": "...", "predicate": "...", "object": "..." }] (only if facts/preferences shared),
   "reminder": { "intention": "...", "triggerType": "time|event|condition", "triggerValue": "...", "priority": 0.5 } (only if reminder/intention expressed),
   "reasoning": "one-line explanation of why this lane was chosen"
@@ -408,7 +412,10 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
           break
       }
 
-      // 3. Clear working memory
+      // 3. Save triage extractions (person, facts, reminders, episodic) — runs for ALL lanes
+      await this.saveTriageExtractions(task, triage, memoryManager)
+
+      // 4. Clear working memory
       workingMemory.clear()
     } catch (err) {
       this.failTask(task, err instanceof Error ? err.message : String(err))
@@ -501,7 +508,17 @@ ${memoryContext}${peopleContext}${historyContext}`,
     )
 
     this.bus.emitEvent('task:completed', { taskId: task.id, result: reply })
+  }
 
+  /**
+   * Save all triage extractions — person info, semantic facts, reminders, episodic memory.
+   * Called after ALL lanes (conversational, direct, complex) so nothing is lost.
+   */
+  private async saveTriageExtractions(
+    task: TaskRecord,
+    triage: TriageResult,
+    memoryManager: ReturnType<typeof getMemoryManager>
+  ): Promise<void> {
     // Auto-create/update person if triage extracted person info
     if (triage.personInfo?.name) {
       try {
@@ -510,6 +527,7 @@ ${memoryContext}${peopleContext}${historyContext}`,
           name: triage.personInfo.name,
           relationship: triage.personInfo.relationship,
           traits: triage.personInfo.traits,
+          preferences: triage.personInfo.preferences,
         })
         console.log(`[Orchestrator] Created/updated person: ${person.name} (${person.id})`)
       } catch (err) {
@@ -527,7 +545,7 @@ ${memoryContext}${peopleContext}${historyContext}`,
             object: fact.object,
             confidence: 0.8,
             source: 'conversation',
-            tags: ['user-stated', 'conversational'],
+            tags: ['user-stated'],
           })
           console.log(`[Orchestrator] Stored semantic fact: ${fact.subject} ${fact.predicate} ${fact.object}`)
         } catch (err) {
@@ -545,7 +563,7 @@ ${memoryContext}${peopleContext}${historyContext}`,
           triggerType: triage.reminder.triggerType,
           triggerValue: triage.reminder.triggerValue,
           priority: triage.reminder.priority ?? 0.5,
-          tags: ['user-requested', 'conversational'],
+          tags: ['user-requested'],
         })
         console.log(`[Orchestrator] Created prospective memory: ${entry.intention} (${entry.id})`)
       } catch (err) {
@@ -553,23 +571,21 @@ ${memoryContext}${peopleContext}${historyContext}`,
       }
     }
 
-    // Only store episodic memory if triage decided this interaction is worth remembering
+    // Store episodic memory if triage decided this interaction is worth remembering
     if (triage.shouldRemember) {
       try {
         await memoryManager.storeEpisodic({
-          content: `User said: "${task.prompt.slice(0, 200)}". Replied directly (conversational).`,
+          content: `User said: "${task.prompt.slice(0, 200)}". Lane: ${triage.lane}.`,
           source: 'orchestrator',
-          importance: 0.3,
+          importance: 0.4,
           emotionalValence: 0.5,
-          tags: ['conversational', 'remembered'],
+          tags: [triage.lane, 'remembered'],
           participants: ['orchestrator'],
         })
-        console.log('[Orchestrator] Stored conversational memory — triage deemed worth remembering')
+        console.log('[Orchestrator] Stored memory — triage deemed worth remembering')
       } catch {
         // Not critical
       }
-    } else {
-      console.log('[Orchestrator] Skipped memory storage — trivial conversational input')
     }
   }
 
