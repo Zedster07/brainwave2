@@ -1,6 +1,7 @@
 import { ipcMain, app, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '@shared/types'
-import type { TaskSubmission, MemoryQuery } from '@shared/types'
+import type { TaskSubmission, MemoryQuery, CreateScheduledJobInput } from '@shared/types'
+import { getScheduler } from '../services/scheduler.service'
 
 export function registerIpcHandlers(): void {
   // ─── Window Controls ───
@@ -62,5 +63,49 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.SETTINGS_SET, async (_event, key: string, value: unknown) => {
     // TODO: Wire to electron-store
     console.log('[IPC] Settings set:', key, value)
+  })
+
+  // ─── Scheduler ───
+  const scheduler = getScheduler()
+
+  ipcMain.handle(IPC_CHANNELS.SCHEDULER_GET_JOBS, async () => {
+    return scheduler.getJobs()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SCHEDULER_CREATE_JOB, async (_event, input: CreateScheduledJobInput) => {
+    return scheduler.createJob(input)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SCHEDULER_UPDATE_JOB, async (_event, id: string, updates: Partial<CreateScheduledJobInput>) => {
+    return scheduler.updateJob(id, updates)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SCHEDULER_DELETE_JOB, async (_event, id: string) => {
+    return scheduler.deleteJob(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SCHEDULER_PAUSE_JOB, async (_event, id: string) => {
+    return scheduler.pauseJob(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SCHEDULER_RESUME_JOB, async (_event, id: string) => {
+    return scheduler.resumeJob(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SCHEDULER_TRIGGER_JOB, async (_event, id: string) => {
+    scheduler.triggerNow(id)
+  })
+
+  // Forward scheduler events to renderer
+  scheduler.on('job:updated', (job) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send(IPC_CHANNELS.SCHEDULER_JOB_UPDATE, job)
+    })
+  })
+
+  scheduler.on('job:execute', (payload) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send(IPC_CHANNELS.SCHEDULER_JOB_EXECUTED, payload)
+    })
   })
 }

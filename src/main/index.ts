@@ -2,6 +2,8 @@ import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { registerIpcHandlers } from './ipc'
+import { createTray, destroyTray } from './services/tray.service'
+import { getScheduler } from './services/scheduler.service'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -25,6 +27,14 @@ function createWindow(): void {
   // Graceful show when ready
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
+  })
+
+  // Minimize to tray instead of closing (unless force-quitting)
+  mainWindow.on('close', (event) => {
+    if (!app.isQuitting) {
+      event.preventDefault()
+      mainWindow?.hide()
+    }
   })
 
   // Open external links in browser
@@ -56,6 +66,19 @@ app.whenReady().then(() => {
 
   createWindow()
 
+  // System tray — keeps the app alive in the background
+  createTray(() => mainWindow)
+
+  // Start the scheduler service
+  const scheduler = getScheduler()
+  scheduler.start()
+
+  // When a scheduled job fires, submit it as a task
+  scheduler.on('job:execute', (payload) => {
+    console.log(`[Main] Scheduled job executing: ${payload.jobId} → "${payload.taskPrompt}"`)
+    // TODO: Wire to Orchestrator.submitTask() once built
+  })
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
@@ -64,9 +87,14 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  // On macOS, keep running. On Windows/Linux, keep alive via tray.
+  // Only quit when app.isQuitting is set (from tray "Quit" or app.quit())
+})
+
+app.on('before-quit', () => {
+  app.isQuitting = true
+  getScheduler().stop()
+  destroyTray()
 })
 
 export { mainWindow }

@@ -6,6 +6,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/': 'Command Center',
   '/agents': 'Agent Monitor',
   '/plan': 'Plan Board',
+  '/scheduler': 'Scheduler',
   '/memory': 'Memory Palace',
   '/reflection': 'Reflection Journal',
   '/settings': 'Settings',

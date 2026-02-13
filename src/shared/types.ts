@@ -30,6 +30,17 @@ export const IPC_CHANNELS = {
   // Settings
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
+
+  // Scheduler
+  SCHEDULER_GET_JOBS: 'scheduler:get-jobs',
+  SCHEDULER_CREATE_JOB: 'scheduler:create-job',
+  SCHEDULER_UPDATE_JOB: 'scheduler:update-job',
+  SCHEDULER_DELETE_JOB: 'scheduler:delete-job',
+  SCHEDULER_PAUSE_JOB: 'scheduler:pause-job',
+  SCHEDULER_RESUME_JOB: 'scheduler:resume-job',
+  SCHEDULER_TRIGGER_JOB: 'scheduler:trigger-job',
+  SCHEDULER_JOB_UPDATE: 'scheduler:job-update',       // main → renderer
+  SCHEDULER_JOB_EXECUTED: 'scheduler:job-executed',   // main → renderer
 } as const
 
 // ─── IPC Payload Types ───
@@ -127,6 +138,53 @@ export interface BrainwaveAPI {
   // Settings
   getSetting: <T = unknown>(key: string) => Promise<T>
   setSetting: <T = unknown>(key: string, value: T) => Promise<void>
+
+  // Scheduler
+  getScheduledJobs: () => Promise<ScheduledJobInfo[]>
+  createScheduledJob: (input: CreateScheduledJobInput) => Promise<ScheduledJobInfo>
+  updateScheduledJob: (id: string, updates: Partial<CreateScheduledJobInput>) => Promise<ScheduledJobInfo | null>
+  deleteScheduledJob: (id: string) => Promise<boolean>
+  pauseScheduledJob: (id: string) => Promise<boolean>
+  resumeScheduledJob: (id: string) => Promise<boolean>
+  triggerScheduledJob: (id: string) => Promise<void>
+  onScheduledJobUpdate: (callback: (job: ScheduledJobInfo) => void) => () => void
+}
+
+// ─── Scheduler Types ───
+
+export type ScheduleType = 'once' | 'cron' | 'interval'
+export type ScheduledJobStatus = 'active' | 'paused' | 'completed' | 'failed'
+
+export interface ScheduledJobInfo {
+  id: string
+  name: string
+  description?: string
+  taskPrompt: string
+  taskPriority: 'low' | 'normal' | 'high'
+  type: ScheduleType
+  cronExpression?: string
+  intervalMs?: number
+  runAt?: number
+  status: ScheduledJobStatus
+  nextRunAt: number | null
+  lastRunAt: number | null
+  lastRunResult?: 'success' | 'failure'
+  runCount: number
+  maxRuns?: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface CreateScheduledJobInput {
+  name: string
+  description?: string
+  taskPrompt: string
+  taskPriority?: 'low' | 'normal' | 'high'
+  type: ScheduleType
+  cronExpression?: string
+  intervalMs?: number
+  runAt?: number
+  maxRuns?: number
 }
 
 // Augment window type

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry } from '@shared/types'
+import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type CreateScheduledJobInput, type ScheduledJobInfo } from '@shared/types'
 
 const api: BrainwaveAPI = {
   // ─── Window Controls ───
@@ -46,6 +46,34 @@ const api: BrainwaveAPI = {
 
   setSetting: <T = unknown>(key: string, value: T) =>
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, key, value) as Promise<void>,
+
+  // ─── Scheduler ───
+  getScheduledJobs: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.SCHEDULER_GET_JOBS),
+
+  createScheduledJob: (input: CreateScheduledJobInput) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SCHEDULER_CREATE_JOB, input),
+
+  updateScheduledJob: (id: string, updates: Partial<CreateScheduledJobInput>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SCHEDULER_UPDATE_JOB, id, updates),
+
+  deleteScheduledJob: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SCHEDULER_DELETE_JOB, id),
+
+  pauseScheduledJob: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SCHEDULER_PAUSE_JOB, id),
+
+  resumeScheduledJob: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SCHEDULER_RESUME_JOB, id),
+
+  triggerScheduledJob: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SCHEDULER_TRIGGER_JOB, id),
+
+  onScheduledJobUpdate: (callback: (job: ScheduledJobInfo) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, job: ScheduledJobInfo) => callback(job)
+    ipcRenderer.on(IPC_CHANNELS.SCHEDULER_JOB_UPDATE, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.SCHEDULER_JOB_UPDATE, handler)
+  },
 }
 
 // Expose typed API to renderer
