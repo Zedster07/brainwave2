@@ -193,7 +193,7 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
   }
 
   /** Main entry point — submit a user task */
-  async submitTask(prompt: string, priority: 'low' | 'normal' | 'high' = 'normal'): Promise<TaskRecord> {
+  async submitTask(prompt: string, priority: 'low' | 'normal' | 'high' = 'normal', sessionId?: string): Promise<TaskRecord> {
     const taskId = randomUUID()
     const task: TaskRecord = {
       id: taskId,
@@ -207,14 +207,20 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
 
     // Persist to DB
     this.db.run(
-      `INSERT INTO tasks (id, title, description, status, priority, created_at)
-       VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      `INSERT INTO tasks (id, title, description, status, priority, session_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
       taskId,
       prompt.slice(0, 200),
       prompt,
       'pending',
-      priority === 'high' ? 0.9 : priority === 'normal' ? 0.5 : 0.2
+      priority === 'high' ? 0.9 : priority === 'normal' ? 0.5 : 0.2,
+      sessionId ?? null
     )
+
+    // Update session timestamp
+    if (sessionId) {
+      this.db.run(`UPDATE chat_sessions SET updated_at = ? WHERE id = ?`, Date.now(), sessionId)
+    }
 
     this.bus.emitEvent('task:submitted', { taskId, prompt, priority })
 
@@ -245,11 +251,13 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
   }
 
   /** Get recent task history from DB (persisted across restarts) */
-  getTaskHistory(limit = 50): TaskRecord[] {
+  getTaskHistory(limit = 50, sessionId?: string): TaskRecord[] {
+    const whereClause = sessionId ? `WHERE session_id = ?` : ''
+    const params = sessionId ? [sessionId, limit] : [limit]
     const rows = this.db.all(
       `SELECT id, title, description, status, priority, result, error, created_at, completed_at
-       FROM tasks ORDER BY created_at DESC LIMIT ?`,
-      limit
+       FROM tasks ${whereClause} ORDER BY created_at DESC LIMIT ?`,
+      ...params
     ) as Array<{
       id: string
       title: string

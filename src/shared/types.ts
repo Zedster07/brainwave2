@@ -84,6 +84,13 @@ export const IPC_CHANNELS = {
   SCHEDULER_TRIGGER_JOB: 'scheduler:trigger-job',
   SCHEDULER_JOB_UPDATE: 'scheduler:job-update',       // main → renderer
   SCHEDULER_JOB_EXECUTED: 'scheduler:job-executed',   // main → renderer
+
+  // Chat Sessions
+  SESSION_CREATE: 'session:create',
+  SESSION_LIST: 'session:list',
+  SESSION_DELETE: 'session:delete',
+  SESSION_RENAME: 'session:rename',
+  SESSION_GET_TASKS: 'session:get-tasks',
 } as const
 
 // ─── IPC Payload Types ───
@@ -92,6 +99,7 @@ export interface TaskSubmission {
   id: string
   prompt: string
   priority?: 'low' | 'normal' | 'high'
+  sessionId?: string
   context?: Record<string, unknown>
 }
 
@@ -136,6 +144,14 @@ export interface TaskRecord {
   error?: string
   createdAt: number
   completedAt?: number
+}
+
+export interface ChatSession {
+  id: string
+  title: string
+  createdAt: number
+  updatedAt: number
+  taskCount?: number
 }
 
 export interface MemoryQuery {
@@ -281,6 +297,13 @@ export interface BrainwaveAPI {
   resumeScheduledJob: (id: string) => Promise<boolean>
   triggerScheduledJob: (id: string) => Promise<void>
   onScheduledJobUpdate: (callback: (job: ScheduledJobInfo) => void) => () => void
+
+  // Chat Sessions
+  createSession: (title?: string) => Promise<ChatSession>
+  listSessions: () => Promise<ChatSession[]>
+  deleteSession: (id: string) => Promise<boolean>
+  renameSession: (id: string, title: string) => Promise<ChatSession | null>
+  getSessionTasks: (sessionId: string, limit?: number) => Promise<TaskRecord[]>
 }
 
 // ─── Scheduler Types ───

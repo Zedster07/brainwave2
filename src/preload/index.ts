@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord } from '@shared/types'
+import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession } from '@shared/types'
 
 const api: BrainwaveAPI = {
   // ─── Window Controls ───
@@ -178,6 +178,22 @@ const api: BrainwaveAPI = {
     ipcRenderer.on(IPC_CHANNELS.SCHEDULER_JOB_UPDATE, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.SCHEDULER_JOB_UPDATE, handler)
   },
+
+  // ─── Chat Sessions ───
+  createSession: (title?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SESSION_CREATE, title) as Promise<ChatSession>,
+
+  listSessions: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.SESSION_LIST) as Promise<ChatSession[]>,
+
+  deleteSession: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SESSION_DELETE, id) as Promise<boolean>,
+
+  renameSession: (id: string, title: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SESSION_RENAME, id, title) as Promise<ChatSession | null>,
+
+  getSessionTasks: (sessionId: string, limit?: number) =>
+    ipcRenderer.invoke(IPC_CHANNELS.SESSION_GET_TASKS, sessionId, limit) as Promise<TaskRecord[]>,
 }
 
 // Expose typed API to renderer

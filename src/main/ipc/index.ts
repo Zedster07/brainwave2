@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { ipcMain, app, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '@shared/types'
 import type { TaskSubmission, MemoryQuery, CreateScheduledJobInput } from '@shared/types'
@@ -45,7 +46,7 @@ export function registerIpcHandlers(): void {
   orchestrator.setExecutor((subTask, context) => agentPool.executeTask(subTask, context))
 
   ipcMain.handle(IPC_CHANNELS.AGENT_SUBMIT_TASK, async (_event, task: TaskSubmission) => {
-    const record = await orchestrator.submitTask(task.prompt, task.priority ?? 'normal')
+    const record = await orchestrator.submitTask(task.prompt, task.priority ?? 'normal', task.sessionId)
     return { taskId: record.id }
   })
 
@@ -422,5 +423,47 @@ export function registerIpcHandlers(): void {
     BrowserWindow.getAllWindows().forEach((win) => {
       win.webContents.send(IPC_CHANNELS.SCHEDULER_JOB_EXECUTED, payload)
     })
+  })
+
+  // ─── Chat Sessions ───
+
+  ipcMain.handle(IPC_CHANNELS.SESSION_CREATE, async (_event, title?: string) => {
+    const id = randomUUID()
+    const now = Date.now()
+    const sessionTitle = title || 'New Chat'
+    db.run(
+      `INSERT INTO chat_sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+      id, sessionTitle, now, now
+    )
+    return { id, title: sessionTitle, createdAt: now, updatedAt: now }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SESSION_LIST, async () => {
+    const rows = db.all(
+      `SELECT cs.id, cs.title, cs.created_at, cs.updated_at,
+              (SELECT COUNT(*) FROM tasks t WHERE t.session_id = cs.id) as task_count
+       FROM chat_sessions cs ORDER BY cs.updated_at DESC`
+    ) as Array<{ id: string; title: string; created_at: number; updated_at: number; task_count: number }>
+    return rows.map((r) => ({
+      id: r.id, title: r.title, createdAt: r.created_at, updatedAt: r.updated_at, taskCount: r.task_count,
+    }))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SESSION_DELETE, async (_event, id: string) => {
+    db.run(`DELETE FROM chat_sessions WHERE id = ?`, id)
+    return true
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SESSION_RENAME, async (_event, id: string, title: string) => {
+    const now = Date.now()
+    db.run(`UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ?`, title, now, id)
+    const row = db.get(`SELECT id, title, created_at, updated_at FROM chat_sessions WHERE id = ?`, id) as
+      { id: string; title: string; created_at: number; updated_at: number } | undefined
+    if (!row) return null
+    return { id: row.id, title: row.title, createdAt: row.created_at, updatedAt: row.updated_at }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.SESSION_GET_TASKS, async (_event, sessionId: string, limit?: number) => {
+    return orchestrator.getTaskHistory(limit ?? 50, sessionId)
   })
 }
