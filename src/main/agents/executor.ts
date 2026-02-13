@@ -423,64 +423,80 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
   private parseToolCall(
     content: string
   ): { tool: string; args: Record<string, unknown> } | null {
-    // Skip if this is a done signal
+    // Skip if this is a genuine done signal (parseDoneSignal already rejects
+    // done signals whose summary is a tool call, so if it returns non-null
+    // here it's a real completion)
     if (this.parseDoneSignal(content)) return null
 
-    try {
-      // Try direct JSON parse
-      const parsed = JSON.parse(content)
+    const extractTool = (parsed: Record<string, unknown>): { tool: string; args: Record<string, unknown> } | null => {
+      // Direct tool call: { "tool": "local::web_search", "args": {...} }
       if (parsed.tool && typeof parsed.tool === 'string') {
-        return {
-          tool: parsed.tool,
-          args: parsed.args ?? {},
-        }
+        return { tool: parsed.tool, args: (parsed.args as Record<string, unknown>) ?? {} }
+      }
+      // Unwrap confused done-wrapped tool call: { "done": true, "summary": "{\"tool\": ...}" }
+      if (parsed.done === true && typeof parsed.summary === 'string') {
+        try {
+          const nested = JSON.parse(parsed.summary)
+          if (nested.tool && typeof nested.tool === 'string') {
+            console.log('[Executor] Extracted tool call from done-wrapped summary')
+            return { tool: nested.tool, args: nested.args ?? {} }
+          }
+        } catch { /* not a nested tool call */ }
       }
       return null
+    }
+
+    try {
+      const result = extractTool(JSON.parse(content))
+      if (result) return result
     } catch {
       // Try to extract JSON from markdown code blocks
       const jsonMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/)
       if (jsonMatch) {
         try {
-          const parsed = JSON.parse(jsonMatch[1])
-          if (parsed.tool && typeof parsed.tool === 'string') {
-            return { tool: parsed.tool, args: parsed.args ?? {} }
-          }
-        } catch {
-          // Not valid JSON in code block
-        }
+          const result = extractTool(JSON.parse(jsonMatch[1]))
+          if (result) return result
+        } catch { /* Not valid JSON in code block */ }
       }
 
       // Try to find a JSON object with "tool" key in the response
       const objMatch = content.match(/\{[\s\S]*"tool"\s*:\s*"[^"]+[\s\S]*\}/)
       if (objMatch) {
         try {
-          const parsed = JSON.parse(objMatch[0])
-          if (parsed.tool) return { tool: parsed.tool, args: parsed.args ?? {} }
-        } catch {
-          // Not valid JSON
-        }
+          const result = extractTool(JSON.parse(objMatch[0]))
+          if (result) return result
+        } catch { /* Not valid JSON */ }
       }
-
-      return null
     }
+
+    return null
   }
 
   /** Parse a done signal { "done": true, "summary": "..." } from the LLM's response */
   private parseDoneSignal(content: string): string | null {
-    try {
-      const parsed = JSON.parse(content)
+    const extractDone = (parsed: Record<string, unknown>): string | null => {
       if (parsed.done === true && typeof parsed.summary === 'string') {
+        // Guard: if the summary itself looks like a tool call, the LLM is confused —
+        // it wrapped a tool call in done instead of actually calling it. Reject it
+        // so parseToolCall can extract and execute the embedded tool call.
+        if (this.looksLikeToolCall(parsed.summary)) {
+          console.log('[Executor] Rejecting done signal — summary is an embedded tool call')
+          return null
+        }
         return parsed.summary
       }
+      return null
+    }
+
+    try {
+      return extractDone(JSON.parse(content))
     } catch {
       // Try to extract from markdown code block
       const jsonMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/)
       if (jsonMatch) {
         try {
-          const parsed = JSON.parse(jsonMatch[1])
-          if (parsed.done === true && typeof parsed.summary === 'string') {
-            return parsed.summary
-          }
+          const result = extractDone(JSON.parse(jsonMatch[1]))
+          if (result) return result
         } catch { /* ignore */ }
       }
 
@@ -488,14 +504,22 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
       const objMatch = content.match(/\{[\s\S]*"done"\s*:\s*true[\s\S]*\}/)
       if (objMatch) {
         try {
-          const parsed = JSON.parse(objMatch[0])
-          if (parsed.done === true && typeof parsed.summary === 'string') {
-            return parsed.summary
-          }
+          const result = extractDone(JSON.parse(objMatch[0]))
+          if (result) return result
         } catch { /* ignore */ }
       }
     }
     return null
+  }
+
+  /** Quick check: does this string look like a tool call JSON? */
+  private looksLikeToolCall(s: string): boolean {
+    try {
+      const p = JSON.parse(s.trim())
+      return !!(p.tool && typeof p.tool === 'string')
+    } catch {
+      return false
+    }
   }
 
   /** Helper to build an AgentResult */
