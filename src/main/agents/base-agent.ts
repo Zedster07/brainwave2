@@ -9,6 +9,7 @@ import { LLMFactory } from '../llm'
 import type { LLMRequest, LLMResponse, AgentModelConfig } from '../llm'
 import { getEventBus, type AgentType } from './event-bus'
 import { getDatabase } from '../db/database'
+import { getSoftEngine } from '../rules'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -161,6 +162,9 @@ export abstract class BaseAgent {
 
     const systemPrompt = this.getSystemPrompt(context)
 
+    // Inject soft rules as constraints
+    const constraintBlock = getSoftEngine().buildConstraintBlock(this.type)
+
     // Build memory context string
     const memoryContext = context.relevantMemories?.length
       ? `\n\nRELEVANT MEMORIES:\n${context.relevantMemories.join('\n---\n')}`
@@ -168,7 +172,7 @@ export abstract class BaseAgent {
 
     const request: LLMRequest = {
       model: modelConfig?.model,
-      system: systemPrompt,
+      system: systemPrompt + constraintBlock,
       user: userMessage,
       context: memoryContext || undefined,
       temperature: overrides?.temperature ?? modelConfig?.temperature ?? 0.7,

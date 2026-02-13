@@ -9,6 +9,7 @@ import { MigrationRunner } from './db/migrations'
 import { ALL_MIGRATIONS } from './db/migrations/index'
 import { LLMFactory } from './llm'
 import { initMemoryManager } from './memory/memory-manager'
+import { getHardEngine, getSoftEngine } from './rules'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -93,6 +94,11 @@ app.whenReady().then(() => {
 
   // ── Initialize Memory Manager ──
   initMemoryManager()
+
+  // ── Initialize Rules Engines ──
+  getHardEngine()   // loads safety.rules.json (creates defaults if missing)
+  getSoftEngine()   // loads behavior.rules.json (creates defaults if missing)
+  console.log('[Main] Rules engines initialized')
 
   // Register IPC handlers before creating window
   registerIpcHandlers()

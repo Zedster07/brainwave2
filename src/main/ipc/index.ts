@@ -8,6 +8,8 @@ import { getOrchestrator } from '../agents/orchestrator'
 import { getAgentPool } from '../agents/agent-pool'
 import { getEventBus } from '../agents/event-bus'
 import { getMemoryManager } from '../memory'
+import { getHardEngine, getSoftEngine } from '../rules'
+import type { SafetyRules, BehaviorRules } from '../rules'
 
 export function registerIpcHandlers(): void {
   // ─── Window Controls ───
@@ -136,6 +138,43 @@ export function registerIpcHandlers(): void {
       lastInteraction: entry.updatedAt,
       interactionCount: entry.accessCount,
     }))
+  })
+
+  // ─── Rules Engine ───
+  const hardEngine = getHardEngine()
+  const softEngine = getSoftEngine()
+
+  ipcMain.handle(IPC_CHANNELS.RULES_GET_SAFETY, async () => {
+    return hardEngine.getRules()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.RULES_SET_SAFETY, async (_event, rules: SafetyRules) => {
+    hardEngine.updateRules(rules)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.RULES_GET_BEHAVIOR, async () => {
+    return softEngine.getRules()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.RULES_SET_BEHAVIOR, async (_event, rules: BehaviorRules) => {
+    softEngine.updateRules(rules)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.RULES_GET_PROPOSALS, async () => {
+    return softEngine.getPendingProposals()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.RULES_ACCEPT_PROPOSAL, async (_event, id: string) => {
+    return softEngine.acceptProposal(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.RULES_DISMISS_PROPOSAL, async (_event, id: string) => {
+    return softEngine.dismissProposal(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.RULES_RELOAD, async () => {
+    hardEngine.reload()
+    softEngine.reload()
   })
 
   // ─── Settings (DB-backed) ───

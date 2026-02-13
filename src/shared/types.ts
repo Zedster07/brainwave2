@@ -31,6 +31,16 @@ export const IPC_CHANNELS = {
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
 
+  // Rules
+  RULES_GET_SAFETY: 'rules:get-safety',
+  RULES_SET_SAFETY: 'rules:set-safety',
+  RULES_GET_BEHAVIOR: 'rules:get-behavior',
+  RULES_SET_BEHAVIOR: 'rules:set-behavior',
+  RULES_GET_PROPOSALS: 'rules:get-proposals',
+  RULES_ACCEPT_PROPOSAL: 'rules:accept-proposal',
+  RULES_DISMISS_PROPOSAL: 'rules:dismiss-proposal',
+  RULES_RELOAD: 'rules:reload',
+
   // Scheduler
   SCHEDULER_GET_JOBS: 'scheduler:get-jobs',
   SCHEDULER_CREATE_JOB: 'scheduler:create-job',
@@ -134,6 +144,16 @@ export interface BrainwaveAPI {
   // Memory
   queryMemory: (query: MemoryQuery) => Promise<MemoryEntry[]>
   getPeople: () => Promise<PersonEntry[]>
+
+  // Rules
+  getSafetyRules: () => Promise<unknown>
+  setSafetyRules: (rules: unknown) => Promise<void>
+  getBehaviorRules: () => Promise<unknown>
+  setBehaviorRules: (rules: unknown) => Promise<void>
+  getRuleProposals: () => Promise<unknown[]>
+  acceptRuleProposal: (id: string) => Promise<boolean>
+  dismissRuleProposal: (id: string) => Promise<boolean>
+  reloadRules: () => Promise<void>
 
   // Settings
   getSetting: <T = unknown>(key: string) => Promise<T>

@@ -40,6 +40,31 @@ const api: BrainwaveAPI = {
   getPeople: () =>
     ipcRenderer.invoke(IPC_CHANNELS.MEMORY_GET_PEOPLE),
 
+  // ─── Rules ───
+  getSafetyRules: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.RULES_GET_SAFETY),
+
+  setSafetyRules: (rules: unknown) =>
+    ipcRenderer.invoke(IPC_CHANNELS.RULES_SET_SAFETY, rules) as Promise<void>,
+
+  getBehaviorRules: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.RULES_GET_BEHAVIOR),
+
+  setBehaviorRules: (rules: unknown) =>
+    ipcRenderer.invoke(IPC_CHANNELS.RULES_SET_BEHAVIOR, rules) as Promise<void>,
+
+  getRuleProposals: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.RULES_GET_PROPOSALS),
+
+  acceptRuleProposal: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.RULES_ACCEPT_PROPOSAL, id) as Promise<boolean>,
+
+  dismissRuleProposal: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.RULES_DISMISS_PROPOSAL, id) as Promise<boolean>,
+
+  reloadRules: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.RULES_RELOAD) as Promise<void>,
+
   // ─── Settings ───
   getSetting: <T = unknown>(key: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_GET, key) as Promise<T>,
