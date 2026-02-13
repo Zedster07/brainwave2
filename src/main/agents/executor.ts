@@ -132,6 +132,7 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
     const MAX_STEPS = 8
     let corrections = 0
     const MAX_CORRECTIONS = 2
+    const EXECUTOR_TIMEOUT_MS = 3 * 60 * 1000 // 3 minutes overall timeout
 
     try {
       // Agentic multi-step loop — the LLM keeps calling tools until the task is done.
@@ -144,6 +145,40 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
         `Do NOT respond with text. You MUST output a JSON object.`
 
       for (let step = 1; step <= MAX_STEPS; step++) {
+        // Check overall timeout
+        if (Date.now() - startTime > EXECUTOR_TIMEOUT_MS) {
+          const anySuccess = toolResults.some((t) => t.success)
+          const timeoutResult = this.buildResult(
+            anySuccess ? 'partial' : 'failed',
+            `Executor timed out after ${Math.round((Date.now() - startTime) / 1000)}s. ` +
+            (toolResults.length > 0
+              ? `Completed ${toolResults.length} tool call(s) before timeout. Last results:\n` +
+                toolResults.slice(-2).map((t) => `${t.tool}: ${t.content.slice(0, 300)}`).join('\n')
+              : 'No tool calls completed.'),
+            anySuccess ? 0.5 : 0.2,
+            totalTokensIn,
+            totalTokensOut,
+            model,
+            startTime,
+            artifacts
+          )
+
+          this.bus.emitEvent('agent:error', {
+            agentType: this.type,
+            taskId: context.taskId,
+            error: `Executor timed out after ${Math.round((Date.now() - startTime) / 1000)}s`,
+          })
+
+          return timeoutResult
+        }
+
+        // Emit step progress so the UI updates
+        this.bus.emitEvent('agent:acting', {
+          agentType: this.type,
+          taskId: context.taskId,
+          action: `Step ${step}/${MAX_STEPS}: ${step === 1 ? 'Analyzing task...' : 'Deciding next action...'}`,
+        })
+
         // Ask the LLM what to do next
         const response = await this.think(currentPrompt, context, {
           temperature: modelConfig?.temperature ?? 0.1,
@@ -190,6 +225,11 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
           // Re-prompt with correction if we haven't exceeded correction limit.
           if (corrections < MAX_CORRECTIONS) {
             corrections++
+            this.bus.emitEvent('agent:acting', {
+              agentType: this.type,
+              taskId: context.taskId,
+              action: `Sending correction ${corrections}/${MAX_CORRECTIONS} — invalid response format`,
+            })
             currentPrompt =
               `TASK: ${task.description}\n\n` +
               (toolResults.length > 0

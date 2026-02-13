@@ -17,6 +17,7 @@ export class OpenRouterProvider implements LLMAdapter {
     this.client = new OpenAI({
       apiKey: config.apiKey,
       baseURL: 'https://openrouter.ai/api/v1',
+      timeout: 60_000, // 60s per request — prevents infinite hangs
       defaultHeaders: {
         'HTTP-Referer': 'https://brainwave2.app',
         'X-Title': 'Brainwave 2',

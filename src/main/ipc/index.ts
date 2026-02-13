@@ -329,6 +329,10 @@ export function registerIpcHandlers(): void {
     id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agentType, agentType: data.agentType,
     level: 'info', message: `Thinking with ${data.model}...`, timestamp: Date.now(),
   }))
+  eventBus.onEvent('agent:acting', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
+    id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agentType, agentType: data.agentType,
+    level: 'info', message: data.action, timestamp: Date.now(),
+  }))
   eventBus.onEvent('agent:completed', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
     id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agentType, agentType: data.agentType,
     level: 'info', message: `Completed (confidence: ${(data.confidence * 100).toFixed(0)}%, tokens: ${data.tokensIn + data.tokensOut})`, timestamp: Date.now(),
