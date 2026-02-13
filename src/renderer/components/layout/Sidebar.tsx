@@ -9,6 +9,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  GitBranch,
 } from 'lucide-react'
 import { useUIStore } from '@renderer/stores/ui.store'
 
@@ -18,6 +19,7 @@ const NAV_ITEMS = [
   { path: '/plan', label: 'Plan Board', icon: LayoutDashboard, section: 'main' },
   { path: '/scheduler', label: 'Scheduler', icon: Clock, section: 'main' },
   { path: '/memory', label: 'Memory Palace', icon: Brain, section: 'insights' },
+  { path: '/graph', label: 'Knowledge Graph', icon: GitBranch, section: 'insights' },
   { path: '/reflection', label: 'Reflection', icon: BookOpen, section: 'insights' },
   { path: '/settings', label: 'Settings', icon: Settings, section: 'system' },
 ] as const

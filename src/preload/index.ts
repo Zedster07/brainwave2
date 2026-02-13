@@ -37,8 +37,68 @@ const api: BrainwaveAPI = {
   queryMemory: (query: MemoryQuery) =>
     ipcRenderer.invoke(IPC_CHANNELS.MEMORY_QUERY, query),
 
-  getPeople: () =>
-    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_GET_PEOPLE),
+  deleteMemory: (id: string, type: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_DELETE, id, type) as Promise<boolean>,
+
+  getMemoryStats: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_GET_STATS),
+
+  getRecentMemories: (limit?: number) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MEMORY_GET_RECENT, limit),
+
+  // ─── People ───
+  getAllPeople: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.PEOPLE_GET_ALL),
+
+  getPersonById: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PEOPLE_GET_BY_ID, id),
+
+  searchPeople: (query: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PEOPLE_SEARCH, query),
+
+  createPerson: (input: { name: string; relationship?: string; traits?: string[] }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PEOPLE_CREATE, input),
+
+  updatePerson: (id: string, input: { name?: string; relationship?: string; traits?: string[] }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PEOPLE_UPDATE, id, input),
+
+  deletePerson: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PEOPLE_DELETE, id) as Promise<boolean>,
+
+  addPersonInteraction: (id: string, interaction: { date: string; type: string; summary: string }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PEOPLE_ADD_INTERACTION, id, interaction),
+
+  // ─── Procedural Memory ───
+  getAllProcedures: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROCEDURAL_GET_ALL),
+
+  getProceduralById: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROCEDURAL_GET_BY_ID, id),
+
+  searchProcedures: (query: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROCEDURAL_SEARCH, query),
+
+  createProcedure: (input: { name: string; description?: string; steps: Array<{ order: number; action: string }>; tags?: string[] }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROCEDURAL_CREATE, input),
+
+  deleteProcedure: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROCEDURAL_DELETE, id) as Promise<boolean>,
+
+  // ─── Prospective Memory ───
+  getAllProspective: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROSPECTIVE_GET_ALL),
+
+  getPendingProspective: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROSPECTIVE_GET_PENDING),
+
+  createProspective: (input: { intention: string; triggerType: 'time' | 'event' | 'condition'; triggerValue: string; priority?: number; dueAt?: string; tags?: string[] }) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROSPECTIVE_CREATE, input),
+
+  completeProspective: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROSPECTIVE_COMPLETE, id) as Promise<void>,
+
+  deleteProspective: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROSPECTIVE_DELETE, id) as Promise<boolean>,
 
   // ─── Rules ───
   getSafetyRules: () =>

@@ -8,6 +8,9 @@ import { getOrchestrator } from '../agents/orchestrator'
 import { getAgentPool } from '../agents/agent-pool'
 import { getEventBus } from '../agents/event-bus'
 import { getMemoryManager } from '../memory'
+import { getPeopleStore } from '../memory/people'
+import { getProceduralStore } from '../memory/procedural'
+import { getProspectiveStore } from '../memory/prospective'
 import { getHardEngine, getSoftEngine } from '../rules'
 import type { SafetyRules, BehaviorRules } from '../rules'
 
@@ -126,18 +129,112 @@ export function registerIpcHandlers(): void {
     }))
   })
 
-  ipcMain.handle(IPC_CHANNELS.MEMORY_GET_PEOPLE, async () => {
-    // People are stored as semantic memories with predicate "is_person" or subject type "person"
-    const personMemories = memoryManager.semantic.getByPredicate('is_person')
-    return personMemories.map((entry) => ({
-      id: entry.id,
-      name: entry.subject,
-      relationship: entry.object,
-      traits: entry.tags,
-      preferences: {} as Record<string, string>,
-      lastInteraction: entry.updatedAt,
-      interactionCount: entry.accessCount,
+  ipcMain.handle(IPC_CHANNELS.MEMORY_DELETE, async (_event, id: string, type: string) => {
+    return memoryManager.deleteMemory(id, type as 'episodic' | 'semantic')
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_GET_STATS, async () => {
+    const people = getPeopleStore()
+    const procedural = getProceduralStore()
+    const prospective = getProspectiveStore()
+    return {
+      episodic: memoryManager.episodic.count(),
+      semantic: memoryManager.semantic.count(),
+      procedural: procedural.count(),
+      prospective: prospective.count(),
+      people: people.count(),
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_GET_RECENT, async (_event, limit?: number) => {
+    const recent = memoryManager.episodic.getRecent(limit ?? 20)
+    return recent.map((e) => ({
+      id: e.id,
+      type: 'episodic' as const,
+      content: e.content,
+      importance: e.importance,
+      createdAt: e.timestamp,
+      lastAccessed: e.lastAccessed,
+      accessCount: e.accessCount,
+      tags: e.tags,
     }))
+  })
+
+  // ─── People ───
+  const peopleStore = getPeopleStore()
+
+  ipcMain.handle(IPC_CHANNELS.PEOPLE_GET_ALL, async () => {
+    return peopleStore.getAll()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PEOPLE_GET_BY_ID, async (_event, id: string) => {
+    return peopleStore.getById(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PEOPLE_SEARCH, async (_event, query: string) => {
+    return peopleStore.search(query)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PEOPLE_CREATE, async (_event, input: { name: string; relationship?: string; traits?: string[] }) => {
+    return peopleStore.store(input)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PEOPLE_UPDATE, async (_event, id: string, input: { name?: string; relationship?: string; traits?: string[] }) => {
+    return peopleStore.update(id, input)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PEOPLE_DELETE, async (_event, id: string) => {
+    return peopleStore.delete(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PEOPLE_ADD_INTERACTION, async (_event, id: string, interaction: { date: string; type: string; summary: string }) => {
+    return peopleStore.addInteraction(id, interaction)
+  })
+
+  // ─── Procedural Memory ───
+  const proceduralStore = getProceduralStore()
+
+  ipcMain.handle(IPC_CHANNELS.PROCEDURAL_GET_ALL, async () => {
+    return proceduralStore.getAll()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PROCEDURAL_GET_BY_ID, async (_event, id: string) => {
+    return proceduralStore.getById(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PROCEDURAL_SEARCH, async (_event, query: string) => {
+    return proceduralStore.search(query)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PROCEDURAL_CREATE, async (_event, input: { name: string; description?: string; steps: Array<{ order: number; action: string }>; tags?: string[] }) => {
+    return proceduralStore.store(input)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PROCEDURAL_DELETE, async (_event, id: string) => {
+    return proceduralStore.delete(id)
+  })
+
+  // ─── Prospective Memory ───
+  const prospectiveStore = getProspectiveStore()
+
+  ipcMain.handle(IPC_CHANNELS.PROSPECTIVE_GET_ALL, async () => {
+    return prospectiveStore.getAll()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PROSPECTIVE_GET_PENDING, async () => {
+    return prospectiveStore.getPending()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PROSPECTIVE_CREATE, async (_event, input: { intention: string; triggerType: 'time' | 'event' | 'condition'; triggerValue: string; priority?: number; dueAt?: string; tags?: string[] }) => {
+    return prospectiveStore.store(input)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PROSPECTIVE_COMPLETE, async (_event, id: string) => {
+    prospectiveStore.markCompleted(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.PROSPECTIVE_DELETE, async (_event, id: string) => {
+    return prospectiveStore.delete(id)
   })
 
   // ─── Rules Engine ───

@@ -25,7 +25,32 @@ export const IPC_CHANNELS = {
   // Memory
   MEMORY_QUERY: 'memory:query',
   MEMORY_STORE: 'memory:store',
-  MEMORY_GET_PEOPLE: 'memory:get-people',
+  MEMORY_DELETE: 'memory:delete',
+  MEMORY_GET_STATS: 'memory:get-stats',
+  MEMORY_GET_RECENT: 'memory:get-recent',
+
+  // People
+  PEOPLE_GET_ALL: 'people:get-all',
+  PEOPLE_GET_BY_ID: 'people:get-by-id',
+  PEOPLE_SEARCH: 'people:search',
+  PEOPLE_CREATE: 'people:create',
+  PEOPLE_UPDATE: 'people:update',
+  PEOPLE_DELETE: 'people:delete',
+  PEOPLE_ADD_INTERACTION: 'people:add-interaction',
+
+  // Procedural Memory
+  PROCEDURAL_GET_ALL: 'procedural:get-all',
+  PROCEDURAL_GET_BY_ID: 'procedural:get-by-id',
+  PROCEDURAL_SEARCH: 'procedural:search',
+  PROCEDURAL_CREATE: 'procedural:create',
+  PROCEDURAL_DELETE: 'procedural:delete',
+
+  // Prospective Memory
+  PROSPECTIVE_GET_ALL: 'prospective:get-all',
+  PROSPECTIVE_GET_PENDING: 'prospective:get-pending',
+  PROSPECTIVE_CREATE: 'prospective:create',
+  PROSPECTIVE_COMPLETE: 'prospective:complete',
+  PROSPECTIVE_DELETE: 'prospective:delete',
 
   // Settings
   SETTINGS_GET: 'settings:get',
@@ -114,11 +139,47 @@ export interface MemoryEntry {
 export interface PersonEntry {
   id: string
   name: string
-  relationship: string
+  relationship: string | null
   traits: string[]
   preferences: Record<string, string>
-  lastInteraction: string
-  interactionCount: number
+  interactionHistory: Array<{ date: string; type: string; summary: string; sentiment?: number }>
+  lastInteraction: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ProceduralEntry {
+  id: string
+  name: string
+  description: string | null
+  steps: Array<{ order: number; action: string; agent?: string }>
+  triggerConditions: string[]
+  successRate: number
+  executionCount: number
+  lastExecuted: string | null
+  createdAt: string
+  tags: string[]
+}
+
+export interface ProspectiveEntry {
+  id: string
+  intention: string
+  triggerType: 'time' | 'event' | 'condition'
+  triggerValue: string
+  priority: number
+  status: 'pending' | 'triggered' | 'completed' | 'expired'
+  createdAt: string
+  dueAt: string | null
+  completedAt: string | null
+  tags: string[]
+}
+
+export interface MemoryStatsInfo {
+  episodic: number
+  semantic: number
+  procedural: number
+  prospective: number
+  people: number
 }
 
 // ─── Brainwave API (exposed to renderer via preload) ───
@@ -143,7 +204,32 @@ export interface BrainwaveAPI {
 
   // Memory
   queryMemory: (query: MemoryQuery) => Promise<MemoryEntry[]>
-  getPeople: () => Promise<PersonEntry[]>
+  deleteMemory: (id: string, type: string) => Promise<boolean>
+  getMemoryStats: () => Promise<MemoryStatsInfo>
+  getRecentMemories: (limit?: number) => Promise<MemoryEntry[]>
+
+  // People
+  getAllPeople: () => Promise<PersonEntry[]>
+  getPersonById: (id: string) => Promise<PersonEntry | null>
+  searchPeople: (query: string) => Promise<PersonEntry[]>
+  createPerson: (input: { name: string; relationship?: string; traits?: string[] }) => Promise<PersonEntry>
+  updatePerson: (id: string, input: { name?: string; relationship?: string; traits?: string[] }) => Promise<PersonEntry | null>
+  deletePerson: (id: string) => Promise<boolean>
+  addPersonInteraction: (id: string, interaction: { date: string; type: string; summary: string }) => Promise<PersonEntry | null>
+
+  // Procedural Memory
+  getAllProcedures: () => Promise<ProceduralEntry[]>
+  getProceduralById: (id: string) => Promise<ProceduralEntry | null>
+  searchProcedures: (query: string) => Promise<ProceduralEntry[]>
+  createProcedure: (input: { name: string; description?: string; steps: Array<{ order: number; action: string }>; tags?: string[] }) => Promise<ProceduralEntry>
+  deleteProcedure: (id: string) => Promise<boolean>
+
+  // Prospective Memory
+  getAllProspective: () => Promise<ProspectiveEntry[]>
+  getPendingProspective: () => Promise<ProspectiveEntry[]>
+  createProspective: (input: { intention: string; triggerType: 'time' | 'event' | 'condition'; triggerValue: string; priority?: number; dueAt?: string; tags?: string[] }) => Promise<ProspectiveEntry>
+  completeProspective: (id: string) => Promise<void>
+  deleteProspective: (id: string) => Promise<boolean>
 
   // Rules
   getSafetyRules: () => Promise<unknown>

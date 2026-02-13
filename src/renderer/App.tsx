@@ -3,6 +3,7 @@ import { AppShell } from './components/layout/AppShell'
 import { CommandCenter } from './features/command-center/CommandCenter'
 import { AgentMonitor } from './features/agent-monitor/AgentMonitor'
 import { MemoryPalace } from './features/memory-palace/MemoryPalace'
+import { KnowledgeGraph } from './features/knowledge-graph/KnowledgeGraph'
 import { PlanBoard } from './features/plan-board/PlanBoard'
 import { Scheduler } from './features/scheduler/Scheduler'
 import { ReflectionJournal } from './features/reflection/ReflectionJournal'
@@ -15,6 +16,7 @@ export default function App() {
         <Route path="/" element={<CommandCenter />} />
         <Route path="/agents" element={<AgentMonitor />} />
         <Route path="/memory" element={<MemoryPalace />} />
+        <Route path="/graph" element={<KnowledgeGraph />} />
         <Route path="/plan" element={<PlanBoard />} />
         <Route path="/scheduler" element={<Scheduler />} />
         <Route path="/reflection" element={<ReflectionJournal />} />
