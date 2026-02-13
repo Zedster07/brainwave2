@@ -99,13 +99,26 @@ export class HardRulesEngine {
     const normPath = this.normalizePath(action.path)
     const rules = this.rules.filesystem
 
-    // Check blocked paths
+    // Check system blocked paths
     for (const blocked of rules.blocked_paths) {
       if (this.pathMatches(normPath, blocked)) {
         return {
           allowed: false,
-          reason: `Path is blocked by safety rule: ${blocked}`,
+          reason: `Path is blocked by system safety rule: ${blocked}`,
           rule: `blocked_path: ${blocked}`,
+          category: 'filesystem',
+        }
+      }
+    }
+
+    // Check user-defined blocked paths
+    const userBlocked = rules.user_blocked_paths ?? []
+    for (const blocked of userBlocked) {
+      if (this.pathMatches(normPath, blocked)) {
+        return {
+          allowed: false,
+          reason: `Path is blocked by user-defined rule: ${blocked}`,
+          rule: `user_blocked_path: ${blocked}`,
           category: 'filesystem',
         }
       }

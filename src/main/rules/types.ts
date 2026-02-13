@@ -17,6 +17,7 @@ export interface RuleVerdict {
 export interface SafetyRules {
   filesystem: {
     blocked_paths: string[]
+    user_blocked_paths: string[]   // user-configured prohibited directories (editable from UI)
     blocked_extensions: string[]
     blocked_operations: Array<{ pattern: string; reason?: string }>
     max_file_size_mb: number

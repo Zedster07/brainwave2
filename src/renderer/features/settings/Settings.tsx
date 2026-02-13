@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2 } from 'lucide-react'
+import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2, Globe, ArrowRightLeft, FilePlus2, FolderTree } from 'lucide-react'
 import type { PluginInfoData, McpServerConfigInfo, McpServerStatusInfo } from '@shared/types'
 
 type SettingsTab = 'general' | 'models' | 'rules' | 'storage' | 'plugins' | 'tools'
@@ -390,9 +390,11 @@ function ModelSettings() {
 }
 
 function RulesSettings() {
-  const [safetyRules, setSafetyRules] = useState<unknown>(null)
+  const [safetyRules, setSafetyRules] = useState<Record<string, unknown> | null>(null)
   const [proposals, setProposals] = useState<Array<{ id: string; rule: string; confidence: number }>>([])
   const [loading, setLoading] = useState(true)
+  const [newBlockedPath, setNewBlockedPath] = useState('')
+  const [saving, setSaving] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -401,7 +403,7 @@ function RulesSettings() {
         window.brainwave.getSafetyRules(),
         window.brainwave.getRuleProposals(),
       ])
-      setSafetyRules(rules)
+      setSafetyRules(rules as Record<string, unknown>)
       setProposals(props as Array<{ id: string; rule: string; confidence: number }>)
     } catch (err) {
       console.error('Failed to load rules:', err)
@@ -412,8 +414,49 @@ function RulesSettings() {
 
   useEffect(() => { load() }, [load])
 
+  const fsRules = safetyRules?.filesystem as { blocked_paths?: string[]; user_blocked_paths?: string[]; blocked_extensions?: string[] } | undefined
+  const systemPaths = fsRules?.blocked_paths ?? []
+  const userPaths = fsRules?.user_blocked_paths ?? []
+  const blockedExts = fsRules?.blocked_extensions ?? []
+  const shellRules = safetyRules?.shell as { allow_shell?: boolean; blocked_commands?: string[] } | undefined
+  const networkRules = safetyRules?.network as { allow_outbound?: boolean } | undefined
+
+  const addBlockedPath = async () => {
+    if (!newBlockedPath.trim() || !safetyRules) return
+    setSaving(true)
+    try {
+      const fs = safetyRules.filesystem as Record<string, unknown>
+      const current = (fs.user_blocked_paths as string[]) ?? []
+      const updated = { ...safetyRules, filesystem: { ...fs, user_blocked_paths: [...current, newBlockedPath.trim()] } }
+      await window.brainwave.setSafetyRules(updated)
+      setSafetyRules(updated)
+      setNewBlockedPath('')
+    } catch (err) {
+      console.error('Failed to add blocked path:', err)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const removeBlockedPath = async (path: string) => {
+    if (!safetyRules) return
+    setSaving(true)
+    try {
+      const fs = safetyRules.filesystem as Record<string, unknown>
+      const current = (fs.user_blocked_paths as string[]) ?? []
+      const updated = { ...safetyRules, filesystem: { ...fs, user_blocked_paths: current.filter((p: string) => p !== path) } }
+      await window.brainwave.setSafetyRules(updated)
+      setSafetyRules(updated)
+    } catch (err) {
+      console.error('Failed to remove blocked path:', err)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm text-white font-medium">Safety Rules</p>
@@ -424,6 +467,127 @@ function RulesSettings() {
         </span>
       </div>
 
+      {/* Capabilities summary */}
+      {safetyRules && (
+        <div className="bg-white/[0.02] rounded-lg p-4 space-y-3 border border-white/[0.04]">
+          <p className="text-xs text-white font-medium mb-2">AI Capabilities</p>
+          <div className="grid grid-cols-2 gap-2 text-[11px]">
+            <div className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+              <span className="text-gray-400">File Read / Write / Create</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+              <span className="text-gray-400">File Delete / Move / Rename</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-400" />
+              <span className="text-gray-400">Directory Listing</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`w-1.5 h-1.5 rounded-full ${shellRules?.allow_shell ? 'bg-green-400' : 'bg-red-400'}`} />
+              <span className="text-gray-400">Shell / Command Execution</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className={`w-1.5 h-1.5 rounded-full ${networkRules?.allow_outbound ? 'bg-green-400' : 'bg-red-400'}`} />
+              <span className="text-gray-400">HTTP / Network Requests</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
+              <span className="text-gray-400">All gated by safety rules</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Prohibited Directories */}
+      <div className="border-t border-white/[0.04] pt-4">
+        <p className="text-sm text-white font-medium mb-1">Prohibited Directories</p>
+        <p className="text-[11px] text-gray-500 mb-3">The AI cannot read, write, or delete files in these directories.</p>
+
+        {/* System-blocked (read-only display) */}
+        <div className="mb-3">
+          <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1.5">System Protected (cannot be removed)</p>
+          <div className="flex flex-wrap gap-1.5">
+            {systemPaths.map((p) => (
+              <span key={p} className="text-[10px] px-2 py-0.5 rounded bg-red-500/5 text-red-400/60 border border-red-500/10">
+                {p}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {/* User-blocked (editable) */}
+        <div className="mb-3">
+          <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1.5">Your Blocked Paths</p>
+          {userPaths.length === 0 ? (
+            <p className="text-[11px] text-gray-600 italic">No custom blocked paths. Add directories you want to protect below.</p>
+          ) : (
+            <div className="space-y-1.5">
+              {userPaths.map((p) => (
+                <div key={p} className="flex items-center justify-between bg-white/[0.03] rounded px-3 py-1.5">
+                  <span className="text-xs text-white font-mono">{p}</span>
+                  <button
+                    onClick={() => removeBlockedPath(p)}
+                    disabled={saving}
+                    className="text-[10px] px-2 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Add new path */}
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={newBlockedPath}
+            onChange={(e) => setNewBlockedPath(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && addBlockedPath()}
+            placeholder="e.g. D:\Work\** or C:\Users\Me\Documents\Private\**"
+            className="flex-1 bg-white/[0.03] border border-white/[0.08] rounded px-3 py-1.5 text-xs text-white font-mono placeholder:text-gray-600 focus:outline-none focus:border-accent/40"
+          />
+          <button
+            onClick={addBlockedPath}
+            disabled={saving || !newBlockedPath.trim()}
+            className="text-[11px] px-3 py-1.5 rounded bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50 whitespace-nowrap"
+          >
+            Add Path
+          </button>
+        </div>
+        <p className="text-[10px] text-gray-600 mt-1">Use ** for recursive matching (e.g. D:\Secret\** blocks all contents)</p>
+      </div>
+
+      {/* Blocked Extensions & Commands summary */}
+      {safetyRules && (
+        <div className="border-t border-white/[0.04] pt-4 space-y-3">
+          <div>
+            <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1.5">Blocked File Extensions</p>
+            <div className="flex flex-wrap gap-1.5">
+              {blockedExts.map((ext) => (
+                <span key={ext} className="text-[10px] px-2 py-0.5 rounded bg-yellow-500/5 text-yellow-400/70 border border-yellow-500/10">
+                  {ext}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1.5">Blocked Shell Commands</p>
+            <div className="flex flex-wrap gap-1.5">
+              {(shellRules?.blocked_commands ?? []).map((cmd) => (
+                <span key={cmd} className="text-[10px] px-2 py-0.5 rounded bg-yellow-500/5 text-yellow-400/70 border border-yellow-500/10">
+                  {cmd}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rule Proposals */}
       <div className="border-t border-white/[0.04] pt-4">
         <div className="flex items-center justify-between mb-3">
           <p className="text-sm text-white font-medium">Pending Rule Proposals</p>
@@ -857,9 +1021,13 @@ function PluginSettings() {
 
 const LOCAL_TOOLS = [
   { name: 'file_read', icon: FileText, desc: 'Read file contents' },
-  { name: 'file_write', icon: FolderOpen, desc: 'Write/create files' },
+  { name: 'file_write', icon: FolderOpen, desc: 'Write/overwrite files' },
+  { name: 'file_create', icon: FilePlus2, desc: 'Create new files' },
   { name: 'file_delete', icon: Trash2, desc: 'Delete files' },
+  { name: 'file_move', icon: ArrowRightLeft, desc: 'Move/rename files' },
+  { name: 'directory_list', icon: FolderTree, desc: 'List directory contents' },
   { name: 'shell_execute', icon: Terminal, desc: 'Execute shell commands' },
+  { name: 'http_request', icon: Globe, desc: 'Make HTTP requests' },
 ]
 
 interface McpFormState {

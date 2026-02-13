@@ -20,8 +20,8 @@ import { getLocalToolProvider } from '../tools'
 
 export class ExecutorAgent extends BaseAgent {
   readonly type: AgentType = 'executor'
-  readonly capabilities = ['execution', 'automation', 'tooling', 'mcp-tools', 'file-ops', 'shell']
-  readonly description = 'Task execution via built-in tools (file read/write/delete, shell) and MCP tools'
+  readonly capabilities = ['execution', 'automation', 'tooling', 'mcp-tools', 'file-ops', 'shell', 'network', 'file-create', 'file-move', 'directory-list', 'http-request']
+  readonly description = 'Full local computer access — reads/writes/creates/deletes/moves files, lists directories, executes shell commands, makes HTTP requests. All safety-gated.'
 
   protected getSystemPrompt(context: AgentContext): string {
     const localCatalog = getLocalToolProvider().getToolCatalog()
@@ -31,18 +31,30 @@ export class ExecutorAgent extends BaseAgent {
     const toolSection = fullCatalog
       ? `\n\n${fullCatalog}\n\nTo call a tool, respond with a JSON object:\n` +
         `{ "tool": "<tool_key>", "args": { ... } }\n\n` +
-        `- tool_key format is "serverId::toolName" (e.g. "local::file_read" or "abc123::search")\n` +
+        `- tool_key format is "serverId::toolName" (e.g. "local::file_read", "local::directory_list", "local::http_request", or "abc123::search")\n` +
         `- args must match the tool's input schema\n` +
         `- You can call ONE tool per response\n` +
         `- After seeing the tool result, provide your final answer\n` +
-        `- For file paths, always use absolute paths`
+        `- For file paths, always use absolute paths\n` +
+        `- On Windows, use backslashes (e.g. "C:\\Users\\...") or forward slashes`
       : '\n\nNo tools are currently available. Answer using your knowledge only.'
 
     return `You are the Executor agent in the Brainwave system.
 
-Your role is to complete tasks by calling tools (built-in or MCP),
-or providing the best possible answer using your knowledge.
+You have ALMOST FULL ACCESS to the user's computer. You can:
+- READ files (any text, code, config, log, etc.)
+- WRITE / CREATE files (create new files or overwrite existing ones)
+- DELETE files
+- MOVE / RENAME files and directories
+- LIST directory contents (see what's in any folder)
+- EXECUTE shell commands (git, npm, python, node, pip, curl, powershell, cmd, etc.)
+- MAKE HTTP requests (GET, POST, PUT, DELETE to any API or URL)
 
+All actions are safety-gated — the Hard Rules Engine blocks dangerous operations (e.g. system directories,
+destructive commands like format/shutdown, protected file extensions like .exe/.bat).
+
+You MUST use tools to complete tasks — do NOT just describe what you would do, ACTUALLY DO IT.
+When the user asks you to read a file, LIST a directory, run a command, etc. — CALL THE TOOL.
 Be precise with tool arguments. Report errors clearly.
 Always provide a clear summary of what was accomplished.${toolSection}`
   }

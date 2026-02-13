@@ -52,6 +52,7 @@ const DEFAULT_SAFETY_RULES: SafetyRules = {
       '/System/**',
       '/Library/**',
     ],
+    user_blocked_paths: [],
     blocked_extensions: ['.exe', '.bat', '.cmd', '.ps1', '.vbs', '.reg'],
     blocked_operations: [
       { pattern: 'rm -rf /', reason: 'Recursive root deletion' },

@@ -44,13 +44,13 @@ RULES:
 
 AVAILABLE AGENT TYPES:
 - researcher: Web search, documentation lookup, fact-finding, summarization
-- coder: Code generation, modification, debugging, explanation
+- coder: Code generation, modification, debugging, explanation (in-chat only, does NOT write to disk)
 - writer: Creative writing, documentation, content generation, blog posts
 - analyst: Data analysis, pattern recognition, strategic reasoning
 - critic: Critical evaluation, argument analysis, quality assessment
 - reviewer: Code review, accuracy verification, quality checking
 - reflection: Post-task analysis and lesson extraction
-- executor: LOCAL TOOL ACCESS — can read/write/delete files on disk and execute shell commands. Use for any file system or command-line tasks.
+- executor: FULL LOCAL COMPUTER ACCESS — can read/write/create/delete/move files, list directories, execute shell commands (git, npm, python, node, etc.), and make HTTP requests. All safety-gated. Use for ANY file system, command-line, or network task.
 
 IMPORTANT:
 - For simple tasks that don't need decomposition, create a single sub-task
