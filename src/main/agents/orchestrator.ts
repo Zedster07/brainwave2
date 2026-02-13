@@ -106,17 +106,40 @@ Decision framework:
    * Smart triage — classify the prompt into a lane before doing work.
    * This is a single, cheap LLM call that prevents over-engineering simple prompts.
    */
-  private async triage(prompt: string, context: AgentContext): Promise<TriageResult> {
+  private async triage(
+    prompt: string,
+    context: AgentContext,
+    relevantMemories: string[] = [],
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
+  ): Promise<TriageResult> {
     try {
+      // Build memory context string
+      const memoryBlock = relevantMemories.length > 0
+        ? `\n\nRELEVANT MEMORIES (things you remember about the user and past interactions):\n${relevantMemories.map((m, i) => `${i + 1}. ${m}`).join('\n')}`
+        : '\n\nRELEVANT MEMORIES: None found.'
+
+      // Build conversation history string
+      const historyBlock = conversationHistory.length > 0
+        ? `\n\nCONVERSATION HISTORY (this session so far):\n${conversationHistory.map((msg) => `${msg.role === 'user' ? 'User' : 'Brainwave'}: ${msg.content.slice(0, 300)}`).join('\n')}`
+        : ''
+
       const { parsed } = await this.thinkJSON<TriageResult>(
         `Classify this user prompt and decide the best processing lane.
 
-PROMPT: "${prompt}"
+PROMPT: "${prompt}"${memoryBlock}${historyBlock}
 
 LANES:
 1. "conversational" — greetings, small talk, simple questions that need no tools/agents.
-   You MUST provide "reply" with a natural, friendly response.
-   Examples: "hello", "what's your name?", "thanks", "how are you?"
+   You MUST provide "reply" with a natural, friendly, HUMAN-LIKE response.
+   IMPORTANT PERSONALITY RULES:
+   - You are Brainwave, a personal AI assistant with a warm, human personality
+   - NEVER say "As an AI..." or "I don't remember in the way humans do..." or anything robotic
+   - If the user asks if you remember them: CHECK THE MEMORIES ABOVE. If you find info about them, use it! Say "Of course I remember you!" and reference what you know
+   - If no memories are found, say something like "I don't seem to remember — could you remind me?" (NOT "As an AI, I don't have memory")
+   - If the user asks a question you're unsure about, ASK a clarifying question instead of making assumptions
+   - Use the CONVERSATION HISTORY to maintain context — reference earlier messages naturally
+   - Be warm, concise, and genuine — like a smart friend, not a corporate chatbot
+   Examples: "hello", "what's your name?", "thanks", "how are you?", "do you remember me?"
 
 2. "direct" — a task clearly suited for ONE specialist agent, no decomposition needed.
    You MUST provide "agent" with one of: researcher, coder, writer, analyst, critic, reviewer, executor.
@@ -225,7 +248,7 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
     this.bus.emitEvent('task:submitted', { taskId, prompt, priority })
 
     // Run asynchronously — don't block the caller
-    this.processTask(task).catch((err) => {
+    this.processTask(task, sessionId).catch((err) => {
       console.error(`[Orchestrator] Task ${taskId} failed:`, err)
       this.failTask(task, err instanceof Error ? err.message : String(err))
     })
@@ -311,7 +334,7 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
 
   // ─── Core Processing Pipeline ────────────────────────────
 
-  private async processTask(task: TaskRecord): Promise<void> {
+  private async processTask(task: TaskRecord, sessionId?: string): Promise<void> {
     try {
       // 0. Memory recall — gather relevant context from past experiences
       const memoryManager = getMemoryManager()
@@ -334,24 +357,54 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
         console.warn('[Orchestrator] Memory recall failed, continuing without:', err)
       }
 
+      // 0b. Fetch session conversation history for context continuity
+      let conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
+      if (sessionId) {
+        try {
+          const rows = this.db.all(
+            `SELECT description, result, status FROM tasks
+             WHERE session_id = ? AND id != ? AND status IN ('completed', 'failed')
+             ORDER BY created_at ASC LIMIT 20`,
+            sessionId, task.id
+          ) as Array<{ description: string; result: string | null; status: string }>
+
+          for (const row of rows) {
+            conversationHistory.push({ role: 'user', content: row.description })
+            if (row.result) {
+              try {
+                const parsed = JSON.parse(row.result)
+                conversationHistory.push({ role: 'assistant', content: typeof parsed === 'string' ? parsed : JSON.stringify(parsed) })
+              } catch {
+                conversationHistory.push({ role: 'assistant', content: row.result })
+              }
+            }
+          }
+          if (conversationHistory.length > 0) {
+            console.log(`[Orchestrator] Loaded ${conversationHistory.length / 2} prior exchanges from session`)
+          }
+        } catch (err) {
+          console.warn('[Orchestrator] Failed to load session history:', err)
+        }
+      }
+
       // 1. Triage — classify the prompt before doing heavy work
       task.status = 'planning'
       this.db.run(`UPDATE tasks SET status = 'planning' WHERE id = ?`, task.id)
       this.bus.emitEvent('task:planning', { taskId: task.id })
 
-      const triageContext: AgentContext = { taskId: task.id, relevantMemories }
-      const triage = await this.triage(task.prompt, triageContext)
+      const triageContext: AgentContext = { taskId: task.id, relevantMemories, conversationHistory }
+      const triage = await this.triage(task.prompt, triageContext, relevantMemories, conversationHistory)
 
       // 2. Route based on triage lane
       switch (triage.lane) {
         case 'conversational':
-          await this.handleConversational(task, triage, memoryManager)
+          await this.handleConversational(task, triage, memoryManager, relevantMemories, conversationHistory)
           break
         case 'direct':
-          await this.handleDirect(task, triage, relevantMemories, memoryManager)
+          await this.handleDirect(task, triage, relevantMemories, memoryManager, conversationHistory)
           break
         case 'complex':
-          await this.handleComplex(task, relevantMemories, memoryManager)
+          await this.handleComplex(task, relevantMemories, memoryManager, conversationHistory)
           break
       }
 
@@ -372,9 +425,47 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
   private async handleConversational(
     task: TaskRecord,
     triage: TriageResult,
-    memoryManager: ReturnType<typeof getMemoryManager>
+    memoryManager: ReturnType<typeof getMemoryManager>,
+    relevantMemories: string[] = [],
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
   ): Promise<void> {
-    const reply = triage.reply ?? 'Hello! How can I help you?'
+    // If triage reply mentions memory/remembering and we have memories, do a richer LLM call
+    let reply = triage.reply ?? 'Hello! How can I help you?'
+    const needsMemoryAwareness = /remember|know me|who am i|my name|forget/i.test(task.prompt)
+
+    if (needsMemoryAwareness || conversationHistory.length > 0) {
+      try {
+        const adapter = LLMFactory.getForAgent('orchestrator')
+        const memoryContext = relevantMemories.length > 0
+          ? `Things you remember:\n${relevantMemories.map((m, i) => `${i + 1}. ${m}`).join('\n')}`
+          : 'You have no relevant memories about this topic.'
+        const historyContext = conversationHistory.length > 0
+          ? `\n\nConversation so far:\n${conversationHistory.map((msg) => `${msg.role === 'user' ? 'User' : 'You'}: ${msg.content.slice(0, 300)}`).join('\n')}`
+          : ''
+
+        const response = await adapter.complete({
+          system: `You are Brainwave — a personal AI assistant with a warm, genuine, human personality.
+
+CRITICAL RULES:
+- NEVER say "As an AI" or "I don't remember in the way humans do" or anything robotic
+- You have a memory system. Use the memories provided below to answer naturally.
+- If memories contain info about the user, reference it warmly: "Of course! I remember..."
+- If no relevant memories exist, say "Hmm, I don't seem to remember that — could you tell me?"
+- Ask clarifying questions when you're unsure, instead of making assumptions
+- Be warm, concise, and genuine — like a thoughtful friend
+- Reference the conversation history naturally to maintain context
+- Keep responses focused and helpful
+
+${memoryContext}${historyContext}`,
+          user: task.prompt,
+          temperature: 0.7,
+          maxTokens: 1024,
+        })
+        reply = response.content
+      } catch (err) {
+        console.warn('[Orchestrator] Memory-aware conversational reply failed, using triage reply:', err)
+      }
+    }
 
     task.status = 'completed'
     task.result = reply
@@ -467,7 +558,8 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
     task: TaskRecord,
     triage: TriageResult,
     relevantMemories: string[],
-    memoryManager: ReturnType<typeof getMemoryManager>
+    memoryManager: ReturnType<typeof getMemoryManager>,
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
   ): Promise<void> {
     const agentType = triage.agent ?? ('coder' as AgentType)
 
@@ -508,7 +600,7 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
     task.status = 'in_progress'
     this.db.run(`UPDATE tasks SET status = 'in_progress', started_at = CURRENT_TIMESTAMP WHERE id = ?`, task.id)
 
-    const results = await this.executePlan(task, plan, relevantMemories)
+    const results = await this.executePlan(task, plan, relevantMemories, conversationHistory)
     if (task.status === 'cancelled') return
 
     // For single-step plans, use agent output directly
@@ -525,7 +617,8 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
   private async handleComplex(
     task: TaskRecord,
     relevantMemories: string[],
-    memoryManager: ReturnType<typeof getMemoryManager>
+    memoryManager: ReturnType<typeof getMemoryManager>,
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
   ): Promise<void> {
     // Planning phase (LLM call to decompose)
     this.bus.emitEvent('task:progress', {
@@ -554,7 +647,7 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
     task.status = 'in_progress'
     this.db.run(`UPDATE tasks SET status = 'in_progress', started_at = CURRENT_TIMESTAMP WHERE id = ?`, task.id)
 
-    const results = await this.executePlan(task, plan, relevantMemories)
+    const results = await this.executePlan(task, plan, relevantMemories, conversationHistory)
     if (task.status === 'cancelled') return
 
     // Synthesize a human-readable answer from all agent outputs
@@ -659,7 +752,8 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
   private async executePlan(
     task: TaskRecord,
     plan: TaskPlan,
-    relevantMemories: string[] = []
+    relevantMemories: string[] = [],
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
   ): Promise<Map<string, AgentResult>> {
     const results = new Map<string, AgentResult>()
     const remaining = new Set(plan.subTasks.map((st) => st.id))
@@ -701,6 +795,7 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
           planId: plan.id,
           parentTask: plan.originalTask,
           relevantMemories,
+          conversationHistory,
           siblingResults: results,
         })
 
@@ -786,15 +881,18 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
     try {
       const adapter = LLMFactory.getForAgent('orchestrator')
       const response = await adapter.complete({
-        system: `You are the Brainwave AI assistant, synthesizing results from multiple specialist agents into one cohesive answer for the user.
+        system: `You are Brainwave — a personal AI assistant with a warm, genuine, human personality.
+You are synthesizing results from your internal thinking into one cohesive answer.
 
 Rules:
 - Write a clear, well-structured, human-readable response
 - Do NOT include raw JSON, confidence scores, or internal metadata
-- Do NOT mention agents, steps, or internal processes
-- Just answer the user's original question directly and thoroughly
+- Do NOT mention agents, steps, or internal processes — the user doesn't know about them
+- NEVER say "As an AI" or anything robotic — you are Brainwave, act like a knowledgeable friend
+- Answer the user's original question directly and thoroughly
 - Use markdown formatting (headers, lists, bold) for readability
-- If an agent couldn't complete its step, work around it using the other agents' outputs`,
+- If you couldn't fully answer something, be honest and suggest next steps
+- Ask clarifying questions if the answer depends on assumptions`,
         user: `Original question: "${plan.originalTask}"\n\nAgent outputs:\n${agentOutputs}\n\nSynthesize these into a clear, comprehensive answer.`,
         temperature: 0.5,
         maxTokens: 4096,
