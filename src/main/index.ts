@@ -102,10 +102,14 @@ app.whenReady().then(() => {
   const scheduler = getScheduler()
   scheduler.start()
 
-  // When a scheduled job fires, submit it as a task
+  // When a scheduled job fires, submit it as a task to the Orchestrator
+  const { getOrchestrator } = require('./agents/orchestrator')
   scheduler.on('job:execute', (payload) => {
     console.log(`[Main] Scheduled job executing: ${payload.jobId} → "${payload.taskPrompt}"`)
-    // TODO: Wire to Orchestrator.submitTask() once built
+    const orchestrator = getOrchestrator()
+    orchestrator.submitTask(payload.taskPrompt, payload.taskPriority ?? 'normal').catch((err: Error) => {
+      console.error(`[Main] Scheduled task failed:`, err)
+    })
   })
 
   app.on('activate', () => {

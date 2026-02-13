@@ -4,6 +4,9 @@ import type { TaskSubmission, MemoryQuery, CreateScheduledJobInput } from '@shar
 import { getScheduler } from '../services/scheduler.service'
 import { getDatabase } from '../db/database'
 import { LLMFactory } from '../llm'
+import { getOrchestrator } from '../agents/orchestrator'
+import { getAgentPool } from '../agents/agent-pool'
+import { getEventBus } from '../agents/event-bus'
 
 export function registerIpcHandlers(): void {
   // ─── Window Controls ───
@@ -27,22 +30,74 @@ export function registerIpcHandlers(): void {
     return app.getVersion()
   })
 
-  // ─── Agent System (stubs — will wire to real engine) ───
+  // ─── Agent System ───
+  const orchestrator = getOrchestrator()
+  const agentPool = getAgentPool()
+  const eventBus = getEventBus()
+
+  // Wire the agent pool as the executor for the orchestrator
+  orchestrator.setExecutor((subTask, context) => agentPool.executeTask(subTask, context))
+
   ipcMain.handle(IPC_CHANNELS.AGENT_SUBMIT_TASK, async (_event, task: TaskSubmission) => {
-    // TODO: Wire to Orchestrator
-    console.log('[IPC] Task submitted:', task.prompt)
-    return { taskId: task.id }
+    const record = await orchestrator.submitTask(task.prompt, task.priority ?? 'normal')
+    return { taskId: record.id }
   })
 
   ipcMain.handle(IPC_CHANNELS.AGENT_CANCEL_TASK, async (_event, taskId: string) => {
-    // TODO: Wire to Orchestrator
-    console.log('[IPC] Task cancelled:', taskId)
+    orchestrator.cancelTask(taskId)
   })
 
   ipcMain.handle(IPC_CHANNELS.AGENT_GET_STATUS, async () => {
-    // TODO: Wire to AgentPool
-    return []
+    const pool = agentPool.getStatus()
+    // Return status for each registered agent type
+    return pool.agents.map((type) => ({
+      id: type,
+      type,
+      state: 'idle' as const,
+      model: LLMFactory.getAgentConfig(type)?.model,
+    }))
   })
+
+  // Forward agent events to renderer
+  const forwardToRenderer = (channel: string, data: unknown) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send(channel, data)
+    })
+  }
+
+  // Task lifecycle events → renderer
+  eventBus.onEvent('task:submitted', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+    taskId: data.taskId, status: 'queued', timestamp: Date.now(),
+  }))
+  eventBus.onEvent('task:planning', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+    taskId: data.taskId, status: 'planning', timestamp: Date.now(),
+  }))
+  eventBus.onEvent('task:progress', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+    taskId: data.taskId, status: 'executing', progress: data.progress, currentStep: data.currentStep, timestamp: Date.now(),
+  }))
+  eventBus.onEvent('task:completed', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+    taskId: data.taskId, status: 'completed', result: data.result, timestamp: Date.now(),
+  }))
+  eventBus.onEvent('task:failed', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+    taskId: data.taskId, status: 'failed', error: data.error, timestamp: Date.now(),
+  }))
+  eventBus.onEvent('task:cancelled', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+    taskId: data.taskId, status: 'cancelled', timestamp: Date.now(),
+  }))
+
+  // Agent activity events → renderer log
+  eventBus.onEvent('agent:thinking', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
+    id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agentType, agentType: data.agentType,
+    level: 'info', message: `Thinking with ${data.model}...`, timestamp: Date.now(),
+  }))
+  eventBus.onEvent('agent:completed', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
+    id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agentType, agentType: data.agentType,
+    level: 'info', message: `Completed (confidence: ${(data.confidence * 100).toFixed(0)}%, tokens: ${data.tokensIn + data.tokensOut})`, timestamp: Date.now(),
+  }))
+  eventBus.onEvent('agent:error', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
+    id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agentType, agentType: data.agentType,
+    level: 'error', message: data.error, timestamp: Date.now(),
+  }))
 
   // ─── Memory (stubs) ───
   ipcMain.handle(IPC_CHANNELS.MEMORY_QUERY, async (_event, _query: MemoryQuery) => {
