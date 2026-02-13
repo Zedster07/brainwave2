@@ -129,6 +129,7 @@ export function useVoice(options: UseVoiceOptions = {}): VoiceState & VoiceActio
     }
 
     recognition.onerror = (event: { error: string }) => {
+      console.warn('[Voice] SpeechRecognition error:', event.error)
       // 'aborted' and 'no-speech' are not real errors
       if (event.error === 'aborted' || event.error === 'no-speech') {
         setIsListening(false)

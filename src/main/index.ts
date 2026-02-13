@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell } from 'electron'
+import { app, BrowserWindow, shell, session } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import { registerIpcHandlers } from './ipc'
@@ -73,6 +73,15 @@ function createWindow(): void {
 // ─── App Lifecycle ──────────────────────────────────────────
 
 app.whenReady().then(() => {
+  // ── Grant microphone permission for Web Speech API ──
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    const allowed = ['media', 'mediaKeySystem', 'audioCapture']
+    callback(allowed.includes(permission))
+  })
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+    return permission === 'media'
+  })
+
   // ── Initialize database & run migrations ──
   const db = getDatabase()
   const runner = new MigrationRunner(db)
