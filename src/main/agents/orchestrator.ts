@@ -13,6 +13,7 @@ import { getEventBus, type AgentType } from './event-bus'
 import { getDatabase } from '../db/database'
 import { getMemoryManager } from '../memory'
 import { getWorkingMemory } from '../memory/working-memory'
+import { ReflectionAgent } from './reflection'
 
 // ─── Task Record (stored in DB) ────────────────────────────
 
@@ -36,6 +37,7 @@ export class Orchestrator extends BaseAgent {
   readonly description = 'Central intelligence — receives tasks, creates plans, delegates, monitors'
 
   private planner = new PlannerAgent()
+  private reflector = new ReflectionAgent()
   private activeTasks = new Map<string, TaskRecord>()
   private agentExecutor: AgentExecutorFn | null = null
 
@@ -203,12 +205,64 @@ When the task is simple enough for a single agent, skip the planner and assign d
         console.warn('[Orchestrator] Failed to store task memory:', err)
       }
 
-      // 6. Clear working memory for this task
+      // 6. Auto-reflect (async, non-blocking — don't fail the task if reflection fails)
+      this.triggerReflection(task, plan, results).catch((err) => {
+        console.warn('[Orchestrator] Reflection failed:', err)
+      })
+
+      // 7. Clear working memory for this task
       workingMemory.clear()
     } catch (err) {
       this.failTask(task, err instanceof Error ? err.message : String(err))
       throw err
     }
+  }
+
+  /**
+   * Trigger post-task reflection (fire-and-forget).
+   * Builds a reflective context from the task, plan, and all results,
+   * then lets the ReflectionAgent extract lessons and propose rules.
+   */
+  private async triggerReflection(
+    task: TaskRecord,
+    plan: TaskPlan,
+    results: Map<string, AgentResult>
+  ): Promise<void> {
+    const subTask: SubTask = {
+      id: `reflection-${task.id}`,
+      description: `Reflect on completed task: ${task.prompt}`,
+      assignedAgent: 'reflection' as AgentType,
+      dependencies: [],
+      priority: 'low',
+      status: 'pending',
+    }
+
+    // Build sibling results so reflection can see all agent outputs
+    const siblingResults = new Map<string, AgentResult>()
+    for (const [id, result] of results) {
+      siblingResults.set(id, result)
+    }
+
+    const context: AgentContext = {
+      taskId: task.id,
+      parentTaskId: task.id,
+      conversationHistory: [],
+      relevantMemories: [],
+      siblingResults,
+      metadata: {
+        originalPrompt: task.prompt,
+        plan: JSON.stringify(plan),
+        priority: task.priority,
+      },
+    }
+
+    const reflectionResult = await this.reflector.execute(subTask, context)
+
+    this.bus.emitEvent('agent:completed', {
+      taskId: task.id,
+      agentType: 'reflection',
+      result: reflectionResult,
+    })
   }
 
   /**

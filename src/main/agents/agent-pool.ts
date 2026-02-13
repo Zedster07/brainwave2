@@ -6,6 +6,10 @@
  */
 import { BaseAgent, type AgentContext, type AgentResult, type SubTask } from './base-agent'
 import { PlannerAgent } from './planner'
+import { ResearcherAgent } from './researcher'
+import { CoderAgent } from './coder'
+import { ReviewerAgent } from './reviewer'
+import { ReflectionAgent } from './reflection'
 import { getEventBus, type AgentType } from './event-bus'
 
 // ─── Agent Registry ─────────────────────────────────────────
@@ -64,12 +68,11 @@ export class AgentPool {
 
   /** Register built-in agents. Called during app startup. */
   registerDefaults(): void {
-    // Phase 1: Planner is built-in
     this.registry.register(new PlannerAgent())
-
-    // Phase 2 agents (researcher, coder, reviewer, reflection) will be
-    // registered here as they're built. For now, the GenericAgent below
-    // handles all unregistered agent types via a catch-all LLM call.
+    this.registry.register(new ResearcherAgent())
+    this.registry.register(new CoderAgent())
+    this.registry.register(new ReviewerAgent())
+    this.registry.register(new ReflectionAgent())
   }
 
   /** Execute a sub-task through the correct agent */

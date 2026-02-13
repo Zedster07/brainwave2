@@ -9,6 +9,7 @@ import { MigrationRunner } from './db/migrations'
 import { ALL_MIGRATIONS } from './db/migrations/index'
 import { LLMFactory } from './llm'
 import { initMemoryManager } from './memory/memory-manager'
+import { getDecayService } from './memory/decay'
 import { getHardEngine, getSoftEngine } from './rules'
 
 let mainWindow: BrowserWindow | null = null
@@ -95,6 +96,10 @@ app.whenReady().then(() => {
   // ── Initialize Memory Manager ──
   initMemoryManager()
 
+  // ── Start Memory Decay Service (Ebbinghaus forgetting curve) ──
+  const decayService = getDecayService()
+  decayService.start()
+
   // ── Initialize Rules Engines ──
   getHardEngine()   // loads safety.rules.json (creates defaults if missing)
   getSoftEngine()   // loads behavior.rules.json (creates defaults if missing)
@@ -137,6 +142,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   app.isQuitting = true
   getScheduler().stop()
+  getDecayService().stop()
   destroyTray()
   getDatabase().close()
 })

@@ -4,3 +4,4 @@ export { SemanticMemoryStore, type SemanticEntry, type StoreSemanticInput } from
 export { EmbeddingService, getEmbeddingService, type VectorSearchResult } from './embeddings'
 export { FTSService, getFTSService, type FTSResult } from './fts'
 export { MemoryManager, initMemoryManager, getMemoryManager, type RecallOptions, type RecallResult, type MemoryStats } from './memory-manager'
+export { MemoryDecayService, getDecayService, type DecayConfig, type DecayTickResult } from './decay'

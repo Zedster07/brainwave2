@@ -85,6 +85,18 @@ export const DEFAULT_AGENT_MODELS: Record<string, AgentModelConfig> = {
     model: 'anthropic/claude-sonnet-4-20250514',
     temperature: 0.2,
   },
+  reviewer: {
+    provider: 'openrouter',
+    model: 'anthropic/claude-sonnet-4-20250514',
+    temperature: 0.2,
+    maxTokens: 4096,
+  },
+  reflection: {
+    provider: 'openrouter',
+    model: 'anthropic/claude-sonnet-4-20250514',
+    temperature: 0.4,
+    maxTokens: 4096,
+  },
   executor: {
     provider: 'openrouter',
     model: 'anthropic/claude-sonnet-4-20250514',
