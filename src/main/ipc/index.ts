@@ -2,6 +2,8 @@ import { ipcMain, app, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '@shared/types'
 import type { TaskSubmission, MemoryQuery, CreateScheduledJobInput } from '@shared/types'
 import { getScheduler } from '../services/scheduler.service'
+import { getDatabase } from '../db/database'
+import { LLMFactory } from '../llm'
 
 export function registerIpcHandlers(): void {
   // ─── Window Controls ───
@@ -53,16 +55,28 @@ export function registerIpcHandlers(): void {
     return []
   })
 
-  // ─── Settings (stubs) ───
+  // ─── Settings (DB-backed) ───
+  const db = getDatabase()
+
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async (_event, key: string) => {
-    // TODO: Wire to electron-store
-    console.log('[IPC] Settings get:', key)
-    return null
+    const row = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, key)
+    return row ? JSON.parse(row.value) : null
   })
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_SET, async (_event, key: string, value: unknown) => {
-    // TODO: Wire to electron-store
-    console.log('[IPC] Settings set:', key, value)
+    db.run(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+      key,
+      JSON.stringify(value)
+    )
+
+    // If an API key was updated, reconfigure the LLM factory
+    if (key === 'openrouter_api_key' && typeof value === 'string') {
+      LLMFactory.configure('openrouter', { apiKey: value })
+    } else if (key === 'replicate_api_key' && typeof value === 'string') {
+      LLMFactory.configure('replicate', { apiKey: value })
+    }
   })
 
   // ─── Scheduler ───

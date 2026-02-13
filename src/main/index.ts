@@ -4,6 +4,10 @@ import { is } from '@electron-toolkit/utils'
 import { registerIpcHandlers } from './ipc'
 import { createTray, destroyTray } from './services/tray.service'
 import { getScheduler } from './services/scheduler.service'
+import { getDatabase } from './db/database'
+import { MigrationRunner } from './db/migrations'
+import { ALL_MIGRATIONS } from './db/migrations/index'
+import { LLMFactory } from './llm'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -61,6 +65,31 @@ function createWindow(): void {
 // ─── App Lifecycle ──────────────────────────────────────────
 
 app.whenReady().then(() => {
+  // ── Initialize database & run migrations ──
+  const db = getDatabase()
+  const runner = new MigrationRunner(db)
+  const { applied, current } = runner.migrate(ALL_MIGRATIONS)
+  if (applied.length > 0) {
+    console.log(`[Main] Applied ${applied.length} migration(s), schema at v${current}`)
+  }
+
+  // ── Load saved LLM API keys from DB ──
+  try {
+    const orKey = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'openrouter_api_key')
+    if (orKey?.value) {
+      LLMFactory.configure('openrouter', { apiKey: JSON.parse(orKey.value) })
+      console.log('[Main] OpenRouter API key loaded')
+    }
+
+    const repKey = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'replicate_api_key')
+    if (repKey?.value) {
+      LLMFactory.configure('replicate', { apiKey: JSON.parse(repKey.value) })
+      console.log('[Main] Replicate API key loaded')
+    }
+  } catch (err) {
+    console.warn('[Main] Failed to load LLM keys from DB:', err)
+  }
+
   // Register IPC handlers before creating window
   registerIpcHandlers()
 
@@ -95,6 +124,7 @@ app.on('before-quit', () => {
   app.isQuitting = true
   getScheduler().stop()
   destroyTray()
+  getDatabase().close()
 })
 
 export { mainWindow }
