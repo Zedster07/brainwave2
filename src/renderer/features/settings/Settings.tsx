@@ -394,6 +394,8 @@ function RulesSettings() {
   const [proposals, setProposals] = useState<Array<{ id: string; rule: string; confidence: number }>>([])
   const [loading, setLoading] = useState(true)
   const [newBlockedPath, setNewBlockedPath] = useState('')
+  const [newBlockedCmd, setNewBlockedCmd] = useState('')
+  const [newBlockedExt, setNewBlockedExt] = useState('')
   const [saving, setSaving] = useState(false)
 
   const load = useCallback(async () => {
@@ -449,6 +451,83 @@ function RulesSettings() {
       setSafetyRules(updated)
     } catch (err) {
       console.error('Failed to remove blocked path:', err)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // ── Blocked Commands ──
+  const addBlockedCommand = async () => {
+    if (!newBlockedCmd.trim() || !safetyRules) return
+    setSaving(true)
+    try {
+      const sh = safetyRules.shell as Record<string, unknown>
+      const current = (sh.blocked_commands as string[]) ?? []
+      if (current.some((c: string) => c.toLowerCase() === newBlockedCmd.trim().toLowerCase())) {
+        setNewBlockedCmd('')
+        return
+      }
+      const updated = { ...safetyRules, shell: { ...sh, blocked_commands: [...current, newBlockedCmd.trim()] } }
+      await window.brainwave.setSafetyRules(updated)
+      setSafetyRules(updated)
+      setNewBlockedCmd('')
+    } catch (err) {
+      console.error('Failed to add blocked command:', err)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const removeBlockedCommand = async (cmd: string) => {
+    if (!safetyRules) return
+    setSaving(true)
+    try {
+      const sh = safetyRules.shell as Record<string, unknown>
+      const current = (sh.blocked_commands as string[]) ?? []
+      const updated = { ...safetyRules, shell: { ...sh, blocked_commands: current.filter((c: string) => c !== cmd) } }
+      await window.brainwave.setSafetyRules(updated)
+      setSafetyRules(updated)
+    } catch (err) {
+      console.error('Failed to remove blocked command:', err)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // ── Blocked Extensions ──
+  const addBlockedExtension = async () => {
+    if (!newBlockedExt.trim() || !safetyRules) return
+    setSaving(true)
+    try {
+      const fs = safetyRules.filesystem as Record<string, unknown>
+      const current = (fs.blocked_extensions as string[]) ?? []
+      const ext = newBlockedExt.trim().startsWith('.') ? newBlockedExt.trim() : `.${newBlockedExt.trim()}`
+      if (current.some((e: string) => e.toLowerCase() === ext.toLowerCase())) {
+        setNewBlockedExt('')
+        return
+      }
+      const updated = { ...safetyRules, filesystem: { ...fs, blocked_extensions: [...current, ext.toLowerCase()] } }
+      await window.brainwave.setSafetyRules(updated)
+      setSafetyRules(updated)
+      setNewBlockedExt('')
+    } catch (err) {
+      console.error('Failed to add blocked extension:', err)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const removeBlockedExtension = async (ext: string) => {
+    if (!safetyRules) return
+    setSaving(true)
+    try {
+      const fs = safetyRules.filesystem as Record<string, unknown>
+      const current = (fs.blocked_extensions as string[]) ?? []
+      const updated = { ...safetyRules, filesystem: { ...fs, blocked_extensions: current.filter((e: string) => e !== ext) } }
+      await window.brainwave.setSafetyRules(updated)
+      setSafetyRules(updated)
+    } catch (err) {
+      console.error('Failed to remove blocked extension:', err)
     } finally {
       setSaving(false)
     }
@@ -561,28 +640,93 @@ function RulesSettings() {
         <p className="text-[10px] text-gray-600 mt-1">Use ** for recursive matching (e.g. D:\Secret\** blocks all contents)</p>
       </div>
 
-      {/* Blocked Extensions & Commands summary */}
+      {/* Blocked Shell Commands */}
       {safetyRules && (
-        <div className="border-t border-white/[0.04] pt-4 space-y-3">
-          <div>
-            <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1.5">Blocked File Extensions</p>
-            <div className="flex flex-wrap gap-1.5">
-              {blockedExts.map((ext) => (
-                <span key={ext} className="text-[10px] px-2 py-0.5 rounded bg-yellow-500/5 text-yellow-400/70 border border-yellow-500/10">
-                  {ext}
-                </span>
-              ))}
-            </div>
-          </div>
-          <div>
-            <p className="text-[10px] text-gray-600 uppercase tracking-wider mb-1.5">Blocked Shell Commands</p>
-            <div className="flex flex-wrap gap-1.5">
+        <div className="border-t border-white/[0.04] pt-4">
+          <p className="text-sm text-white font-medium mb-1">Blocked Shell Commands</p>
+          <p className="text-[11px] text-gray-500 mb-3">The AI cannot execute these commands or patterns.</p>
+
+          {(shellRules?.blocked_commands ?? []).length === 0 ? (
+            <p className="text-[11px] text-gray-600 italic mb-3">No blocked commands.</p>
+          ) : (
+            <div className="space-y-1.5 mb-3">
               {(shellRules?.blocked_commands ?? []).map((cmd) => (
-                <span key={cmd} className="text-[10px] px-2 py-0.5 rounded bg-yellow-500/5 text-yellow-400/70 border border-yellow-500/10">
-                  {cmd}
-                </span>
+                <div key={cmd} className="flex items-center justify-between bg-white/[0.03] rounded px-3 py-1.5">
+                  <span className="text-xs text-white font-mono">{cmd}</span>
+                  <button
+                    onClick={() => removeBlockedCommand(cmd)}
+                    disabled={saving}
+                    className="text-[10px] px-2 py-0.5 rounded bg-red-500/10 text-red-400 hover:bg-red-500/20 disabled:opacity-50"
+                  >
+                    Remove
+                  </button>
+                </div>
               ))}
             </div>
+          )}
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={newBlockedCmd}
+              onChange={(e) => setNewBlockedCmd(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && addBlockedCommand()}
+              placeholder="e.g. netstat, taskkill, cipher"
+              className="flex-1 bg-white/[0.03] border border-white/[0.08] rounded px-3 py-1.5 text-xs text-white font-mono placeholder:text-gray-600 focus:outline-none focus:border-accent/40"
+            />
+            <button
+              onClick={addBlockedCommand}
+              disabled={saving || !newBlockedCmd.trim()}
+              className="text-[11px] px-3 py-1.5 rounded bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50 whitespace-nowrap"
+            >
+              Add Command
+            </button>
+          </div>
+          <p className="text-[10px] text-gray-600 mt-1">Commands are matched as substrings (e.g. &quot;format&quot; also blocks &quot;format C:&quot;)</p>
+        </div>
+      )}
+
+      {/* Blocked File Extensions */}
+      {safetyRules && (
+        <div className="border-t border-white/[0.04] pt-4">
+          <p className="text-sm text-white font-medium mb-1">Blocked File Extensions</p>
+          <p className="text-[11px] text-gray-500 mb-3">The AI cannot write or create files with these extensions.</p>
+
+          {blockedExts.length === 0 ? (
+            <p className="text-[11px] text-gray-600 italic mb-3">No blocked extensions.</p>
+          ) : (
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {blockedExts.map((ext) => (
+                <div key={ext} className="flex items-center gap-1.5 bg-white/[0.03] rounded px-2 py-1 border border-white/[0.06]">
+                  <span className="text-[11px] text-white font-mono">{ext}</span>
+                  <button
+                    onClick={() => removeBlockedExtension(ext)}
+                    disabled={saving}
+                    className="text-gray-600 hover:text-red-400 transition-colors disabled:opacity-50"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={newBlockedExt}
+              onChange={(e) => setNewBlockedExt(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && addBlockedExtension()}
+              placeholder="e.g. .dll, .sys, .msi"
+              className="flex-1 bg-white/[0.03] border border-white/[0.08] rounded px-3 py-1.5 text-xs text-white font-mono placeholder:text-gray-600 focus:outline-none focus:border-accent/40"
+            />
+            <button
+              onClick={addBlockedExtension}
+              disabled={saving || !newBlockedExt.trim()}
+              className="text-[11px] px-3 py-1.5 rounded bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-50 whitespace-nowrap"
+            >
+              Add Extension
+            </button>
           </div>
         </div>
       )}
