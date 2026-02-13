@@ -324,9 +324,9 @@ export function CommandCenter() {
         <div className="flex flex-col flex-1 max-w-4xl mx-auto w-full min-h-0">
           {/* Welcome state when no session */}
           {!activeSessionId && (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="text-center">
-                <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-accent/10 mb-4 glow-accent">
+            <div className="min-h-full flex-1 p-4 flex items-center justify-center">
+              <div className="text-center mt-4 p-4">
+                <div className="inline-flex mt-4 p-4 items-center justify-center w-16 h-16 rounded-2xl bg-accent/10 mb-4 glow-accent">
                   <Sparkles className="w-8 h-8 text-accent" />
                 </div>
                 <h2 className="text-2xl font-bold text-white mb-2">What should I work on?</h2>
@@ -354,8 +354,16 @@ export function CommandCenter() {
                     <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading...
                   </div>
                 ) : tasks.length === 0 ? (
-                  <div className="flex items-center justify-center py-12">
-                    <p className="text-sm text-gray-500">Send a message to get started</p>
+                  <div className="min-h-full flex items-center justify-center">
+                    <div className="text-center">
+                      <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-accent/10 mb-4 glow-accent">
+                        <Sparkles className="w-8 h-8 text-accent" />
+                      </div>
+                      <h2 className="text-2xl font-bold text-white mb-2">What should I work on?</h2>
+                      <p className="text-gray-500 text-sm max-w-md mx-auto">
+                        Describe a task and I'll plan, delegate to specialized agents, and execute it autonomously.
+                      </p>
+                    </div>
                   </div>
                 ) : (
                   <div className="space-y-2">
