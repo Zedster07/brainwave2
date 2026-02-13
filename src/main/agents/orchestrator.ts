@@ -22,6 +22,7 @@ import { LLMFactory } from '../llm/factory'
 import { getPeopleStore } from '../memory/people'
 import { getProspectiveStore } from '../memory/prospective'
 import { ReflectionAgent } from './reflection'
+import { getSoftEngine } from '../rules'
 
 // ─── Task Record (stored in DB) ────────────────────────────
 
@@ -839,6 +840,25 @@ ${memoryContext}${peopleContext}${historyContext}`,
         })
 
         results.set(subTask.id, result)
+
+        // Check escalation rules (confidence threshold, destructive action, etc.)
+        if (result.status === 'success' || result.status === 'partial') {
+          const escalation = getSoftEngine().checkEscalation({
+            confidence: result.confidence,
+            taskDescription: subTask.description,
+          })
+          if (escalation?.shouldEscalate) {
+            // Emit a warning — the UI can display this to the user
+            this.bus.emitEvent('task:escalation', {
+              taskId: task.id,
+              stepId: subTask.id,
+              agent: subTask.assignedAgent,
+              error: escalation.message,
+              attempts: 0,
+              message: `⚠ Low confidence (${(result.confidence * 100).toFixed(0)}%): ${escalation.message}`,
+            })
+          }
+        }
 
         if (result.status === 'success' || result.status === 'partial') {
           subTask.status = 'completed'

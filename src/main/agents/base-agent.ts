@@ -292,8 +292,8 @@ export abstract class BaseAgent {
   private logRun(task: SubTask, context: AgentContext, result: AgentResult): void {
     try {
       this.db.run(
-        `INSERT INTO agent_runs (id, agent_type, task_id, status, input, output, llm_model, tokens_in, tokens_out, cost_usd, started_at, completed_at, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), CURRENT_TIMESTAMP, ?)`,
+        `INSERT INTO agent_runs (id, agent_type, task_id, status, input, output, llm_model, tokens_in, tokens_out, cost_usd, confidence, started_at, completed_at, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), CURRENT_TIMESTAMP, ?)`,
         randomUUID(),
         this.type,
         context.taskId,
@@ -304,6 +304,7 @@ export abstract class BaseAgent {
         result.tokensIn,
         result.tokensOut,
         0, // TODO: calculate cost from model pricing
+        result.confidence,
         `-${result.duration / 1000} seconds`,
         result.error ?? null
       )

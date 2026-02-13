@@ -198,6 +198,16 @@ const api: BrainwaveAPI = {
   // LLM Health
   getCircuitBreakerStatus: () =>
     ipcRenderer.invoke(IPC_CHANNELS.LLM_CIRCUIT_STATUS) as Promise<Array<{ state: string; failureCount: number; name: string }>>,
+
+  // Calibration / Feedback
+  submitCalibrationFeedback: (runId: string, feedback: 'positive' | 'negative') =>
+    ipcRenderer.invoke(IPC_CHANNELS.CALIBRATION_SUBMIT_FEEDBACK, runId, feedback) as Promise<void>,
+
+  getCalibrationReport: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.CALIBRATION_GET_REPORT),
+
+  getUnratedRuns: (limit?: number) =>
+    ipcRenderer.invoke(IPC_CHANNELS.CALIBRATION_GET_UNRATED, limit),
 }
 
 // Expose typed API to renderer

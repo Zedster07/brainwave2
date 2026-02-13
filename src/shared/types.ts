@@ -94,6 +94,11 @@ export const IPC_CHANNELS = {
 
   // LLM Health
   LLM_CIRCUIT_STATUS: 'llm:circuit-status',
+
+  // Calibration / Feedback
+  CALIBRATION_SUBMIT_FEEDBACK: 'calibration:submit-feedback',
+  CALIBRATION_GET_REPORT: 'calibration:get-report',
+  CALIBRATION_GET_UNRATED: 'calibration:get-unrated',
 } as const
 
 // ─── IPC Payload Types ───
@@ -310,6 +315,53 @@ export interface BrainwaveAPI {
 
   // LLM Health
   getCircuitBreakerStatus: () => Promise<Array<{ state: string; failureCount: number; name: string }>>
+
+  // Calibration / Feedback
+  submitCalibrationFeedback: (runId: string, feedback: 'positive' | 'negative') => Promise<void>
+  getCalibrationReport: () => Promise<CalibrationReportInfo>
+  getUnratedRuns: (limit?: number) => Promise<UnratedRunInfo[]>
+}
+
+// ─── Calibration Types ───
+
+export interface CalibrationAgentStats {
+  agentType: string
+  totalRuns: number
+  runsWithFeedback: number
+  positiveRate: number
+  avgConfidence: number
+  avgConfidencePositive: number
+  avgConfidenceNegative: number
+  calibrationError: number
+  overConfident: boolean
+}
+
+export interface CalibrationBucketInfo {
+  range: string
+  rangeMin: number
+  rangeMax: number
+  count: number
+  positiveCount: number
+  negativeCount: number
+  actualPositiveRate: number
+}
+
+export interface CalibrationReportInfo {
+  generatedAt: number
+  agents: CalibrationAgentStats[]
+  buckets: CalibrationBucketInfo[]
+  recommendedThresholds: {
+    escalateBelow: number
+    trustAbove: number
+  }
+}
+
+export interface UnratedRunInfo {
+  id: string
+  agentType: string
+  confidence: number
+  output: string
+  completedAt: string
 }
 
 // ─── Scheduler Types ───

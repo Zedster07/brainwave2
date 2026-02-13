@@ -10,6 +10,7 @@ import { getAgentPool } from '../agents/agent-pool'
 import { getEventBus } from '../agents/event-bus'
 import { getMemoryManager } from '../memory'
 import { getPeopleStore } from '../memory/people'
+import { getCalibrationTracker } from '../agents/calibration'
 import { getProceduralStore } from '../memory/procedural'
 import { getProspectiveStore } from '../memory/prospective'
 import { getHardEngine, getSoftEngine } from '../rules'
@@ -81,7 +82,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.AGENT_GET_LOG_HISTORY, async (_event, limit?: number) => {
     const db = getDatabase()
     const rows = db.all(
-      `SELECT id, agent_type, task_id, status, llm_model, tokens_in, tokens_out, started_at, completed_at, error
+      `SELECT id, agent_type, task_id, status, llm_model, tokens_in, tokens_out, confidence, started_at, completed_at, error
        FROM agent_runs ORDER BY started_at DESC LIMIT ?`,
       limit ?? 100
     ) as Array<{
@@ -92,6 +93,7 @@ export function registerIpcHandlers(): void {
       llm_model: string | null
       tokens_in: number
       tokens_out: number
+      confidence: number | null
       started_at: string
       completed_at: string | null
       error: string | null
@@ -104,7 +106,7 @@ export function registerIpcHandlers(): void {
       agentType: row.agent_type,
       level: row.status === 'failed' ? 'error' as const : 'info' as const,
       message: row.status === 'completed'
-        ? `Completed (model: ${row.llm_model ?? 'unknown'}, tokens: ${row.tokens_in + row.tokens_out})`
+        ? `Completed (confidence: ${row.confidence !== null ? (row.confidence * 100).toFixed(0) + '%' : 'n/a'}, model: ${row.llm_model ?? 'unknown'}, tokens: ${row.tokens_in + row.tokens_out})`
         : row.status === 'failed'
           ? `Failed: ${row.error ?? 'unknown error'}`
           : `${row.status} (model: ${row.llm_model ?? 'unknown'})`,
@@ -481,5 +483,19 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.SESSION_GET_TASKS, async (_event, sessionId: string, limit?: number) => {
     return orchestrator.getTaskHistory(limit ?? 50, sessionId)
+  })
+
+  // ─── Calibration / Feedback ───
+
+  ipcMain.handle(IPC_CHANNELS.CALIBRATION_SUBMIT_FEEDBACK, async (_event, runId: string, feedback: 'positive' | 'negative') => {
+    getCalibrationTracker().submitFeedback(runId, feedback)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.CALIBRATION_GET_REPORT, async () => {
+    return getCalibrationTracker().getReport()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.CALIBRATION_GET_UNRATED, async (_event, limit?: number) => {
+    return getCalibrationTracker().getUnratedRuns(limit)
   })
 }
