@@ -50,7 +50,19 @@ interface TriageResult {
   shouldRemember?: boolean // whether this interaction is worth storing in memory
   personInfo?: {           // extracted person data — auto-creates/updates People entries
     name: string
+    nickname?: string
+    fullName?: string
     relationship?: string
+    email?: string
+    phone?: string
+    address?: string
+    birthday?: string
+    age?: number
+    gender?: string
+    occupation?: string
+    company?: string
+    socialLinks?: Record<string, string>
+    notes?: string
     traits?: string[]
     preferences?: Record<string, string>
   }
@@ -237,12 +249,34 @@ PERSON EXTRACTION:
 If the user mentions a person (themselves or someone else) by name, extract their info into "personInfo".
 This includes: user introducing themselves, mentioning colleagues, friends, etc.
 IMPORTANT: When the user refers to THEMSELVES with "I", "me", "my" — and you know who they are from the memory/people context — use their known name in personInfo. The owner/creator IS the user speaking.
+
+Extract ALL available details about the person. personInfo supports these fields:
+- name (REQUIRED): the person's primary name
+- nickname: short name or alias (e.g. "Dada")
+- fullName: legal/formal full name (e.g. "Nacer eddine Houidi")
+- relationship: how they relate to the user (e.g. "owner/creator", "friend", "colleague", "boss")
+- email: email address if mentioned
+- phone: phone number if mentioned
+- address: physical address or city/country if mentioned
+- birthday: birthday or birth date if mentioned (any format)
+- age: numeric age if mentioned
+- gender: gender if mentioned or clearly implied
+- occupation: job title or profession (e.g. "developer", "designer", "student")
+- company: company or organization name
+- socialLinks: social media links as key-value pairs (e.g. { "github": "https://...", "linkedin": "https://..." })
+- notes: any other notable info worth remembering
+- traits: personality traits or skills (e.g. ["developer", "gamer"])
+- preferences: key-value pairs for preferences (e.g. { "theme": "dark mode" })
+
 Examples:
 - "my name is Dada" → { "name": "Dada", "relationship": "owner/creator", "traits": ["developer"] }
-- "my friend John is a designer" → { "name": "John", "relationship": "friend", "traits": ["designer"] }
+- "Nacer eddine houidi is my full name, Dada is just my nickname" → { "name": "Dada", "fullName": "Nacer eddine Houidi", "nickname": "Dada", "relationship": "owner/creator" }
+- "my friend John is a designer at Google" → { "name": "John", "relationship": "friend", "occupation": "designer", "company": "Google" }
+- "I'm 25 years old and I live in Algeria" → { "name": "Dada", "age": 25, "address": "Algeria" }
+- "my email is john@example.com" → { "name": "Dada", "email": "john@example.com" }
 - "I love gaming" (and you know user is Dada) → { "name": "Dada", "traits": ["gamer"], "preferences": { "hobby": "gaming" } }
-- "I prefer dark mode" (and you know user is Dada) → { "name": "Dada", "preferences": { "theme": "dark mode" } }
 Include "personInfo" if a person's name is clearly stated OR if the user shares something about themselves and you know who they are.
+Only include fields that are explicitly stated or clearly implied — do NOT guess.
 
 FACT / PREFERENCE EXTRACTION:
 If the user states facts, preferences, or knowledge worth remembering, extract as "semanticFacts".
@@ -267,7 +301,7 @@ OUTPUT FORMAT (JSON):
   "reply": "your response (only for conversational)",
   "agent": "researcher" | "coder" | "writer" | "analyst" | "critic" | "reviewer" | "executor" (only for direct),
   "shouldRemember": true/false,
-  "personInfo": { "name": "...", "relationship": "...", "traits": ["..."], "preferences": { "key": "value" } } (only if a person is mentioned or user shares about themselves),
+  "personInfo": { "name": "...", "nickname": "...", "fullName": "...", "relationship": "...", "email": "...", "phone": "...", "age": 25, "occupation": "...", "company": "...", "traits": ["..."], "preferences": { "key": "value" } } (only if a person is mentioned — include only fields with known values),
   "semanticFacts": [{ "subject": "...", "predicate": "...", "object": "..." }] (only if facts/preferences shared),
   "reminder": { "intention": "...", "triggerType": "time|event|condition", "triggerValue": "...", "priority": 0.5 } (only if reminder/intention expressed),
   "reasoning": "one-line explanation of why this lane was chosen"
@@ -536,7 +570,13 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
             if (allPeople.length > 0) {
               peopleContext = '\n\nPeople you know:\n' + allPeople.map((p) => {
                 const parts = [`- ${p.name}`]
-                if (p.relationship) parts.push(`(${p.relationship})`)
+                if (p.nickname && p.nickname !== p.name) parts.push(`aka "${p.nickname}"`)
+                if (p.fullName && p.fullName !== p.name) parts.push(`(full name: ${p.fullName})`)
+                if (p.relationship) parts.push(`[${p.relationship}]`)
+                if (p.occupation) parts.push(`— ${p.occupation}${p.company ? ` @ ${p.company}` : ''}`)
+                if (p.age) parts.push(`— age: ${p.age}`)
+                if (p.email) parts.push(`— email: ${p.email}`)
+                if (p.address) parts.push(`— location: ${p.address}`)
                 if (p.traits.length > 0) parts.push(`— traits: ${p.traits.join(', ')}`)
                 if (Object.keys(p.preferences).length > 0) parts.push(`— preferences: ${JSON.stringify(p.preferences)}`)
                 return parts.join(' ')
@@ -607,18 +647,25 @@ ${memoryContext}${peopleContext}${historyContext}`,
     if (triage.personInfo?.name) {
       try {
         const peopleStore = getPeopleStore()
-        const prefs = { ...(triage.personInfo.preferences ?? {}) }
-
-        // If name differs from nickname, store full_name as an alias for future dedup
-        if (prefs.nickname && prefs.nickname.toLowerCase() !== triage.personInfo.name.toLowerCase()) {
-          prefs.full_name = triage.personInfo.name
-        }
+        const pi = triage.personInfo
 
         const person = peopleStore.store({
-          name: triage.personInfo.name,
-          relationship: triage.personInfo.relationship,
-          traits: triage.personInfo.traits,
-          preferences: prefs,
+          name: pi.name,
+          nickname: pi.nickname,
+          fullName: pi.fullName,
+          relationship: pi.relationship,
+          email: pi.email,
+          phone: pi.phone,
+          address: pi.address,
+          birthday: pi.birthday,
+          age: pi.age,
+          gender: pi.gender,
+          occupation: pi.occupation,
+          company: pi.company,
+          socialLinks: pi.socialLinks,
+          notes: pi.notes,
+          traits: pi.traits,
+          preferences: pi.preferences,
         })
         console.log(`[Orchestrator] Created/updated person: ${person.name} (${person.id})`)
       } catch (err) {

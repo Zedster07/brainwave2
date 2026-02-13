@@ -229,7 +229,19 @@ export interface MemoryEntry {
 export interface PersonEntry {
   id: string
   name: string
+  nickname: string | null
+  fullName: string | null
   relationship: string | null
+  email: string | null
+  phone: string | null
+  address: string | null
+  birthday: string | null
+  age: number | null
+  gender: string | null
+  occupation: string | null
+  company: string | null
+  socialLinks: Record<string, string>
+  notes: string | null
   traits: string[]
   preferences: Record<string, string>
   interactionHistory: Array<{ date: string; type: string; summary: string; sentiment?: number }>

@@ -12,7 +12,19 @@ import { getDatabase } from '../db/database'
 export interface PersonEntry {
   id: string
   name: string
+  nickname: string | null
+  fullName: string | null
   relationship: string | null
+  email: string | null
+  phone: string | null
+  address: string | null
+  birthday: string | null
+  age: number | null
+  gender: string | null
+  occupation: string | null
+  company: string | null
+  socialLinks: Record<string, string>
+  notes: string | null
   traits: string[]
   preferences: Record<string, string>
   interactionHistory: InteractionSummary[]
@@ -31,7 +43,19 @@ export interface InteractionSummary {
 
 export interface StorePersonInput {
   name: string
+  nickname?: string
+  fullName?: string
   relationship?: string
+  email?: string
+  phone?: string
+  address?: string
+  birthday?: string
+  age?: number
+  gender?: string
+  occupation?: string
+  company?: string
+  socialLinks?: Record<string, string>
+  notes?: string
   traits?: string[]
   preferences?: Record<string, string>
   metadata?: Record<string, unknown>
@@ -39,7 +63,19 @@ export interface StorePersonInput {
 
 export interface UpdatePersonInput {
   name?: string
+  nickname?: string
+  fullName?: string
   relationship?: string
+  email?: string
+  phone?: string
+  address?: string
+  birthday?: string
+  age?: number
+  gender?: string
+  occupation?: string
+  company?: string
+  socialLinks?: Record<string, string>
+  notes?: string
   traits?: string[]
   preferences?: Record<string, string>
   metadata?: Record<string, unknown>
@@ -61,14 +97,29 @@ export class PeopleStore {
     if (!existing) {
       existing = this.findByAlias(input.name)
     }
-    if (!existing && input.preferences?.nickname) {
-      existing = this.getByName(input.preferences.nickname) ?? this.findByAlias(input.preferences.nickname)
+    if (!existing && (input.nickname || input.preferences?.nickname)) {
+      const nick = input.nickname ?? input.preferences?.nickname
+      if (nick) {
+        existing = this.getByName(nick) ?? this.findByAlias(nick)
+      }
     }
 
     if (existing) {
       // Merge instead of duplicate
       return this.update(existing.id, {
+        nickname: input.nickname ?? existing.nickname ?? undefined,
+        fullName: input.fullName ?? existing.fullName ?? undefined,
         relationship: input.relationship ?? existing.relationship ?? undefined,
+        email: input.email ?? existing.email ?? undefined,
+        phone: input.phone ?? existing.phone ?? undefined,
+        address: input.address ?? existing.address ?? undefined,
+        birthday: input.birthday ?? existing.birthday ?? undefined,
+        age: input.age ?? existing.age ?? undefined,
+        gender: input.gender ?? existing.gender ?? undefined,
+        occupation: input.occupation ?? existing.occupation ?? undefined,
+        company: input.company ?? existing.company ?? undefined,
+        socialLinks: { ...(existing.socialLinks ?? {}), ...(input.socialLinks ?? {}) },
+        notes: input.notes ?? existing.notes ?? undefined,
         traits: [...new Set([...existing.traits, ...(input.traits ?? [])])],
         preferences: { ...existing.preferences, ...(input.preferences ?? {}) },
         metadata: { ...existing.metadata, ...(input.metadata ?? {}) },
@@ -80,11 +131,23 @@ export class PeopleStore {
 
     this.db.run(
       `INSERT INTO people
-        (id, name, relationship, traits, preferences, interaction_history, last_interaction, created_at, updated_at, metadata)
-       VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+        (id, name, nickname, full_name, relationship, email, phone, address, birthday, age, gender, occupation, company, social_links, notes, traits, preferences, interaction_history, last_interaction, created_at, updated_at, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
       id,
       input.name,
+      input.nickname ?? null,
+      input.fullName ?? null,
       input.relationship ?? null,
+      input.email ?? null,
+      input.phone ?? null,
+      input.address ?? null,
+      input.birthday ?? null,
+      input.age ?? null,
+      input.gender ?? null,
+      input.occupation ?? null,
+      input.company ?? null,
+      JSON.stringify(input.socialLinks ?? {}),
+      input.notes ?? null,
       JSON.stringify(input.traits ?? []),
       JSON.stringify(input.preferences ?? {}),
       JSON.stringify([]),
@@ -96,7 +159,19 @@ export class PeopleStore {
     return {
       id,
       name: input.name,
+      nickname: input.nickname ?? null,
+      fullName: input.fullName ?? null,
       relationship: input.relationship ?? null,
+      email: input.email ?? null,
+      phone: input.phone ?? null,
+      address: input.address ?? null,
+      birthday: input.birthday ?? null,
+      age: input.age ?? null,
+      gender: input.gender ?? null,
+      occupation: input.occupation ?? null,
+      company: input.company ?? null,
+      socialLinks: input.socialLinks ?? {},
+      notes: input.notes ?? null,
       traits: input.traits ?? [],
       preferences: input.preferences ?? {},
       interactionHistory: [],
@@ -133,17 +208,18 @@ export class PeopleStore {
 
   /**
    * Find a person by alias — checks nickname, full_name, and other alias fields
-   * stored in the preferences JSON column.
+   * stored in both the dedicated columns and the preferences JSON column.
    */
   findByAlias(alias: string): PersonEntry | null {
     const lowerAlias = alias.toLowerCase()
-    // Search preferences JSON for nickname, full_name, or alias matches
     const rows = this.db.all<RawPersonRow>(
       `SELECT * FROM people WHERE
+       LOWER(nickname) = ? OR
+       LOWER(full_name) = ? OR
        LOWER(json_extract(preferences, '$.nickname')) = ? OR
        LOWER(json_extract(preferences, '$.full_name')) = ? OR
        LOWER(json_extract(preferences, '$.alias')) = ?`,
-      lowerAlias, lowerAlias, lowerAlias
+      lowerAlias, lowerAlias, lowerAlias, lowerAlias, lowerAlias
     )
     return rows.length > 0 ? this.deserialize(rows[0]) : null
   }
@@ -169,17 +245,43 @@ export class PeopleStore {
 
     const merged = {
       name: input.name ?? existing.name,
+      nickname: input.nickname ?? existing.nickname,
+      fullName: input.fullName ?? existing.fullName,
       relationship: input.relationship ?? existing.relationship,
+      email: input.email ?? existing.email,
+      phone: input.phone ?? existing.phone,
+      address: input.address ?? existing.address,
+      birthday: input.birthday ?? existing.birthday,
+      age: input.age ?? existing.age,
+      gender: input.gender ?? existing.gender,
+      occupation: input.occupation ?? existing.occupation,
+      company: input.company ?? existing.company,
+      socialLinks: input.socialLinks ? { ...(existing.socialLinks ?? {}), ...input.socialLinks } : existing.socialLinks,
+      notes: input.notes ?? existing.notes,
       traits: input.traits ?? existing.traits,
       preferences: input.preferences ? { ...existing.preferences, ...input.preferences } : existing.preferences,
       metadata: input.metadata ? { ...existing.metadata, ...input.metadata } : existing.metadata,
     }
 
     this.db.run(
-      `UPDATE people SET name = ?, relationship = ?, traits = ?, preferences = ?,
-       metadata = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      `UPDATE people SET name = ?, nickname = ?, full_name = ?, relationship = ?,
+       email = ?, phone = ?, address = ?, birthday = ?, age = ?, gender = ?,
+       occupation = ?, company = ?, social_links = ?, notes = ?,
+       traits = ?, preferences = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       merged.name,
+      merged.nickname,
+      merged.fullName,
       merged.relationship,
+      merged.email,
+      merged.phone,
+      merged.address,
+      merged.birthday,
+      merged.age,
+      merged.gender,
+      merged.occupation,
+      merged.company,
+      JSON.stringify(merged.socialLinks ?? {}),
+      merged.notes,
       JSON.stringify(merged.traits),
       JSON.stringify(merged.preferences),
       JSON.stringify(merged.metadata),
@@ -226,7 +328,19 @@ export class PeopleStore {
     return {
       id: row.id,
       name: row.name,
+      nickname: row.nickname ?? null,
+      fullName: row.full_name ?? null,
       relationship: row.relationship,
+      email: row.email ?? null,
+      phone: row.phone ?? null,
+      address: row.address ?? null,
+      birthday: row.birthday ?? null,
+      age: row.age ?? null,
+      gender: row.gender ?? null,
+      occupation: row.occupation ?? null,
+      company: row.company ?? null,
+      socialLinks: JSON.parse(row.social_links || '{}'),
+      notes: row.notes ?? null,
       traits: JSON.parse(row.traits || '[]'),
       preferences: JSON.parse(row.preferences || '{}'),
       interactionHistory: JSON.parse(row.interaction_history || '[]'),
@@ -243,7 +357,19 @@ export class PeopleStore {
 interface RawPersonRow {
   id: string
   name: string
+  nickname: string | null
+  full_name: string | null
   relationship: string | null
+  email: string | null
+  phone: string | null
+  address: string | null
+  birthday: string | null
+  age: number | null
+  gender: string | null
+  occupation: string | null
+  company: string | null
+  social_links: string
+  notes: string | null
   traits: string
   preferences: string
   interaction_history: string

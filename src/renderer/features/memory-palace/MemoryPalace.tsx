@@ -472,7 +472,15 @@ function PeoplePanel() {
                     </span>
                   </div>
                   <div>
-                    <h3 className="text-sm font-medium text-white">{person.name}</h3>
+                    <h3 className="text-sm font-medium text-white">
+                      {person.name}
+                      {person.nickname && person.nickname !== person.name && (
+                        <span className="text-gray-500 font-normal ml-1">({person.nickname})</span>
+                      )}
+                    </h3>
+                    {person.fullName && person.fullName !== person.name && (
+                      <p className="text-[10px] text-gray-500">{person.fullName}</p>
+                    )}
                     {person.relationship && (
                       <p className="text-[10px] text-gray-500">{person.relationship}</p>
                     )}
@@ -489,6 +497,49 @@ function PeoplePanel() {
                 </button>
               </div>
 
+              {/* Personal details */}
+              {(person.occupation || person.company || person.email || person.phone || person.address || person.age || person.birthday || person.gender) && (
+                <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 mt-2 text-[10px]">
+                  {person.occupation && (
+                    <p className="text-gray-500"><span className="text-gray-600">Job:</span> {person.occupation}{person.company ? ` @ ${person.company}` : ''}</p>
+                  )}
+                  {!person.occupation && person.company && (
+                    <p className="text-gray-500"><span className="text-gray-600">Company:</span> {person.company}</p>
+                  )}
+                  {person.email && (
+                    <p className="text-gray-500 truncate"><span className="text-gray-600">Email:</span> {person.email}</p>
+                  )}
+                  {person.phone && (
+                    <p className="text-gray-500"><span className="text-gray-600">Phone:</span> {person.phone}</p>
+                  )}
+                  {person.address && (
+                    <p className="text-gray-500"><span className="text-gray-600">Location:</span> {person.address}</p>
+                  )}
+                  {person.age != null && (
+                    <p className="text-gray-500"><span className="text-gray-600">Age:</span> {person.age}</p>
+                  )}
+                  {person.birthday && (
+                    <p className="text-gray-500"><span className="text-gray-600">Birthday:</span> {person.birthday}</p>
+                  )}
+                  {person.gender && (
+                    <p className="text-gray-500"><span className="text-gray-600">Gender:</span> {person.gender}</p>
+                  )}
+                </div>
+              )}
+
+              {/* Social links */}
+              {person.socialLinks && Object.keys(person.socialLinks).length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {Object.entries(person.socialLinks).map(([platform, url]) => (
+                    <span key={platform} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400/80 cursor-pointer hover:bg-blue-500/20"
+                      onClick={() => window.open(url, '_blank')}
+                    >
+                      {platform}
+                    </span>
+                  ))}
+                </div>
+              )}
+
               {person.traits.length > 0 && (
                 <div className="flex flex-wrap gap-1 mt-2">
                   {person.traits.map((trait) => (
@@ -497,6 +548,10 @@ function PeoplePanel() {
                     </span>
                   ))}
                 </div>
+              )}
+
+              {person.notes && (
+                <p className="text-[10px] text-gray-500 mt-2 italic">{person.notes}</p>
               )}
 
               {person.lastInteraction && (
