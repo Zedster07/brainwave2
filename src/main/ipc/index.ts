@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { writeFileSync, readFileSync } from 'node:fs'
+import { writeFileSync, readFileSync, unlinkSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { ipcMain, app, dialog, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '@shared/types'
 import type { TaskSubmission, MemoryQuery, CreateScheduledJobInput } from '@shared/types'
@@ -22,6 +24,7 @@ import { getProspectiveStore } from '../memory/prospective'
 import { getHardEngine, getSoftEngine } from '../rules'
 import type { SafetyRules, BehaviorRules } from '../rules'
 import type { McpRegistry } from '../mcp/registry'
+import OpenAI from 'openai'
 
 // ─── MCP JSON Import Parser ────────────────────────────────
 
@@ -605,6 +608,61 @@ export function registerIpcHandlers(): void {
       LLMFactory.configure('ollama', { apiKey: host, defaultModel: value })
     }
   })
+
+  // ─── Speech-to-Text (Whisper) ───
+  ipcMain.handle(
+    IPC_CHANNELS.STT_TRANSCRIBE,
+    async (_event, audioBuffer: ArrayBuffer, mimeType: string) => {
+      try {
+        // Read STT settings from DB
+        const keyRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'stt_api_key')
+        const providerRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'stt_provider')
+
+        const sttKey = keyRow ? JSON.parse(keyRow.value) : ''
+        const sttProvider: string = providerRow ? JSON.parse(providerRow.value) : 'groq'
+
+        if (!sttKey) {
+          return { error: 'No speech-to-text API key configured. Go to Settings → Models to add one.' }
+        }
+
+        // Determine API base URL & model based on provider
+        let baseURL: string
+        let model: string
+        if (sttProvider === 'openai') {
+          baseURL = 'https://api.openai.com/v1'
+          model = 'whisper-1'
+        } else {
+          // Default: Groq (free, fast)
+          baseURL = 'https://api.groq.com/openai/v1'
+          model = 'whisper-large-v3-turbo'
+        }
+
+        // Write audio buffer to a temp file (OpenAI SDK needs a file path)
+        const ext = mimeType.includes('webm') ? 'webm' : mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp4') ? 'mp4' : 'wav'
+        const tempPath = join(tmpdir(), `brainwave-stt-${randomUUID()}.${ext}`)
+        writeFileSync(tempPath, Buffer.from(audioBuffer))
+
+        try {
+          const client = new OpenAI({ apiKey: sttKey, baseURL, timeout: 30_000 })
+          const fs = await import('node:fs')
+
+          const transcription = await client.audio.transcriptions.create({
+            file: fs.createReadStream(tempPath),
+            model,
+            response_format: 'text',
+          })
+
+          return { text: typeof transcription === 'string' ? transcription : (transcription as unknown as { text: string }).text }
+        } finally {
+          // Clean up temp file
+          try { unlinkSync(tempPath) } catch { /* ignore */ }
+        }
+      } catch (err) {
+        console.error('[STT] Transcription error:', err)
+        return { error: err instanceof Error ? err.message : 'Transcription failed' }
+      }
+    }
+  )
 
   // ─── Model Mode ───
   ipcMain.handle(IPC_CHANNELS.MODEL_MODE_GET, async () => {

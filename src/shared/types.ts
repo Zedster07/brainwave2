@@ -137,6 +137,9 @@ export const IPC_CHANNELS = {
 
   // Notifications (main → renderer)
   NOTIFICATION: 'notification:push',
+
+  // Speech-to-Text
+  STT_TRANSCRIBE: 'stt:transcribe',
 } as const
 
 // ─── IPC Payload Types ───
@@ -402,6 +405,9 @@ export interface BrainwaveAPI {
 
   // Notifications (main → renderer)
   onNotification: (callback: (notification: NotificationPayload) => void) => () => void
+
+  // Speech-to-Text
+  transcribeAudio: (audioBuffer: ArrayBuffer, mimeType: string) => Promise<{ text: string } | { error: string }>
 
   // Plugins
   pluginList: () => Promise<PluginInfoData[]>

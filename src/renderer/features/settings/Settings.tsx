@@ -174,8 +174,11 @@ function ModelSettings() {
   const [defaultModel, setDefaultModel] = useSetting<string>('default_model', 'anthropic/claude-sonnet-4-20250514')
   const [ollamaHost, setOllamaHost] = useSetting<string>('ollama_host', 'http://localhost:11434')
   const [ollamaModel, setOllamaModel] = useSetting<string>('ollama_default_model', 'llama3.1')
+  const [sttApiKey, setSttApiKey] = useSetting<string>('stt_api_key', '')
+  const [sttProvider, setSttProvider] = useSetting<string>('stt_provider', 'groq')
   const [showOpenRouter, setShowOpenRouter] = useState(false)
   const [showReplicate, setShowReplicate] = useState(false)
+  const [showSttKey, setShowSttKey] = useState(false)
   const [modelMode, setModelMode] = useState<string>('normal')
   const [agentConfigs, setAgentConfigs] = useState<Record<string, { provider: string; model: string }> | null>(null)
   const [modeLoading, setModeLoading] = useState(false)
@@ -383,6 +386,44 @@ function ModelSettings() {
               className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-accent/40"
             />
           )}
+        </SettingRow>
+      </div>
+
+      {/* Speech-to-Text (Voice Input) Section */}
+      <div className="border-t border-white/[0.04] pt-4 space-y-4">
+        <div>
+          <p className="text-sm text-white font-medium">Speech-to-Text (Voice Input)</p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Transcribes voice recordings using Whisper. Get a free Groq key at{' '}
+            <a href="https://console.groq.com" target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">console.groq.com</a>
+          </p>
+        </div>
+
+        <SettingRow label="STT Provider" description="Which Whisper API to use for transcription">
+          <select
+            value={sttProvider ?? 'groq'}
+            onChange={(e) => setSttProvider(e.target.value)}
+            className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white focus:outline-none focus:border-accent/40"
+          >
+            <option value="groq" className="bg-gray-800">Groq (Free, fast)</option>
+            <option value="openai" className="bg-gray-800">OpenAI</option>
+          </select>
+        </SettingRow>
+
+        <SettingRow label="STT API Key" description={sttProvider === 'groq' ? 'Groq API key — free tier available' : 'OpenAI API key'}>
+          <div className="flex items-center gap-2">
+            <input
+              type={showSttKey ? 'text' : 'password'}
+              value={sttApiKey ?? ''}
+              onChange={(e) => setSttApiKey(e.target.value)}
+              placeholder={sttProvider === 'groq' ? 'gsk_...' : 'sk-...'}
+              className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-accent/40"
+            />
+            <button onClick={() => setShowSttKey(!showSttKey)} className="text-gray-500 hover:text-gray-300">
+              {showSttKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
+            {sttApiKey && <Check className="w-4 h-4 text-green-400" />}
+          </div>
         </SettingRow>
       </div>
     </div>

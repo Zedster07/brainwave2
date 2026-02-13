@@ -1,36 +1,38 @@
 /**
- * useVoice — Browser-based voice input/output using Web Speech API
+ * useVoice — Voice input/output for Electron
  *
- * Provides speech-to-text (SpeechRecognition) for voice input
- * and text-to-speech (SpeechSynthesis) for reading responses aloud.
+ * Speech-to-text: MediaRecorder → IPC → Whisper API (Groq/OpenAI)
+ * Text-to-speech: Browser SpeechSynthesis (works fine in Electron)
  *
- * Works entirely in the renderer — no main process involvement needed.
+ * Web Speech API (SpeechRecognition) doesn't work in Electron because
+ * Google's API keys are not bundled. We use MediaRecorder to capture audio
+ * and send it to a Whisper-compatible API via the main process.
  */
 import { useState, useCallback, useRef, useEffect } from 'react'
 
 // ─── Types ──────────────────────────────────────────────────
 
 interface VoiceState {
-  /** Whether voice input is currently listening */
+  /** Whether voice input is currently recording */
   isListening: boolean
   /** Whether TTS is currently speaking */
   isSpeaking: boolean
-  /** Whether the browser supports speech recognition */
+  /** Whether audio recording is available */
   canListen: boolean
   /** Whether the browser supports speech synthesis */
   canSpeak: boolean
-  /** The current interim transcript (while still listening) */
+  /** Status message shown during recording/processing */
   interimTranscript: string
   /** Error message if something went wrong */
   error: string | null
 }
 
 interface VoiceActions {
-  /** Start listening for voice input */
+  /** Start recording voice input */
   startListening: () => void
-  /** Stop listening */
+  /** Stop recording and transcribe */
   stopListening: () => void
-  /** Toggle listening on/off */
+  /** Toggle recording on/off */
   toggleListening: () => void
   /** Speak text aloud using TTS */
   speak: (text: string) => void
@@ -39,34 +41,20 @@ interface VoiceActions {
 }
 
 interface UseVoiceOptions {
-  /** Called with the final transcript when speech recognition completes */
+  /** Called with the final transcript when transcription completes */
   onResult?: (transcript: string) => void
-  /** Language for recognition (default: 'en-US') */
+  /** Language for TTS (default: 'en-US') */
   lang?: string
-  /** Whether to use continuous recognition (default: false — stops after silence) */
+  /** Unused — kept for API compatibility */
   continuous?: boolean
-}
-
-// ─── SpeechRecognition Polyfill Types ───────────────────────
-
-interface SpeechRecognitionEvent {
-  results: SpeechRecognitionResultList
-  resultIndex: number
 }
 
 // ─── Hook ───────────────────────────────────────────────────
 
 export function useVoice(options: UseVoiceOptions = {}): VoiceState & VoiceActions {
-  const { onResult, lang = 'en-US', continuous = false } = options
+  const { onResult, lang = 'en-US' } = options
 
-  // Browser capabilities — resolve once and store in a ref to avoid re-renders
-  const speechRecognitionRef = useRef(
-    (window as unknown as { SpeechRecognition?: new () => SpeechRecognition }).SpeechRecognition ??
-    (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognition }).webkitSpeechRecognition ??
-    null
-  )
-
-  const canListen = !!speechRecognitionRef.current
+  const canListen = typeof navigator?.mediaDevices?.getUserMedia === 'function'
   const canSpeak = 'speechSynthesis' in window
 
   const [isListening, setIsListening] = useState(false)
@@ -74,85 +62,99 @@ export function useVoice(options: UseVoiceOptions = {}): VoiceState & VoiceActio
   const [interimTranscript, setInterimTranscript] = useState('')
   const [error, setError] = useState<string | null>(null)
 
-  const recognitionRef = useRef<SpeechRecognition | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const streamRef = useRef<MediaStream | null>(null)
   const onResultRef = useRef(onResult)
 
-  // Keep the callback ref up-to-date without re-creating recognition
+  // Keep the callback ref up-to-date
   useEffect(() => {
     onResultRef.current = onResult
   }, [onResult])
 
-  const startListening = useCallback(() => {
-    const SpeechRecognitionClass = speechRecognitionRef.current
-    if (!SpeechRecognitionClass) {
-      setError('Speech recognition not supported in this browser')
-      return
-    }
+  const startListening = useCallback(async () => {
+    setError(null)
+    setInterimTranscript('')
 
-    // Clean up existing instance (stop gracefully, don't abort)
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop() } catch { /* ignore */ }
-      recognitionRef.current = null
-    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      streamRef.current = stream
 
-    const recognition = new SpeechRecognitionClass()
-    recognition.lang = lang
-    recognition.continuous = continuous
-    recognition.interimResults = true
-    recognition.maxAlternatives = 1
+      // Prefer webm (smaller), fall back to whatever is available
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/webm')
+          ? 'audio/webm'
+          : 'audio/ogg'
 
-    recognition.onstart = () => {
-      setIsListening(true)
-      setError(null)
-      setInterimTranscript('')
-    }
+      const recorder = new MediaRecorder(stream, { mimeType })
+      audioChunksRef.current = []
 
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      let interim = ''
-      let final = ''
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i]
-        if (result.isFinal) {
-          final += result[0].transcript
-        } else {
-          interim += result[0].transcript
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          audioChunksRef.current.push(e.data)
         }
       }
 
-      setInterimTranscript(interim)
+      recorder.onstop = async () => {
+        // Stop all audio tracks to release the mic
+        stream.getTracks().forEach((t) => t.stop())
+        streamRef.current = null
 
-      if (final) {
-        onResultRef.current?.(final.trim())
+        const chunks = audioChunksRef.current
+        if (chunks.length === 0) {
+          setInterimTranscript('')
+          return
+        }
+
+        setInterimTranscript('Processing...')
+
+        try {
+          const audioBlob = new Blob(chunks, { type: mimeType })
+          const arrayBuffer = await audioBlob.arrayBuffer()
+
+          const result = await window.brainwave.transcribeAudio(arrayBuffer, mimeType)
+
+          if ('error' in result) {
+            setError(result.error)
+            setInterimTranscript('')
+          } else if (result.text?.trim()) {
+            onResultRef.current?.(result.text.trim())
+            setInterimTranscript('')
+          } else {
+            setInterimTranscript('')
+          }
+        } catch (err) {
+          console.error('[Voice] Transcription failed:', err)
+          setError('Transcription failed — check your STT API key in Settings')
+          setInterimTranscript('')
+        }
+      }
+
+      recorder.onerror = () => {
+        console.error('[Voice] MediaRecorder error')
+        setError('Recording failed')
+        setIsListening(false)
         setInterimTranscript('')
       }
-    }
 
-    recognition.onerror = (event: { error: string }) => {
-      console.warn('[Voice] SpeechRecognition error:', event.error)
-      // 'aborted' and 'no-speech' are not real errors
-      if (event.error === 'aborted' || event.error === 'no-speech') {
-        setIsListening(false)
-        return
-      }
-      setError(`Speech error: ${event.error}`)
+      mediaRecorderRef.current = recorder
+      recorder.start(250) // Collect chunks every 250ms
+      setIsListening(true)
+      setInterimTranscript('🎙️ Recording...')
+    } catch (err) {
+      console.error('[Voice] getUserMedia failed:', err)
+      setError('Microphone access denied')
       setIsListening(false)
     }
-
-    recognition.onend = () => {
-      setIsListening(false)
-      setInterimTranscript('')
-    }
-
-    recognitionRef.current = recognition
-    recognition.start()
-  }, [lang, continuous])
+  }, [])
 
   const stopListening = useCallback(() => {
-    if (recognitionRef.current) {
-      recognitionRef.current.stop()
-      recognitionRef.current = null
+    const recorder = mediaRecorderRef.current
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.stop()
     }
+    mediaRecorderRef.current = null
     setIsListening(false)
   }, [])
 
@@ -210,9 +212,15 @@ export function useVoice(options: UseVoiceOptions = {}): VoiceState & VoiceActio
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.abort()
+      // Stop recording
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop()
       }
+      // Release mic
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop())
+      }
+      // Stop TTS
       if (canSpeak) {
         window.speechSynthesis.cancel()
       }

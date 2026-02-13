@@ -281,6 +281,10 @@ const api: BrainwaveAPI = {
   mcpImportServers: (json: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.MCP_IMPORT_SERVERS, json),
 
+  // ─── Speech-to-Text ───
+  transcribeAudio: (audioBuffer: ArrayBuffer, mimeType: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.STT_TRANSCRIBE, audioBuffer, mimeType),
+
   // ─── Plugins ───
   pluginList: () =>
     ipcRenderer.invoke(IPC_CHANNELS.PLUGIN_LIST),
