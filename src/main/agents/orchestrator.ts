@@ -478,6 +478,9 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
       const triageContext: AgentContext = { taskId: task.id, relevantMemories, conversationHistory }
       const triage = await this.triage(task.prompt, triageContext, relevantMemories, conversationHistory)
 
+      // 1b. Apply code-level routing guards (prompts are suggestions; guards are law)
+      this.applyTriageGuards(triage, task.prompt)
+
       // 2. Route based on triage lane
       console.log(`[Orchestrator] Routing task ${task.id} to lane: ${triage.lane}${triage.agent ? ` (agent: ${triage.agent})` : ''}`)
       switch (triage.lane) {
@@ -691,7 +694,7 @@ ${memoryContext}${peopleContext}${historyContext}`,
       originalTask: task.prompt,
       subTasks: [{
         id: 'direct-task',
-        description: task.prompt,
+        description: this.augmentTaskForAgent(task.prompt, agentType),
         assignedAgent: agentType,
         status: 'pending',
         dependencies: [],
@@ -750,6 +753,10 @@ ${memoryContext}${peopleContext}${historyContext}`,
     })
 
     const plan = await this.planner.decompose(task.id, task.prompt)
+
+    // Apply code-level plan guards — fix misrouted subtasks before execution
+    this.applyPlanGuards(plan)
+
     task.plan = plan
 
     this.db.run(
@@ -1066,6 +1073,129 @@ Rules:
         .filter(Boolean)
         .join('\n\n---\n\n')
     }
+  }
+
+  // ─── Code-Level Routing Guards ──────────────────────────
+  //
+  // These guards enforce hard constraints that override LLM decisions.
+  // Prompts are suggestions; guards are law.
+  //
+
+  /**
+   * Fix incorrect triage routing for direct-lane tasks.
+   * Example: "search the web for X" → triage picks researcher → guard redirects to executor.
+   */
+  private applyTriageGuards(triage: TriageResult, prompt: string): void {
+    if (triage.lane !== 'direct') return
+
+    // ── Guard 1: Web search → executor ──
+    // Only executor has web_search/webpage_fetch tools. Researcher has NO tools.
+    const WEB_SEARCH_SIGNALS = [
+      /search\s+(the\s+)?(web|internet|online)/i,
+      /find\s+(it\s+)?(online|on\s+the\s+web|on\s+the\s+internet)/i,
+      /look\s+(it\s+)?up\s+(online|on\s+the\s+web)/i,
+      /\bgoogle\s/i,
+      /browse\s+(the\s+)?(web|internet)/i,
+      /\bweb\s*search\b/i,
+    ]
+
+    const LIVE_DATA_SIGNALS = [
+      /\b(latest|newest|most\s+recent|current|up-to-date)\b.*\b(news|release|model|update|version|price|stock|weather|event|announcement)/i,
+      /\b(released|launched|announced|came\s+out)\s+(this|last|in\s+\d{4})/i,
+    ]
+
+    const hasWebSearchIntent = WEB_SEARCH_SIGNALS.some(p => p.test(prompt))
+    const hasLiveDataNeed = LIVE_DATA_SIGNALS.some(p => p.test(prompt))
+
+    if ((hasWebSearchIntent || hasLiveDataNeed) && triage.agent !== 'executor') {
+      const reason = hasWebSearchIntent ? 'explicit web search request' : 'requires live/current data'
+      console.log(`[Orchestrator] \u{1F6E1} Routing guard: ${reason} — redirecting ${triage.agent} → executor`)
+      triage.agent = 'executor'
+      triage.reasoning += ` [GUARD: ${reason} — only executor has web_search tool]`
+    }
+
+    // ── Guard 2: File/shell/network → executor ──
+    const FILE_SHELL_SIGNALS = [
+      /\b(read|write|create|delete|move|rename|copy)\s+(a\s+|the\s+)?(file|directory|folder)\b/i,
+      /\blist\s+(the\s+)?(files|directories|folders|contents)\b/i,
+      /\b(run|execute)\s+(a\s+|the\s+)?(command|script|shell)\b/i,
+      /\b(git|npm|pip|python|node|curl|wget|powershell|bash)\s/i,
+      /\bdownload\s+(a\s+|the\s+)?\w/i,
+    ]
+
+    const needsExecutor = FILE_SHELL_SIGNALS.some(p => p.test(prompt))
+
+    if (needsExecutor && triage.agent !== 'executor') {
+      console.log(`[Orchestrator] \u{1F6E1} Routing guard: file/shell/network task — redirecting ${triage.agent} → executor`)
+      triage.agent = 'executor'
+      triage.reasoning += ' [GUARD: file/shell/network tasks require executor]'
+    }
+  }
+
+  /**
+   * Post-process planner output — fix misrouted subtasks in the DAG.
+   * The planner LLM might assign web search tasks to researcher,
+   * but researcher has no tools. This catches and fixes it.
+   */
+  private applyPlanGuards(plan: TaskPlan): void {
+    let modified = false
+
+    for (const st of plan.subTasks) {
+      const lower = st.description.toLowerCase()
+
+      // Web search / live data subtasks → executor (researcher has no tools)
+      const needsWebSearch =
+        /\b(search\s+(the\s+)?(web|internet|online)|web.?search|find\s+online|browse|scrape)\b/.test(lower)
+      const needsLiveData =
+        /\b(latest|newest|current|recent|up-to-date|real-time|live)\b/.test(lower) &&
+        /\b(data|info|news|release|model|update|version|price|result)\b/.test(lower)
+
+      if ((needsWebSearch || needsLiveData) && st.assignedAgent === 'researcher') {
+        console.log(`[Orchestrator] \u{1F6E1} Plan guard: subtask "${st.id}" needs web access — researcher → executor`)
+        st.assignedAgent = 'executor'
+        if (!lower.includes('web_search')) {
+          st.description += '\n\nUse the web_search tool to find this information online. If you need more detail from a specific page, use the webpage_fetch tool.'
+        }
+        modified = true
+      }
+
+      // File/shell subtasks → executor
+      const needsFileOps =
+        /\b(read|write|create|delete|move|rename)\s+(the\s+)?(file|dir|folder)/.test(lower) ||
+        /\blist\s+(files|dir)/.test(lower) ||
+        /\b(shell|command|terminal|git\s|npm\s|pip\s|run\s|execute)\b/.test(lower)
+
+      if (needsFileOps && !['executor', 'coder'].includes(st.assignedAgent)) {
+        console.log(`[Orchestrator] \u{1F6E1} Plan guard: subtask "${st.id}" needs file/shell — ${st.assignedAgent} → executor`)
+        st.assignedAgent = 'executor'
+        modified = true
+      }
+    }
+
+    if (modified) {
+      plan.requiredAgents = [...new Set(plan.subTasks.map(st => st.assignedAgent))]
+    }
+  }
+
+  /**
+   * Augment task description with tool hints when routing to executor.
+   * Helps the executor LLM know which tool to use without guessing.
+   */
+  private augmentTaskForAgent(description: string, agent: AgentType): string {
+    if (agent !== 'executor') return description
+
+    const lower = description.toLowerCase()
+
+    // Add web_search hint for web search tasks
+    const isWebSearch =
+      /\b(search\s+(the\s+)?(web|internet|online)|find\s+online|latest|newest|current|recent|browse)\b/.test(lower)
+    const isAboutFiles = /\b(file|directory|folder|path|disk)\b/.test(lower)
+
+    if (isWebSearch && !isAboutFiles && !lower.includes('web_search')) {
+      return description + '\n\nUse the web_search tool to find this information online. If you need to read a specific page in detail, use the webpage_fetch tool.'
+    }
+
+    return description
   }
 
   /** Mark a task as failed */
