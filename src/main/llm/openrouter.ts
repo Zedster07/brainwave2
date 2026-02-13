@@ -6,6 +6,7 @@
  */
 import OpenAI from 'openai'
 import type { LLMAdapter, LLMConfig, LLMRequest, LLMResponse } from './types'
+import { withRetry, getCircuitBreaker } from './retry'
 
 export class OpenRouterProvider implements LLMAdapter {
   readonly provider = 'openrouter'
@@ -25,13 +26,17 @@ export class OpenRouterProvider implements LLMAdapter {
   }
 
   async complete(request: LLMRequest): Promise<LLMResponse> {
+    const cb = getCircuitBreaker('openrouter')
+    if (!cb.canExecute()) {
+      throw new Error('OpenRouter circuit breaker is OPEN — provider temporarily unavailable')
+    }
+
     const model = request.model ?? this.defaultModel
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
       { role: 'system', content: request.system },
     ]
 
-    // Inject context as a separate system message if provided
     if (request.context) {
       messages.push({
         role: 'system',
@@ -41,22 +46,32 @@ export class OpenRouterProvider implements LLMAdapter {
 
     messages.push({ role: 'user', content: request.user })
 
-    const response = await this.client.chat.completions.create({
-      model,
-      messages,
-      temperature: request.temperature ?? 0.7,
-      max_tokens: request.maxTokens ?? 4096,
-      response_format:
-        request.responseFormat === 'json' ? { type: 'json_object' } : undefined,
-    })
+    try {
+      const response = await withRetry(
+        () => this.client.chat.completions.create({
+          model,
+          messages,
+          temperature: request.temperature ?? 0.7,
+          max_tokens: request.maxTokens ?? 4096,
+          response_format:
+            request.responseFormat === 'json' ? { type: 'json_object' } : undefined,
+        }),
+        { maxAttempts: 3 },
+        `OpenRouter ${model}`
+      )
 
-    const choice = response.choices[0]
-    return {
-      content: choice.message.content ?? '',
-      model: response.model,
-      tokensIn: response.usage?.prompt_tokens ?? 0,
-      tokensOut: response.usage?.completion_tokens ?? 0,
-      finishReason: choice.finish_reason ?? 'unknown',
+      cb.recordSuccess()
+      const choice = response.choices[0]
+      return {
+        content: choice.message.content ?? '',
+        model: response.model,
+        tokensIn: response.usage?.prompt_tokens ?? 0,
+        tokensOut: response.usage?.completion_tokens ?? 0,
+        finishReason: choice.finish_reason ?? 'unknown',
+      }
+    } catch (err) {
+      cb.recordFailure()
+      throw err
     }
   }
 
@@ -91,10 +106,25 @@ export class OpenRouterProvider implements LLMAdapter {
   }
 
   async embeddings(text: string): Promise<Float32Array> {
-    const response = await this.client.embeddings.create({
-      model: 'openai/text-embedding-3-small',
-      input: text,
-    })
-    return new Float32Array(response.data[0].embedding)
+    const cb = getCircuitBreaker('openrouter')
+    if (!cb.canExecute()) {
+      throw new Error('OpenRouter circuit breaker is OPEN — provider temporarily unavailable')
+    }
+
+    try {
+      const response = await withRetry(
+        () => this.client.embeddings.create({
+          model: 'openai/text-embedding-3-small',
+          input: text,
+        }),
+        { maxAttempts: 3 },
+        'OpenRouter embeddings'
+      )
+      cb.recordSuccess()
+      return new Float32Array(response.data[0].embedding)
+    } catch (err) {
+      cb.recordFailure()
+      throw err
+    }
   }
 }

@@ -79,6 +79,9 @@ export interface EventMap {
   'plan:step-completed': { taskId: string; planId: string; stepId: string; agentType: AgentType }
   'plan:step-failed': { taskId: string; planId: string; stepId: string; error: string }
 
+  // Escalation (retries exhausted)
+  'task:escalation': { taskId: string; stepId: string; agent: string; error: string; attempts: number; message: string }
+
   // System
   'system:log': { level: 'debug' | 'info' | 'warn' | 'error'; message: string; data?: unknown }
   'system:error': { error: string; fatal: boolean }

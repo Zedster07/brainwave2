@@ -2,6 +2,7 @@ export { LLMFactory } from './factory'
 export { OpenRouterProvider } from './openrouter'
 export { ReplicateProvider } from './replicate'
 export { FallbackLLMAdapter } from './fallback-adapter'
+export { withRetry, CircuitBreaker, getCircuitBreaker, getAllCircuitBreakerStatus } from './retry'
 export type {
   LLMAdapter,
   LLMConfig,
@@ -10,6 +11,7 @@ export type {
   AgentModelConfig,
   ModelMode,
 } from './types'
+export type { RetryOptions, CircuitState, CircuitBreakerOptions } from './retry'
 export {
   DEFAULT_AGENT_MODELS,
   BEAST_MODE_MODELS,

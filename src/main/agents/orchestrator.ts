@@ -853,25 +853,39 @@ ${memoryContext}${peopleContext}${historyContext}`,
             agentType: subTask.assignedAgent,
           })
         } else {
-          // Retry logic
+          // Retry logic with error context for self-correction
           subTask.attempts++
           if (subTask.attempts < subTask.maxAttempts) {
             subTask.status = 'retrying'
+            // Attach error to description so agent can self-correct on retry
+            if (result.error && !subTask.description.includes('PREVIOUS ATTEMPT FAILED')) {
+              subTask.description += `\n\nPREVIOUS ATTEMPT FAILED: ${result.error}\nPlease fix the issue and try a different approach.`
+            }
             console.log(
-              `[Orchestrator] Retrying ${subTask.id} (attempt ${subTask.attempts + 1}/${subTask.maxAttempts})`
+              `[Orchestrator] Retrying ${subTask.id} (attempt ${subTask.attempts + 1}/${subTask.maxAttempts}): ${result.error?.slice(0, 100)}`
             )
             // Will be picked up in the next loop iteration
           } else {
             subTask.status = 'failed'
             subTask.error = result.error
             remaining.delete(subTask.id)
-            completed.add(subTask.id) // Mark as "done" so dependents can see it failed
+            completed.add(subTask.id)
 
             this.bus.emitEvent('plan:step-failed', {
               taskId: task.id,
               planId: plan.id,
               stepId: subTask.id,
               error: result.error ?? 'Unknown error',
+            })
+
+            // Escalation: notify user that retries are exhausted
+            this.bus.emitEvent('task:escalation', {
+              taskId: task.id,
+              stepId: subTask.id,
+              agent: subTask.assignedAgent,
+              error: result.error ?? 'Unknown error',
+              attempts: subTask.attempts,
+              message: `Agent "${subTask.assignedAgent}" failed after ${subTask.attempts} attempts on: "${subTask.description.slice(0, 100)}"`,
             })
           }
         }

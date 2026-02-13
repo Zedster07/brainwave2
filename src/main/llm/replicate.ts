@@ -6,6 +6,7 @@
  */
 import Replicate from 'replicate'
 import type { LLMAdapter, LLMConfig, LLMRequest, LLMResponse } from './types'
+import { withRetry, getCircuitBreaker } from './retry'
 
 export class ReplicateProvider implements LLMAdapter {
   readonly provider = 'replicate'
@@ -18,27 +19,42 @@ export class ReplicateProvider implements LLMAdapter {
   }
 
   async complete(request: LLMRequest): Promise<LLMResponse> {
+    const cb = getCircuitBreaker('replicate')
+    if (!cb.canExecute()) {
+      throw new Error('Replicate circuit breaker is OPEN — provider temporarily unavailable')
+    }
+
     const model = request.model ?? this.defaultModel
 
-    const output = await this.client.run(model as `${string}/${string}`, {
-      input: {
-        system_prompt: request.system,
-        prompt: request.context
-          ? `<context>\n${request.context}\n</context>\n\n${request.user}`
-          : request.user,
-        temperature: request.temperature ?? 0.7,
-        max_tokens: request.maxTokens ?? 4096,
-      },
-    })
+    try {
+      const output = await withRetry(
+        () => this.client.run(model as `${string}/${string}`, {
+          input: {
+            system_prompt: request.system,
+            prompt: request.context
+              ? `<context>\n${request.context}\n</context>\n\n${request.user}`
+              : request.user,
+            temperature: request.temperature ?? 0.7,
+            max_tokens: request.maxTokens ?? 4096,
+          },
+        }),
+        { maxAttempts: 3 },
+        `Replicate ${model}`
+      )
 
-    const content = Array.isArray(output) ? output.join('') : String(output)
+      cb.recordSuccess()
+      const content = Array.isArray(output) ? output.join('') : String(output)
 
-    return {
-      content,
-      model,
-      tokensIn: 0,  // Replicate doesn't return token counts in basic mode
-      tokensOut: 0,
-      finishReason: 'stop',
+      return {
+        content,
+        model,
+        tokensIn: 0,
+        tokensOut: 0,
+        finishReason: 'stop',
+      }
+    } catch (err) {
+      cb.recordFailure()
+      throw err
     }
   }
 

@@ -4,7 +4,7 @@ import { IPC_CHANNELS } from '@shared/types'
 import type { TaskSubmission, MemoryQuery, CreateScheduledJobInput } from '@shared/types'
 import { getScheduler } from '../services/scheduler.service'
 import { getDatabase } from '../db/database'
-import { LLMFactory } from '../llm'
+import { LLMFactory, getAllCircuitBreakerStatus } from '../llm'
 import { getOrchestrator } from '../agents/orchestrator'
 import { getAgentPool } from '../agents/agent-pool'
 import { getEventBus } from '../agents/event-bus'
@@ -161,6 +161,17 @@ export function registerIpcHandlers(): void {
   eventBus.onEvent('agent:error', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
     id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agentType, agentType: data.agentType,
     level: 'error', message: data.error, timestamp: Date.now(),
+  }))
+
+  // Escalation events — agent retries exhausted
+  eventBus.onEvent('task:escalation', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
+    id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agent, agentType: data.agent,
+    level: 'error', message: `⚠ ESCALATION: ${data.message}`, timestamp: Date.now(),
+  }))
+  eventBus.onEvent('task:escalation', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+    taskId: data.taskId, status: 'executing',
+    currentStep: `⚠ ${data.agent} failed after ${data.attempts} attempts — continuing with remaining steps`,
+    timestamp: Date.now(),
   }))
 
   // ─── Memory (wired to MemoryManager) ───
@@ -379,6 +390,11 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.MODEL_MODE_GET_CONFIGS, async () => {
     return LLMFactory.getAllAgentConfigs()
+  })
+
+  // ─── LLM Health ───
+  ipcMain.handle(IPC_CHANNELS.LLM_CIRCUIT_STATUS, async () => {
+    return getAllCircuitBreakerStatus()
   })
 
   // ─── Scheduler ───

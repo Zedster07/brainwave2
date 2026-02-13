@@ -194,6 +194,10 @@ const api: BrainwaveAPI = {
 
   getSessionTasks: (sessionId: string, limit?: number) =>
     ipcRenderer.invoke(IPC_CHANNELS.SESSION_GET_TASKS, sessionId, limit) as Promise<TaskRecord[]>,
+
+  // LLM Health
+  getCircuitBreakerStatus: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.LLM_CIRCUIT_STATUS) as Promise<Array<{ state: string; failureCount: number; name: string }>>,
 }
 
 // Expose typed API to renderer

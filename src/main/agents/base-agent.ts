@@ -87,6 +87,8 @@ export abstract class BaseAgent {
    * Execute a sub-task — the main entry point.
    * Override in agent subclasses for custom logic.
    * Default implementation: calls think() with the task description.
+   * Includes self-correction: if the first attempt fails with an LLM error,
+   * re-prompts with the error context for the model to fix its output.
    */
   async execute(task: SubTask, context: AgentContext): Promise<AgentResult> {
     const startTime = Date.now()
@@ -122,12 +124,52 @@ export abstract class BaseAgent {
         tokensOut: result.tokensOut,
       })
 
-      // Log the run to the database
       this.logRun(task, context, result)
-
       return result
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)
+
+      // Self-correction: if this looks like a content/parsing error (not provider outage),
+      // try once more with the error appended as context for the model to fix
+      if (this.isSelfCorrectableError(error)) {
+        console.log(`[${this.type}] Attempting self-correction for: ${error.slice(0, 100)}`)
+        try {
+          const correctionPrompt = `${task.description}\n\n` +
+            `IMPORTANT: Your previous attempt failed with this error:\n"${error}"\n\n` +
+            `Please fix the issue and try again. Be more careful with your output format.`
+
+          const response = await this.think(correctionPrompt, context, {
+            temperature: Math.max(0.1, (modelConfig?.temperature ?? 0.7) - 0.2), // lower temperature for correction
+            maxTokens: modelConfig?.maxTokens,
+          })
+
+          const result: AgentResult = {
+            status: 'success',
+            output: response.content,
+            confidence: Math.min(this.assessConfidence(response), 0.6), // cap confidence for corrected outputs
+            reasoning: 'Self-corrected after initial failure',
+            tokensIn: response.tokensIn,
+            tokensOut: response.tokensOut,
+            model: response.model,
+            duration: Date.now() - startTime,
+          }
+
+          this.bus.emitEvent('agent:completed', {
+            agentType: this.type,
+            taskId: context.taskId,
+            confidence: result.confidence,
+            tokensIn: result.tokensIn,
+            tokensOut: result.tokensOut,
+            selfCorrected: true,
+          })
+
+          this.logRun(task, context, result)
+          return result
+        } catch (correctionErr) {
+          // Self-correction also failed — fall through to failure path
+          console.warn(`[${this.type}] Self-correction also failed:`, correctionErr)
+        }
+      }
 
       this.bus.emitEvent('agent:error', {
         agentType: this.type,
@@ -146,6 +188,40 @@ export abstract class BaseAgent {
         duration: Date.now() - startTime,
       }
     }
+  }
+
+  /**
+   * Check if an error is worth self-correcting (output format issues, JSON parse errors)
+   * vs a hard infrastructure error (auth, network) that won't be fixed by re-prompting.
+   */
+  protected isSelfCorrectableError(error: string): boolean {
+    const correctable = [
+      'json',
+      'parse',
+      'unexpected token',
+      'syntax',
+      'invalid',
+      'format',
+      'expected',
+      'missing',
+      'property',
+    ]
+    const notCorrectable = [
+      'api key',
+      'auth',
+      '401',
+      '403',
+      'circuit breaker',
+      'rate_limit',
+      'rate limit',
+      '429',
+      'timeout',
+      'ETIMEDOUT',
+      'ECONNRESET',
+    ]
+    const lower = error.toLowerCase()
+    if (notCorrectable.some((p) => lower.includes(p))) return false
+    return correctable.some((p) => lower.includes(p))
   }
 
   /**

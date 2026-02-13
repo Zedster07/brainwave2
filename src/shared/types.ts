@@ -91,6 +91,9 @@ export const IPC_CHANNELS = {
   SESSION_DELETE: 'session:delete',
   SESSION_RENAME: 'session:rename',
   SESSION_GET_TASKS: 'session:get-tasks',
+
+  // LLM Health
+  LLM_CIRCUIT_STATUS: 'llm:circuit-status',
 } as const
 
 // ─── IPC Payload Types ───
@@ -304,6 +307,9 @@ export interface BrainwaveAPI {
   deleteSession: (id: string) => Promise<boolean>
   renameSession: (id: string, title: string) => Promise<ChatSession | null>
   getSessionTasks: (sessionId: string, limit?: number) => Promise<TaskRecord[]>
+
+  // LLM Health
+  getCircuitBreakerStatus: () => Promise<Array<{ state: string; failureCount: number; name: string }>>
 }
 
 // ─── Scheduler Types ───
