@@ -225,6 +225,26 @@ const api: BrainwaveAPI = {
   // Prompt Versioning
   getPromptVersions: () =>
     ipcRenderer.invoke(IPC_CHANNELS.PROMPT_LIST_VERSIONS),
+
+  // ─── Auto-Update ───
+  checkForUpdate: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CHECK) as Promise<void>,
+
+  getUpdateStatus: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.UPDATE_CHECK_STATUS),
+
+  downloadUpdate: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.UPDATE_DOWNLOAD) as Promise<void>,
+
+  installUpdate: () => {
+    ipcRenderer.invoke(IPC_CHANNELS.UPDATE_INSTALL)
+  },
+
+  onUpdateStatus: (callback: (status: { state: string; version?: string; progress?: number; error?: string }) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, status: { state: string; version?: string; progress?: number; error?: string }) => callback(status)
+    ipcRenderer.on(IPC_CHANNELS.UPDATE_STATUS, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.UPDATE_STATUS, handler)
+  },
 }
 
 // Expose typed API to renderer

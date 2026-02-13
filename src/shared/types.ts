@@ -101,6 +101,13 @@ export const IPC_CHANNELS = {
   OLLAMA_HEALTH: 'ollama:health',
   OLLAMA_MODELS: 'ollama:models',
 
+  // Auto-Update
+  UPDATE_CHECK: 'update:check',
+  UPDATE_CHECK_STATUS: 'update:check-status',
+  UPDATE_DOWNLOAD: 'update:download',
+  UPDATE_INSTALL: 'update:install',
+  UPDATE_STATUS: 'update:status',  // main → renderer
+
   // Calibration / Feedback
   CALIBRATION_SUBMIT_FEEDBACK: 'calibration:submit-feedback',
   CALIBRATION_GET_REPORT: 'calibration:get-report',
@@ -338,6 +345,23 @@ export interface BrainwaveAPI {
 
   // Prompt Versioning
   getPromptVersions: () => Promise<Array<{ name: string; version: string; label: string; hash: string }>>
+
+  // Auto-Update
+  checkForUpdate: () => Promise<void>
+  getUpdateStatus: () => Promise<UpdateStatusInfo>
+  downloadUpdate: () => Promise<void>
+  installUpdate: () => void
+  onUpdateStatus: (callback: (status: UpdateStatusInfo) => void) => () => void
+}
+
+// ─── Update Types ───
+
+export interface UpdateStatusInfo {
+  state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
+  version?: string
+  progress?: number
+  error?: string
+  releaseNotes?: string
 }
 
 // ─── Calibration Types ───

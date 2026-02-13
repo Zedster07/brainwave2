@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw } from 'lucide-react'
+import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle } from 'lucide-react'
 
 type SettingsTab = 'general' | 'models' | 'rules' | 'storage'
 
@@ -59,6 +59,13 @@ export function Settings() {
 function GeneralSettings() {
   const [transparency, setTransparency] = useSetting<string>('ui_transparency', 'smart')
   const [maxAgents, setMaxAgents] = useSetting<number>('max_concurrent_agents', 3)
+  const [updateStatus, setUpdateStatus] = useState<{ state: string; version?: string; progress?: number; error?: string }>({ state: 'idle' })
+
+  useEffect(() => {
+    window.brainwave.getUpdateStatus().then(setUpdateStatus).catch(console.error)
+    const unsub = window.brainwave.onUpdateStatus(setUpdateStatus)
+    return unsub
+  }, [])
 
   return (
     <div className="space-y-6">
@@ -90,6 +97,68 @@ function GeneralSettings() {
           className="w-20 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white text-center focus:outline-none focus:border-accent/40"
         />
       </SettingRow>
+
+      {/* Auto-Update Section */}
+      <div className="border-t border-white/[0.04] pt-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-white font-medium">App Updates</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              {updateStatus.state === 'available' && updateStatus.version
+                ? `v${updateStatus.version} available`
+                : updateStatus.state === 'downloaded' && updateStatus.version
+                  ? `v${updateStatus.version} ready to install`
+                  : updateStatus.state === 'downloading'
+                    ? `Downloading... ${updateStatus.progress ?? 0}%`
+                    : updateStatus.state === 'checking'
+                      ? 'Checking for updates...'
+                      : updateStatus.state === 'error'
+                        ? `Error: ${updateStatus.error}`
+                        : 'App is up to date'}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {updateStatus.state === 'downloading' && (
+              <div className="w-24 h-1.5 bg-white/[0.05] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-accent rounded-full transition-all duration-300"
+                  style={{ width: `${updateStatus.progress ?? 0}%` }}
+                />
+              </div>
+            )}
+            {updateStatus.state === 'available' && (
+              <button
+                onClick={() => window.brainwave.downloadUpdate()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-accent/10 text-accent rounded-md hover:bg-accent/20 transition-colors"
+              >
+                <ArrowDownCircle className="w-3.5 h-3.5" />
+                Download
+              </button>
+            )}
+            {updateStatus.state === 'downloaded' && (
+              <button
+                onClick={() => window.brainwave.installUpdate()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-green-500/10 text-green-400 rounded-md hover:bg-green-500/20 transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Install & Restart
+              </button>
+            )}
+            {(updateStatus.state === 'idle' || updateStatus.state === 'not-available' || updateStatus.state === 'error') && (
+              <button
+                onClick={() => window.brainwave.checkForUpdate()}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white/[0.05] text-gray-400 rounded-md hover:bg-white/[0.08] transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                Check Now
+              </button>
+            )}
+            {updateStatus.state === 'checking' && (
+              <Loader2 className="w-4 h-4 text-accent animate-spin" />
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

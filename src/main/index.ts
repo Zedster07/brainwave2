@@ -12,6 +12,7 @@ import { initMemoryManager } from './memory/memory-manager'
 import { getDecayService } from './memory/decay'
 import { getHardEngine, getSoftEngine } from './rules'
 import { getOrchestrator } from './agents/orchestrator'
+import { initAutoUpdater } from './updater'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -126,6 +127,9 @@ app.whenReady().then(() => {
 
   // Register IPC handlers before creating window
   registerIpcHandlers()
+
+  // ── Auto-Update (checks GitHub Releases on launch) ──
+  initAutoUpdater()
 
   createWindow()
 
