@@ -727,10 +727,21 @@ ${memoryContext}${peopleContext}${historyContext}`,
     const results = await this.executePlan(task, plan, relevantMemories, conversationHistory)
     if (task.status === 'cancelled') return
 
-    // For single-step plans, use agent output directly
-    const finalResult = plan.subTasks.length === 1
-      ? (results.get(plan.subTasks[0].id)?.output ?? null)
-      : await this.synthesizeAnswer(plan, results)
+    // For single-step plans, use raw output ONLY if it's already a clean string.
+    // Structured JSON from agents (researcher, analyst, etc.) must be synthesized
+    // into a human-readable response — never show raw JSON to the user.
+    let finalResult: unknown
+    if (plan.subTasks.length === 1) {
+      const rawOutput = results.get(plan.subTasks[0].id)?.output ?? null
+      if (typeof rawOutput === 'string') {
+        finalResult = rawOutput
+      } else {
+        // Structured output (e.g. ResearchOutput, AnalystOutput) → synthesize
+        finalResult = await this.synthesizeAnswer(plan, results)
+      }
+    } else {
+      finalResult = await this.synthesizeAnswer(plan, results)
+    }
     await this.completeTask(task, finalResult, plan, memoryManager)
   }
 
