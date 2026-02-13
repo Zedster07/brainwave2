@@ -245,6 +245,31 @@ const api: BrainwaveAPI = {
     ipcRenderer.on(IPC_CHANNELS.UPDATE_STATUS, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.UPDATE_STATUS, handler)
   },
+
+  // ─── MCP (Tool Integration) ───
+  mcpGetServers: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_SERVERS),
+
+  mcpAddServer: (config: Omit<{ id: string; name: string; transport: string }, 'id'>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_ADD_SERVER, config),
+
+  mcpUpdateServer: (id: string, updates: Record<string, unknown>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_UPDATE_SERVER, id, updates),
+
+  mcpRemoveServer: (id: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_REMOVE_SERVER, id) as Promise<boolean>,
+
+  mcpConnect: (serverId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_CONNECT, serverId) as Promise<void>,
+
+  mcpDisconnect: (serverId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_DISCONNECT, serverId) as Promise<void>,
+
+  mcpGetStatuses: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_STATUSES),
+
+  mcpGetTools: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_TOOLS),
 }
 
 // Expose typed API to renderer

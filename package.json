@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@electron-toolkit/utils": "^4.0.0",
+    "@modelcontextprotocol/sdk": "^1.26.0",
     "@types/d3": "^7.4.3",
     "better-sqlite3": "^11.7.0",
     "cron-parser": "^4.9.0",

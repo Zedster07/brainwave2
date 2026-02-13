@@ -10,6 +10,7 @@ import { ResearcherAgent } from './researcher'
 import { CoderAgent } from './coder'
 import { ReviewerAgent } from './reviewer'
 import { ReflectionAgent } from './reflection'
+import { ExecutorAgent } from './executor'
 import { getEventBus, type AgentType } from './event-bus'
 
 // ─── Agent Registry ─────────────────────────────────────────
@@ -91,7 +92,7 @@ export class AgentPool {
     this.registry.register(new GenericAgent('writer', ['writing', 'content-creation', 'documentation'], 'Creative writing, documentation, and content generation'))
     this.registry.register(new GenericAgent('analyst', ['analysis', 'data-interpretation', 'reasoning'], 'Data analysis, pattern recognition, and strategic reasoning'))
     this.registry.register(new GenericAgent('critic', ['critique', 'evaluation', 'quality-assessment'], 'Critical evaluation, argument analysis, and quality assessment'))
-    this.registry.register(new GenericAgent('executor', ['execution', 'automation', 'tooling'], 'Task execution, automation scripts, and tool usage'))
+    this.registry.register(new ExecutorAgent())
   }
 
   /** Execute a sub-task through the correct agent */

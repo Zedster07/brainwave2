@@ -7,6 +7,8 @@ import { getScheduler } from '../services/scheduler.service'
 import { getDatabase } from '../db/database'
 import { LLMFactory, getAllCircuitBreakerStatus } from '../llm'
 import { OllamaProvider } from '../llm/ollama'
+import { getMcpRegistry } from '../mcp'
+import type { McpServerConfig } from '../mcp'
 import { getOrchestrator } from '../agents/orchestrator'
 import { getAgentPool } from '../agents/agent-pool'
 import { getEventBus } from '../agents/event-bus'
@@ -469,6 +471,41 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.OLLAMA_MODELS, async (_event, host?: string) => {
     return OllamaProvider.listModels(host)
+  })
+
+  // ─── MCP (Tool Integration) ───
+  const mcpRegistry = getMcpRegistry()
+
+  ipcMain.handle(IPC_CHANNELS.MCP_GET_SERVERS, async () => {
+    return mcpRegistry.getConfigs()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MCP_ADD_SERVER, async (_event, config: Omit<McpServerConfig, 'id'>) => {
+    return mcpRegistry.addServer(config)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MCP_UPDATE_SERVER, async (_event, id: string, updates: Partial<McpServerConfig>) => {
+    return mcpRegistry.updateServer(id, updates)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MCP_REMOVE_SERVER, async (_event, id: string) => {
+    return mcpRegistry.removeServer(id)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MCP_CONNECT, async (_event, serverId: string) => {
+    await mcpRegistry.connect(serverId)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MCP_DISCONNECT, async (_event, serverId: string) => {
+    await mcpRegistry.disconnect(serverId)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MCP_GET_STATUSES, async () => {
+    return mcpRegistry.getStatuses()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MCP_GET_TOOLS, async () => {
+    return mcpRegistry.getAllTools()
   })
 
   // ─── Scheduler ───

@@ -108,6 +108,16 @@ export const IPC_CHANNELS = {
   UPDATE_INSTALL: 'update:install',
   UPDATE_STATUS: 'update:status',  // main → renderer
 
+  // MCP (Tool Integration)
+  MCP_GET_SERVERS: 'mcp:get-servers',
+  MCP_ADD_SERVER: 'mcp:add-server',
+  MCP_UPDATE_SERVER: 'mcp:update-server',
+  MCP_REMOVE_SERVER: 'mcp:remove-server',
+  MCP_CONNECT: 'mcp:connect',
+  MCP_DISCONNECT: 'mcp:disconnect',
+  MCP_GET_STATUSES: 'mcp:get-statuses',
+  MCP_GET_TOOLS: 'mcp:get-tools',
+
   // Calibration / Feedback
   CALIBRATION_SUBMIT_FEEDBACK: 'calibration:submit-feedback',
   CALIBRATION_GET_REPORT: 'calibration:get-report',
@@ -352,6 +362,16 @@ export interface BrainwaveAPI {
   downloadUpdate: () => Promise<void>
   installUpdate: () => void
   onUpdateStatus: (callback: (status: UpdateStatusInfo) => void) => () => void
+
+  // MCP (Tool Integration)
+  mcpGetServers: () => Promise<McpServerConfigInfo[]>
+  mcpAddServer: (config: Omit<McpServerConfigInfo, 'id'>) => Promise<McpServerConfigInfo>
+  mcpUpdateServer: (id: string, updates: Partial<McpServerConfigInfo>) => Promise<McpServerConfigInfo | null>
+  mcpRemoveServer: (id: string) => Promise<boolean>
+  mcpConnect: (serverId: string) => Promise<void>
+  mcpDisconnect: (serverId: string) => Promise<void>
+  mcpGetStatuses: () => Promise<McpServerStatusInfo[]>
+  mcpGetTools: () => Promise<McpToolInfo[]>
 }
 
 // ─── Update Types ───
@@ -362,6 +382,37 @@ export interface UpdateStatusInfo {
   progress?: number
   error?: string
   releaseNotes?: string
+}
+
+// ─── MCP Types ───
+
+export interface McpServerConfigInfo {
+  id: string
+  name: string
+  transport: 'stdio' | 'sse'
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  url?: string
+  autoConnect: boolean
+  enabled: boolean
+}
+
+export interface McpServerStatusInfo {
+  id: string
+  name: string
+  state: 'disconnected' | 'connecting' | 'connected' | 'error'
+  error?: string
+  toolCount: number
+  connectedAt?: number
+}
+
+export interface McpToolInfo {
+  key: string
+  serverId: string
+  serverName: string
+  name: string
+  description: string
 }
 
 // ─── Calibration Types ───

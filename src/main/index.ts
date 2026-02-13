@@ -13,6 +13,7 @@ import { getDecayService } from './memory/decay'
 import { getHardEngine, getSoftEngine } from './rules'
 import { getOrchestrator } from './agents/orchestrator'
 import { initAutoUpdater } from './updater'
+import { getMcpRegistry } from './mcp'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -128,6 +129,11 @@ app.whenReady().then(() => {
   // Register IPC handlers before creating window
   registerIpcHandlers()
 
+  // ── Initialize MCP (connect to auto-connect servers) ──
+  getMcpRegistry().initialize().catch((err) => {
+    console.warn('[Main] MCP initialization error:', err)
+  })
+
   // ── Auto-Update (checks GitHub Releases on launch) ──
   initAutoUpdater()
 
@@ -165,6 +171,7 @@ app.on('before-quit', () => {
   app.isQuitting = true
   getScheduler().stop()
   getDecayService().stop()
+  getMcpRegistry().disconnectAll().catch(() => {})
   destroyTray()
   getDatabase().close()
 })
