@@ -21,6 +21,14 @@ export function CommandCenter() {
   const [tasks, setTasks] = useState<LiveTask[]>([])
   const [loaded, setLoaded] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll to bottom when tasks change
+  const scrollToBottom = useCallback(() => {
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+    })
+  }, [])
 
   // Session state
   const [sessions, setSessions] = useState<ChatSession[]>([])
@@ -51,7 +59,7 @@ export function CommandCenter() {
     setLoaded(false)
     window.brainwave.getSessionTasks(activeSessionId, 50).then((history) => {
       setTasks(
-        history.map((h) => ({
+        history.reverse().map((h) => ({
           id: h.id,
           prompt: h.prompt,
           status: h.status,
@@ -62,6 +70,7 @@ export function CommandCenter() {
         }))
       )
       setLoaded(true)
+      scrollToBottom()
     }).catch((err) => {
       console.warn('[CommandCenter] Failed to load session tasks:', err)
       setLoaded(true)
@@ -146,15 +155,17 @@ export function CommandCenter() {
       })
 
       setTasks((prev) => [
-        { id: taskId, prompt, status: 'queued', activityLog: [], timestamp: Date.now() },
         ...prev,
+        { id: taskId, prompt, status: 'queued', activityLog: [], timestamp: Date.now() },
       ])
+      scrollToBottom()
     } catch (err) {
       console.error('[CommandCenter] Submit failed:', err)
       setTasks((prev) => [
-        { id: crypto.randomUUID(), prompt, status: 'failed', activityLog: [], error: err instanceof Error ? err.message : 'Submission failed', timestamp: Date.now() },
         ...prev,
+        { id: crypto.randomUUID(), prompt, status: 'failed', activityLog: [], error: err instanceof Error ? err.message : 'Submission failed', timestamp: Date.now() },
       ])
+      scrollToBottom()
     } finally {
       setSubmitting(false)
       inputRef.current?.focus()
@@ -337,7 +348,7 @@ export function CommandCenter() {
           {activeSessionId && (
             <>
               {/* Task Activity — scrollable area */}
-              <div className="flex-1 overflow-y-auto min-h-0 px-4 pb-24 pt-4">
+              <div ref={scrollRef} className="flex-1 overflow-y-auto min-h-0 px-4 pb-24 pt-4">
                 {!loaded ? (
                   <div className="flex items-center justify-center py-12 text-gray-500">
                     <Loader2 className="w-5 h-5 animate-spin mr-2" /> Loading...
