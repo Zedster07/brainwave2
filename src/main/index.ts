@@ -15,6 +15,7 @@ import { getOrchestrator } from './agents/orchestrator'
 import { initAutoUpdater } from './updater'
 import { getMcpRegistry } from './mcp'
 import { getPluginRegistry } from './plugins'
+import { getNotificationService } from './services/notification.service'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -130,6 +131,9 @@ app.whenReady().then(() => {
   // Register IPC handlers before creating window
   registerIpcHandlers()
 
+  // ── Initialize Notification Service ──
+  getNotificationService().init()
+
   // ── Initialize MCP (connect to auto-connect servers) ──
   getMcpRegistry().initialize().catch((err) => {
     console.warn('[Main] MCP initialization error:', err)
@@ -153,6 +157,15 @@ app.whenReady().then(() => {
   // When a scheduled job fires, submit it as a task to the Orchestrator
   scheduler.on('job:execute', (payload) => {
     console.log(`[Main] Scheduled job executing: ${payload.jobId} → "${payload.taskPrompt}"`)
+
+    // Notify: scheduled job starting
+    getNotificationService().send({
+      title: 'Scheduled Job Starting',
+      body: payload.taskPrompt.slice(0, 120),
+      type: 'scheduler',
+      jobId: payload.jobId,
+    })
+
     const orchestrator = getOrchestrator()
     orchestrator.submitTask(payload.taskPrompt, payload.taskPriority ?? 'normal').catch((err: Error) => {
       console.error(`[Main] Scheduled task failed:`, err)

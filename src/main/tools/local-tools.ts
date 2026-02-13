@@ -13,6 +13,7 @@ import { readFile, writeFile, unlink, mkdir, stat, rename, readdir } from 'node:
 import { exec } from 'node:child_process'
 import { resolve, dirname, basename, join } from 'node:path'
 import { getHardEngine } from '../rules'
+import { getEventBus } from '../agents/event-bus'
 import type { McpTool, McpToolCallResult } from '../mcp/types'
 
 // Max output from shell commands (100 KB)
@@ -147,6 +148,21 @@ const TOOL_DEFS: McpTool[] = [
       required: ['url'],
     },
   },
+  {
+    key: 'local::send_notification',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'send_notification',
+    description: 'Send an OS notification to the user. Use this to alert the user about important events, completions, or information.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Notification title (short, e.g. "Download Complete")' },
+        body: { type: 'string', description: 'Notification body message' },
+      },
+      required: ['title', 'body'],
+    },
+  },
 ]
 
 // ─── Provider ───────────────────────────────────────────────
@@ -190,6 +206,8 @@ class LocalToolProvider {
         return this.shellExecute(args)
       case 'http_request':
         return this.httpRequest(args)
+      case 'send_notification':
+        return this.sendNotification(args)
       default:
         return {
           toolKey: `local::${toolName}`,
@@ -595,6 +613,38 @@ class LocalToolProvider {
         ? `Request timed out after ${timeout}ms`
         : this.errMsg(err)
       return this.error('local::http_request', message, start)
+    }
+  }
+
+  // ─── Helpers ──────────────────────────────────────────
+
+  // ─── Send Notification ─────────────────────────────────
+
+  private async sendNotification(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const start = Date.now()
+    const title = String(args.title ?? 'Notification')
+    const body = String(args.body ?? '')
+
+    if (!body) {
+      return this.error('local::send_notification', 'body is required', start)
+    }
+
+    try {
+      getEventBus().emit('notification:send', {
+        title,
+        body,
+        type: 'agent',
+      })
+
+      return {
+        toolKey: 'local::send_notification',
+        success: true,
+        content: `Notification sent: "${title}"`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::send_notification', this.errMsg(err), start)
     }
   }
 

@@ -134,6 +134,9 @@ export const IPC_CHANNELS = {
   PLUGIN_REMOVE: 'plugin:remove',
   PLUGIN_ENABLE: 'plugin:enable',
   PLUGIN_DISABLE: 'plugin:disable',
+
+  // Notifications (main → renderer)
+  NOTIFICATION: 'notification:push',
 } as const
 
 // ─── IPC Payload Types ───
@@ -260,6 +263,20 @@ export interface MemoryStatsInfo {
   people: number
 }
 
+// ─── Notification Types ───
+
+export type NotificationType = 'task' | 'scheduler' | 'agent' | 'system'
+
+export interface NotificationPayload {
+  id: string
+  title: string
+  body: string
+  type: NotificationType
+  taskId?: string
+  jobId?: string
+  timestamp: number
+}
+
 // ─── Brainwave API (exposed to renderer via preload) ───
 
 export interface BrainwaveAPI {
@@ -382,6 +399,9 @@ export interface BrainwaveAPI {
   mcpGetStatuses: () => Promise<McpServerStatusInfo[]>
   mcpGetTools: () => Promise<McpToolInfo[]>
   mcpImportServers: (json: string) => Promise<{ imported: number; skipped: number; errors: string[] }>
+
+  // Notifications (main → renderer)
+  onNotification: (callback: (notification: NotificationPayload) => void) => () => void
 
   // Plugins
   pluginList: () => Promise<PluginInfoData[]>

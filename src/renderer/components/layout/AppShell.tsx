@@ -1,6 +1,7 @@
 import { ReactNode } from 'react'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
+import { NotificationToast } from '../NotificationToast'
 import { useKeyboardShortcuts } from '@renderer/hooks/useKeyboardShortcuts'
 
 interface AppShellProps {
@@ -26,6 +27,9 @@ export function AppShell({ children }: AppShellProps) {
           </div>
         </main>
       </div>
+
+      {/* Notification toasts */}
+      <NotificationToast />
     </div>
   )
 }

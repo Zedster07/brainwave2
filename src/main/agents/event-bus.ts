@@ -86,6 +86,9 @@ export interface EventMap {
   // System
   'system:log': { level: 'debug' | 'info' | 'warn' | 'error'; message: string; data?: unknown }
   'system:error': { error: string; fatal: boolean }
+
+  // Notifications
+  'notification:send': { title: string; body: string; type: 'task' | 'scheduler' | 'agent' | 'system'; taskId?: string; jobId?: string }
 }
 
 // ─── Event Log Entry ────────────────────────────────────────

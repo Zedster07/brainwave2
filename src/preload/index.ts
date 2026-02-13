@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession } from '@shared/types'
+import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession, type NotificationPayload } from '@shared/types'
 
 const api: BrainwaveAPI = {
   // ─── Window Controls ───
@@ -40,6 +40,13 @@ const api: BrainwaveAPI = {
     const handler = (_event: Electron.IpcRendererEvent, log: AgentLogEntry) => callback(log)
     ipcRenderer.on(IPC_CHANNELS.AGENT_LOG, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_LOG, handler)
+  },
+
+  // ─── Notifications (main → renderer) ───
+  onNotification: (callback: (notification: NotificationPayload) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, notification: NotificationPayload) => callback(notification)
+    ipcRenderer.on(IPC_CHANNELS.NOTIFICATION, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.NOTIFICATION, handler)
   },
 
   // ─── Memory ───
