@@ -123,7 +123,7 @@ export function CommandCenter() {
   return (
     <div className="flex flex-col h-full max-w-4xl mx-auto">
       {/* Hero / Welcome */}
-      <div className="text-center py-12">
+      <div className="text-center py-8 flex-shrink-0">
         <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-accent/10 mb-4 glow-accent">
           <Sparkles className="w-8 h-8 text-accent" />
         </div>
@@ -133,35 +133,8 @@ export function CommandCenter() {
         </p>
       </div>
 
-      {/* Task Input */}
-      <form onSubmit={handleSubmit} className="glass-card p-4 mb-8">
-        <div className="flex gap-3">
-          <input
-            ref={inputRef}
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder="e.g., Build a REST API for user authentication..."
-            disabled={submitting}
-            className="flex-1 bg-white/[0.03] border border-white/[0.08] rounded-lg px-4 py-3 text-sm text-white
-                       placeholder:text-gray-600 focus:outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20
-                       disabled:opacity-50 transition-all"
-          />
-          <button
-            type="submit"
-            disabled={!input.trim() || submitting}
-            className="flex items-center gap-2 px-5 py-3 rounded-lg bg-accent text-white text-sm font-medium
-                       hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed
-                       transition-all active:scale-[0.98]"
-          >
-            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-            Submit
-          </button>
-        </div>
-      </form>
-
-      {/* Task Activity */}
-      <div className="flex-1 overflow-y-auto">
+      {/* Task Activity — scrollable area */}
+      <div className="flex-1 overflow-y-auto min-h-0 pb-24">
         <h3 className="text-sm font-semibold text-gray-400 mb-3 flex items-center gap-2">
           <Clock className="w-4 h-4" />
           Tasks
@@ -181,6 +154,35 @@ export function CommandCenter() {
             ))}
           </div>
         )}
+      </div>
+
+      {/* Task Input — pinned to bottom */}
+      <div className="sticky bottom-0 z-10 pt-2 pb-4 bg-gradient-to-t from-primary via-primary to-transparent">
+        <form onSubmit={handleSubmit} className="glass-card p-4">
+          <div className="flex gap-3">
+            <input
+              ref={inputRef}
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="e.g., Build a REST API for user authentication..."
+              disabled={submitting}
+              className="flex-1 bg-white/[0.03] border border-white/[0.08] rounded-lg px-4 py-3 text-sm text-white
+                         placeholder:text-gray-600 focus:outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20
+                         disabled:opacity-50 transition-all"
+            />
+            <button
+              type="submit"
+              disabled={!input.trim() || submitting}
+              className="flex items-center gap-2 px-5 py-3 rounded-lg bg-accent text-white text-sm font-medium
+                         hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed
+                         transition-all active:scale-[0.98]"
+            >
+              {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              Submit
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   )
