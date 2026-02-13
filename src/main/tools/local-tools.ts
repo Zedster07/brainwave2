@@ -4,7 +4,7 @@
  * Provides comprehensive OS-level tools:
  *   File:    file_read, file_write, file_create, file_delete, file_move, directory_list
  *   Shell:   shell_execute
- *   Network: http_request
+ *   Network: http_request, web_search, webpage_fetch
  *
  * Every call is gated through the Hard Rules Engine before execution.
  * Tools use the same shape as MCP tools so the executor treats them identically.
@@ -163,6 +163,36 @@ const TOOL_DEFS: McpTool[] = [
       required: ['title', 'body'],
     },
   },
+  {
+    key: 'local::web_search',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'web_search',
+    description: 'Search the web using DuckDuckGo. Returns titles, URLs, and snippets. Use this for any web research, finding current information, or answering questions about recent events.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The search query' },
+        max_results: { type: 'number', description: 'Maximum number of results to return (default: 8, max: 20)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    key: 'local::webpage_fetch',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'webpage_fetch',
+    description: 'Fetch and extract the main text content from a webpage URL. Strips HTML tags and returns clean text. Use after web_search to read full articles.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'The URL of the webpage to fetch' },
+        max_length: { type: 'number', description: 'Maximum characters to return (default: 15000)' },
+      },
+      required: ['url'],
+    },
+  },
 ]
 
 // ─── Provider ───────────────────────────────────────────────
@@ -208,6 +238,10 @@ class LocalToolProvider {
         return this.httpRequest(args)
       case 'send_notification':
         return this.sendNotification(args)
+      case 'web_search':
+        return this.webSearch(args)
+      case 'webpage_fetch':
+        return this.webpageFetch(args)
       default:
         return {
           toolKey: `local::${toolName}`,
@@ -645,6 +679,181 @@ class LocalToolProvider {
       }
     } catch (err) {
       return this.error('local::send_notification', this.errMsg(err), start)
+    }
+  }
+
+  // ─── Web Search (DuckDuckGo HTML) ─────────────────────
+
+  private async webSearch(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const query = String(args.query ?? '').trim()
+    const maxResults = Math.min(typeof args.max_results === 'number' ? args.max_results : 8, 20)
+    const start = Date.now()
+
+    if (!query) {
+      return this.error('local::web_search', 'query is required', start)
+    }
+
+    // Safety gate
+    const verdict = getHardEngine().evaluate({
+      type: 'network_request',
+      url: 'https://html.duckduckgo.com/html/',
+      method: 'POST',
+      bodySize: query.length,
+    })
+    if (!verdict.allowed) {
+      return this.blocked('local::web_search', verdict.reason, start)
+    }
+
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 15_000)
+
+      const response = await fetch('https://html.duckduckgo.com/html/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+        body: `q=${encodeURIComponent(query)}`,
+        signal: controller.signal,
+      })
+
+      clearTimeout(timer)
+
+      if (!response.ok) {
+        return this.error('local::web_search', `DuckDuckGo returned HTTP ${response.status}`, start)
+      }
+
+      const html = await response.text()
+
+      // Parse results from DuckDuckGo HTML response
+      const results: Array<{ title: string; url: string; snippet: string }> = []
+      const resultPattern = /<a[^>]+class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]+class="result__snippet"[^>]*>([\s\S]*?)<\/a>/gi
+      let match: RegExpExecArray | null
+
+      while ((match = resultPattern.exec(html)) !== null && results.length < maxResults) {
+        const rawUrl = match[1]
+        const title = match[2].replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").trim()
+        const snippet = match[3].replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'").trim()
+
+        // DuckDuckGo wraps URLs in a redirect — extract actual URL
+        let url = rawUrl
+        try {
+          const parsed = new URL(rawUrl, 'https://duckduckgo.com')
+          const uddg = parsed.searchParams.get('uddg')
+          if (uddg) url = decodeURIComponent(uddg)
+        } catch { /* use raw url */ }
+
+        if (title && url) {
+          results.push({ title, url, snippet })
+        }
+      }
+
+      if (results.length === 0) {
+        return {
+          toolKey: 'local::web_search',
+          success: true,
+          content: `No results found for: "${query}"`,
+          isError: false,
+          duration: Date.now() - start,
+        }
+      }
+
+      const formatted = results.map((r, i) =>
+        `${i + 1}. ${r.title}\n   URL: ${r.url}\n   ${r.snippet}`
+      ).join('\n\n')
+
+      return {
+        toolKey: 'local::web_search',
+        success: true,
+        content: `Web search results for "${query}" (${results.length} results):\n\n${formatted}`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      const message = err instanceof Error && err.name === 'AbortError'
+        ? 'Search timed out after 15s'
+        : this.errMsg(err)
+      return this.error('local::web_search', message, start)
+    }
+  }
+
+  // ─── Webpage Fetch ────────────────────────────────────
+
+  private async webpageFetch(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const url = String(args.url ?? '').trim()
+    const maxLength = typeof args.max_length === 'number' ? args.max_length : 15_000
+    const start = Date.now()
+
+    if (!url) {
+      return this.error('local::webpage_fetch', 'url is required', start)
+    }
+
+    // Safety gate
+    const verdict = getHardEngine().evaluate({
+      type: 'network_request',
+      url,
+      method: 'GET',
+      bodySize: 0,
+    })
+    if (!verdict.allowed) {
+      return this.blocked('local::webpage_fetch', verdict.reason, start)
+    }
+
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 20_000)
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+        signal: controller.signal,
+      })
+
+      clearTimeout(timer)
+
+      if (!response.ok) {
+        return this.error('local::webpage_fetch', `HTTP ${response.status} ${response.statusText}`, start)
+      }
+
+      const html = await response.text()
+
+      // Strip scripts, styles, and HTML tags to get clean text
+      let text = html
+        .replace(/<script[\s\S]*?<\/script>/gi, '')
+        .replace(/<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<nav[\s\S]*?<\/nav>/gi, '')
+        .replace(/<footer[\s\S]*?<\/footer>/gi, '')
+        .replace(/<header[\s\S]*?<\/header>/gi, '')
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#x27;/g, "'")
+        .replace(/\s+/g, ' ')
+        .trim()
+
+      if (text.length > maxLength) {
+        text = text.slice(0, maxLength) + `\n... [truncated, ${text.length} total chars]`
+      }
+
+      return {
+        toolKey: 'local::webpage_fetch',
+        success: true,
+        content: `Content from ${url}:\n\n${text}`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      const message = err instanceof Error && err.name === 'AbortError'
+        ? 'Fetch timed out after 20s'
+        : this.errMsg(err)
+      return this.error('local::webpage_fetch', message, start)
     }
   }
 
