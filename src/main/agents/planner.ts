@@ -76,6 +76,8 @@ OUTPUT FORMAT (JSON):
 
   /** Decompose a task into a TaskPlan */
   async decompose(taskId: string, prompt: string, memories?: string[]): Promise<TaskPlan> {
+    console.log(`[Planner] decompose() called | taskId=${taskId} | prompt="${prompt.slice(0, 100)}"`)
+
     const context: AgentContext = {
       taskId,
       relevantMemories: memories,
@@ -103,6 +105,8 @@ OUTPUT FORMAT (JSON):
       estimatedComplexity: parsed.complexity,
       requiredAgents: [...new Set(parsed.subtasks.map((st) => st.agent))],
     }
+
+    console.log(`[Planner] Plan created: ${plan.id} | complexity=${parsed.complexity} | ${plan.subTasks.length} subtask(s): ${plan.subTasks.map(s => `${s.id}(${s.assignedAgent})`).join(', ')}`)
 
     this.bus.emitEvent('plan:created', {
       taskId,

@@ -48,6 +48,8 @@ export class OpenRouterProvider implements LLMAdapter {
     messages.push({ role: 'user', content: request.user })
 
     try {
+      console.log(`[OpenRouter] → ${model} | msgs=${messages.length} | format=${request.responseFormat ?? 'text'} | temp=${request.temperature ?? 0.7} | maxTokens=${request.maxTokens ?? 4096}`)
+
       const response = await withRetry(
         () => this.client.chat.completions.create({
           model,
@@ -63,6 +65,9 @@ export class OpenRouterProvider implements LLMAdapter {
 
       cb.recordSuccess()
       const choice = response.choices[0]
+
+      console.log(`[OpenRouter] ← ${model} | finish=${choice.finish_reason} | tokens=${response.usage?.prompt_tokens ?? 0}+${response.usage?.completion_tokens ?? 0} | response=${(choice.message.content ?? '').slice(0, 150)}...`)
+
       return {
         content: choice.message.content ?? '',
         model: response.model,

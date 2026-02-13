@@ -134,6 +134,9 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
     const MAX_CORRECTIONS = 2
     const EXECUTOR_TIMEOUT_MS = 3 * 60 * 1000 // 3 minutes overall timeout
 
+    console.log(`[Executor] Starting | taskId=${context.taskId} | model=${model} | tools=${allTools.length} (${localTools.length} local, ${mcpTools.length} mcp)`)
+    console.log(`[Executor] Task: "${task.description.slice(0, 200)}"`)
+
     try {
       // Agentic multi-step loop — the LLM keeps calling tools until the task is done.
       // After each tool result (success or failure), the full history is fed back so
@@ -193,6 +196,7 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
         // Check if the LLM signaled completion with { "done": true, "summary": "..." }
         const doneSignal = this.parseDoneSignal(response.content)
         if (doneSignal) {
+          console.log(`[Executor] Done signal received at step ${step}: "${doneSignal.slice(0, 200)}..."`)
           const anySuccess = toolResults.some((t) => t.success)
           const finalResult = this.buildResult(
             anySuccess ? 'success' : (toolResults.length > 0 ? 'partial' : 'success'),
@@ -221,6 +225,7 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
         const toolCall = this.parseToolCall(response.content)
 
         if (!toolCall) {
+          console.warn(`[Executor] Step ${step}: No tool call or done signal parsed. Raw: ${response.content.slice(0, 200)}`)
           // LLM output JSON but not a tool call or done signal.
           // Re-prompt with correction if we haven't exceeded correction limit.
           if (corrections < MAX_CORRECTIONS) {
@@ -274,6 +279,8 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
         }
 
         // Execute the tool
+        console.log(`[Executor] Step ${step}: Calling ${toolCall.tool} with args: ${JSON.stringify(toolCall.args).slice(0, 200)}`)
+
         this.bus.emitEvent('agent:acting', {
           agentType: this.type,
           taskId: context.taskId,
@@ -283,6 +290,8 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
         const result = toolCall.tool.startsWith('local::')
           ? await localProvider.callTool(toolCall.tool.split('::')[1], toolCall.args)
           : await registry.callTool(toolCall.tool, toolCall.args)
+
+        console.log(`[Executor] Step ${step}: ${toolCall.tool} → ${result.success ? 'SUCCESS' : 'FAILED'} | ${result.content.slice(0, 200)}`)
 
         toolResults.push({
           tool: toolCall.tool,

@@ -270,12 +270,19 @@ export abstract class BaseAgent {
       responseFormat: overrides?.responseFormat,
     }
 
-    return adapter.complete(request)
+    console.log(`[${this.type}] think() → model=${request.model} | format=${request.responseFormat ?? 'text'} | prompt=${userMessage.slice(0, 120)}...`)
+
+    const response = await adapter.complete(request)
+
+    console.log(`[${this.type}] think() ← ${response.tokensIn}+${response.tokensOut} tokens | finish=${response.finishReason} | response=${response.content.slice(0, 200)}...`)
+
+    return response
   }
 
   /**
    * Think and expect JSON output.
    * Parses the JSON response automatically.
+   * Handles markdown code block wrapping (```json ... ```) that some models produce.
    */
   protected async thinkJSON<T = unknown>(
     userMessage: string,
@@ -287,8 +294,49 @@ export abstract class BaseAgent {
       responseFormat: 'json',
     })
 
-    const parsed = JSON.parse(response.content) as T
-    return { parsed, raw: response }
+    const cleaned = this.extractJSON(response.content)
+    console.log(`[${this.type}] thinkJSON raw (first 300 chars): ${response.content.slice(0, 300)}`)
+
+    try {
+      const parsed = JSON.parse(cleaned) as T
+      return { parsed, raw: response }
+    } catch (parseErr) {
+      console.error(`[${this.type}] thinkJSON parse failed. Raw content:\n${response.content.slice(0, 500)}`)
+      throw parseErr
+    }
+  }
+
+  /**
+   * Extract JSON from a response that might be wrapped in markdown code blocks.
+   * Handles: raw JSON, ```json ... ```, ``` ... ```, or JSON embedded in text.
+   */
+  private extractJSON(content: string): string {
+    const trimmed = content.trim()
+
+    // 1. Try raw JSON first (starts with { or [)
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      return trimmed
+    }
+
+    // 2. Try markdown code block: ```json ... ``` or ``` ... ```
+    const codeBlockMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/)
+    if (codeBlockMatch) {
+      return codeBlockMatch[1].trim()
+    }
+
+    // 3. Try to find a JSON object or array anywhere in the response
+    const jsonObjMatch = trimmed.match(/\{[\s\S]*\}/)
+    if (jsonObjMatch) {
+      return jsonObjMatch[0]
+    }
+
+    const jsonArrMatch = trimmed.match(/\[[\s\S]*\]/)
+    if (jsonArrMatch) {
+      return jsonArrMatch[0]
+    }
+
+    // 4. Return as-is — JSON.parse will throw a descriptive error
+    return trimmed
   }
 
   /**

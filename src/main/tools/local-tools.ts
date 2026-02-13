@@ -172,6 +172,7 @@ class LocalToolProvider {
     toolName: string,
     args: Record<string, unknown> = {}
   ): Promise<McpToolCallResult> {
+    console.log(`[LocalTools] callTool(${toolName}) args=${JSON.stringify(args).slice(0, 300)}`)
     switch (toolName) {
       case 'file_read':
         return this.fileRead(args)

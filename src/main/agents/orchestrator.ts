@@ -257,10 +257,14 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
       )
 
       console.log(`[Orchestrator] Triage → ${parsed.lane}: ${parsed.reasoning}`)
+      if (parsed.agent) console.log(`[Orchestrator] Triage agent: ${parsed.agent}`)
+      if (parsed.shouldRemember) console.log(`[Orchestrator] Triage shouldRemember=true`)
+      if (parsed.personInfo) console.log(`[Orchestrator] Triage personInfo:`, JSON.stringify(parsed.personInfo))
+      if (parsed.reminder) console.log(`[Orchestrator] Triage reminder:`, JSON.stringify(parsed.reminder))
       return parsed
     } catch (err) {
       // If triage itself fails, fall back to full pipeline
-      console.warn('[Orchestrator] Triage failed, falling back to complex:', err)
+      console.error('[Orchestrator] Triage failed, falling back to complex:', err)
       return { lane: 'complex', reasoning: 'triage failed, using full pipeline' }
     }
   }
@@ -451,6 +455,7 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
       const triage = await this.triage(task.prompt, triageContext, relevantMemories, conversationHistory)
 
       // 2. Route based on triage lane
+      console.log(`[Orchestrator] Routing task ${task.id} to lane: ${triage.lane}${triage.agent ? ` (agent: ${triage.agent})` : ''}`)
       switch (triage.lane) {
         case 'conversational':
           await this.handleConversational(task, triage, memoryManager, relevantMemories, conversationHistory)
@@ -653,6 +658,7 @@ ${memoryContext}${peopleContext}${historyContext}`,
     conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
   ): Promise<void> {
     const agentType = triage.agent ?? ('coder' as AgentType)
+    console.log(`[Orchestrator] handleDirect() → agent=${agentType} | task="${task.prompt.slice(0, 100)}"`)
 
     // Build a single-step plan inline (no planner LLM call)
     const plan: TaskPlan = {
@@ -711,6 +717,8 @@ ${memoryContext}${peopleContext}${historyContext}`,
     memoryManager: ReturnType<typeof getMemoryManager>,
     conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
   ): Promise<void> {
+    console.log(`[Orchestrator] handleComplex() | task="${task.prompt.slice(0, 100)}"`)
+
     // Planning phase (LLM call to decompose)
     this.bus.emitEvent('task:progress', {
       taskId: task.id, progress: 0,
@@ -871,6 +879,7 @@ ${memoryContext}${peopleContext}${historyContext}`,
       // Execute ready tasks in parallel
       const executions = ready.map(async (subTask) => {
         subTask.status = 'in-progress'
+        console.log(`[Orchestrator] executePlan: dispatching ${subTask.assignedAgent} for subtask "${subTask.id}" — "${subTask.description.slice(0, 100)}"`)
 
         const stepIndex = plan.subTasks.indexOf(subTask) + 1
         this.bus.emitEvent('task:progress', {
