@@ -436,6 +436,27 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
     if (needsMemoryAwareness || conversationHistory.length > 0) {
       try {
         const adapter = LLMFactory.getForAgent('orchestrator')
+
+        // Fetch known people for identity-related questions
+        let peopleContext = ''
+        if (needsMemoryAwareness) {
+          try {
+            const peopleStore = getPeopleStore()
+            const allPeople = peopleStore.getAll(10)
+            if (allPeople.length > 0) {
+              peopleContext = '\n\nPeople you know:\n' + allPeople.map((p) => {
+                const parts = [`- ${p.name}`]
+                if (p.relationship) parts.push(`(${p.relationship})`)
+                if (p.traits.length > 0) parts.push(`— traits: ${p.traits.join(', ')}`)
+                if (Object.keys(p.preferences).length > 0) parts.push(`— preferences: ${JSON.stringify(p.preferences)}`)
+                return parts.join(' ')
+              }).join('\n')
+            }
+          } catch (err) {
+            console.warn('[Orchestrator] Failed to fetch people for context:', err)
+          }
+        }
+
         const memoryContext = relevantMemories.length > 0
           ? `Things you remember:\n${relevantMemories.map((m, i) => `${i + 1}. ${m}`).join('\n')}`
           : 'You have no relevant memories about this topic.'
@@ -449,14 +470,16 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
 CRITICAL RULES:
 - NEVER say "As an AI" or "I don't remember in the way humans do" or anything robotic
 - You have a memory system. Use the memories provided below to answer naturally.
+- If the "People you know" section lists someone with relationship "owner" or "owner/creator", THAT IS THE USER — use their name confidently
 - If memories contain info about the user, reference it warmly: "Of course! I remember..."
+- If someone asks "who am I" or "do you know my name" and you have a person with relationship owner/creator, say their name immediately
 - If no relevant memories exist, say "Hmm, I don't seem to remember that — could you tell me?"
 - Ask clarifying questions when you're unsure, instead of making assumptions
 - Be warm, concise, and genuine — like a thoughtful friend
 - Reference the conversation history naturally to maintain context
 - Keep responses focused and helpful
 
-${memoryContext}${historyContext}`,
+${memoryContext}${peopleContext}${historyContext}`,
           user: task.prompt,
           temperature: 0.7,
           maxTokens: 1024,

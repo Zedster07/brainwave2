@@ -10,6 +10,7 @@ import { SemanticMemoryStore, type SemanticEntry, type StoreSemanticInput } from
 import { EmbeddingService, getEmbeddingService, type VectorSearchResult } from './embeddings'
 import { FTSService, getFTSService, type FTSResult } from './fts'
 import { WorkingMemory, getWorkingMemory } from './working-memory'
+import { getPeopleStore } from './people'
 import { getDatabase } from '../db/database'
 import { getEventBus } from '../agents/event-bus'
 
@@ -204,7 +205,7 @@ export class MemoryManager {
   async recallForContext(query: string, limit = 5): Promise<string[]> {
     const results = await this.recall(query, { limit })
 
-    return results.map((r) => {
+    const formatted = results.map((r) => {
       if (r.type === 'episodic') {
         const ep = r.entry as EpisodicEntry
         return `[Episode ${ep.timestamp}] ${ep.content} (importance: ${ep.importance})`
@@ -213,6 +214,31 @@ export class MemoryManager {
         return `[Knowledge] ${sem.subject} ${sem.predicate} ${sem.object} (confidence: ${sem.confidence})`
       }
     })
+
+    // Also search the People store for person-related context
+    try {
+      const peopleStore = getPeopleStore()
+      const matchedPeople = peopleStore.search(query, 5)
+      // Also include all people if query is identity-related
+      const identityQuery = /who am i|my name|know me|remember me|about me/i.test(query)
+      const allPeople = identityQuery ? peopleStore.getAll(10) : []
+      // Merge and deduplicate
+      const peopleMap = new Map<string, typeof matchedPeople[0]>()
+      for (const p of [...matchedPeople, ...allPeople]) {
+        if (!peopleMap.has(p.id)) peopleMap.set(p.id, p)
+      }
+      const peopleContext = Array.from(peopleMap.values()).map((p) => {
+        const parts = [`[Person] ${p.name}`]
+        if (p.relationship) parts.push(`relationship: ${p.relationship}`)
+        if (p.traits.length > 0) parts.push(`traits: ${p.traits.join(', ')}`)
+        if (Object.keys(p.preferences).length > 0) parts.push(`preferences: ${JSON.stringify(p.preferences)}`)
+        return parts.join(' — ')
+      })
+      return [...peopleContext, ...formatted]
+    } catch (err) {
+      console.warn('[MemoryManager] People store search failed:', err)
+      return formatted
+    }
   }
 
   // ─── Delete ────────────────────────────────────────────
