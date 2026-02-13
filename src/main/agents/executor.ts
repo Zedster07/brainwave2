@@ -85,16 +85,22 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
 - You MUST use tools to complete tasks — do NOT just describe what you would do, ACTUALLY DO IT.
 - When the user asks you to read a file, LIST a directory, run a command, etc. — CALL THE TOOL.
 - Be precise with tool arguments. Use the real paths from the System Environment above.
-- If a tool call FAILS, analyze the error and try a DIFFERENT approach. For example:
-  • Wrong path? Use shell_execute with "dir" / "ls" or directory_list to discover the correct path, then retry.
+- NEVER ask the user follow-up questions. NEVER ask for permission. NEVER say "would you like me to...".
+  You are autonomous — figure it out yourself and DO IT.
+- If a tool call FAILS, try a DIFFERENT approach immediately:
+  • Wrong path? Use shell_execute or directory_list to discover the correct path.
   • Permission denied? Try an alternative location or command.
   • Command not found? Try an equivalent command.
-  NEVER give up after one failure — always attempt to self-correct.
-- If a tool call SUCCEEDS but the task is NOT yet complete, call ANOTHER tool to continue.
-  For example: if asked to "find the Steam directory" and directory_list shows folder contents but Steam isn't there,
-  call directory_list on subdirectories or use shell_execute with a search command. Keep going until you have the answer.
-- When the task IS complete, respond with a plain text summary (NOT a JSON tool call) to signal you're done.
-- Always provide a clear summary of what was accomplished.${toolSection}`
+- If a tool call SUCCEEDS but the task is NOT yet complete, call ANOTHER tool immediately.
+  Do NOT stop to summarize partial results. Keep working until the task is FULLY complete.
+- Use EFFICIENT strategies:
+  • To find a file/folder: use shell_execute with "dir /s /b \\*NAME\\*" on Windows or "find / -name NAME" on Linux.
+    Do NOT manually list directories one by one — use recursive search commands.
+  • To search file contents: use shell_execute with "findstr /s /i PATTERN *.*" or "grep -r PATTERN".
+  • To discover system info: use shell_execute with "systeminfo", "wmic", "hostname", etc.
+- When the task IS complete and you have the final answer, respond with ONLY a JSON object:
+  { "done": true, "summary": "your final answer here" }
+- Always provide a clear, concrete summary of what was accomplished — not what you "would" do.${toolSection}`
   }
 
   async execute(task: SubTask, context: AgentContext): Promise<AgentResult> {
@@ -128,7 +134,7 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
     try {
       // Agentic multi-step loop — the LLM keeps calling tools until the task is done.
       // After each tool result (success or failure), the full history is fed back so
-      // the LLM can decide: call another tool, or respond with a final text answer.
+      // the LLM can decide: call another tool, or signal completion with { "done": true }.
       let currentPrompt = task.description
 
       for (let step = 1; step <= MAX_STEPS; step++) {
@@ -136,18 +142,44 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
         const response = await this.think(currentPrompt, context, {
           temperature: modelConfig?.temperature ?? 0.1,
           maxTokens: modelConfig?.maxTokens,
-          responseFormat: 'json',
         })
 
         totalTokensIn += response.tokensIn
         totalTokensOut += response.tokensOut
         model = response.model
 
+        // Check if the LLM signaled completion with { "done": true, "summary": "..." }
+        const doneSignal = this.parseDoneSignal(response.content)
+        if (doneSignal) {
+          const anySuccess = toolResults.some((t) => t.success)
+          const finalResult = this.buildResult(
+            anySuccess ? 'success' : (toolResults.length > 0 ? 'partial' : 'success'),
+            doneSignal,
+            anySuccess ? 0.9 : 0.7,
+            totalTokensIn,
+            totalTokensOut,
+            model,
+            startTime,
+            artifacts
+          )
+
+          this.bus.emitEvent('agent:completed', {
+            agentType: this.type,
+            taskId: context.taskId,
+            confidence: finalResult.confidence,
+            tokensIn: totalTokensIn,
+            tokensOut: totalTokensOut,
+            toolsCalled: toolResults.map((t) => t.tool),
+          })
+
+          return finalResult
+        }
+
         // Try to parse a tool call from the response
         const toolCall = this.parseToolCall(response.content)
 
         if (!toolCall) {
-          // LLM responded with plain text — task is complete (or it gave up)
+          // LLM didn't call a tool and didn't signal done — treat as final answer
           const anySuccess = toolResults.some((t) => t.success)
           const finalResult = this.buildResult(
             anySuccess ? 'success' : (toolResults.length > 0 ? 'partial' : 'success'),
@@ -201,15 +233,18 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
         ).join('\n\n')
 
         currentPrompt =
-          `Original task: ${task.description}\n\n` +
-          `== Tool History ==\n${historyLines}\n\n` +
-          `== What to do next ==\n` +
+          `TASK: ${task.description}\n\n` +
+          `== TOOL HISTORY (${toolResults.length} step${toolResults.length > 1 ? 's' : ''} so far) ==\n${historyLines}\n\n` +
+          `== INSTRUCTIONS ==\n` +
+          `You have ${MAX_STEPS - step} tool calls remaining.\n` +
           (result.success
-            ? `The last tool call succeeded. Is the task complete? ` +
-              `If YES: respond with a plain text summary (no JSON, no tool call). ` +
-              `If NO: call another tool to continue working toward the goal.`
-            : `The last tool call FAILED. Analyze the error and try a DIFFERENT approach. ` +
-              `Use a different tool or different arguments to work around the problem. ` +
+            ? `The last tool call succeeded. Analyze the result:\n` +
+              `- If the task is FULLY complete and you have the final answer, respond with: { "done": true, "summary": "your answer" }\n` +
+              `- If the task is NOT complete, call another tool NOW. Do NOT ask the user anything. Do NOT stop to explain.\n` +
+              `  Use efficient strategies: recursive search commands (dir /s /b, Get-ChildItem -Recurse), not manual directory listing.`
+            : `The last tool call FAILED. Do NOT give up. Try a DIFFERENT approach immediately:\n` +
+              `- Different tool, different path, different command.\n` +
+              `- Use shell_execute for flexible commands when directory_list fails.\n` +
               `Respond with a new tool call JSON.`)
       }
 
@@ -279,6 +314,9 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
   private parseToolCall(
     content: string
   ): { tool: string; args: Record<string, unknown> } | null {
+    // Skip if this is a done signal
+    if (this.parseDoneSignal(content)) return null
+
     try {
       // Try direct JSON parse
       const parsed = JSON.parse(content)
@@ -303,7 +341,7 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
         }
       }
 
-      // Try to find a JSON object in the response
+      // Try to find a JSON object with "tool" key in the response
       const objMatch = content.match(/\{[\s\S]*"tool"\s*:\s*"[^"]+[\s\S]*\}/)
       if (objMatch) {
         try {
@@ -316,6 +354,39 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
 
       return null
     }
+  }
+
+  /** Parse a done signal { "done": true, "summary": "..." } from the LLM's response */
+  private parseDoneSignal(content: string): string | null {
+    try {
+      const parsed = JSON.parse(content)
+      if (parsed.done === true && typeof parsed.summary === 'string') {
+        return parsed.summary
+      }
+    } catch {
+      // Try to extract from markdown code block
+      const jsonMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/)
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[1])
+          if (parsed.done === true && typeof parsed.summary === 'string') {
+            return parsed.summary
+          }
+        } catch { /* ignore */ }
+      }
+
+      // Try to find { "done": true } object anywhere in the response
+      const objMatch = content.match(/\{[\s\S]*"done"\s*:\s*true[\s\S]*\}/)
+      if (objMatch) {
+        try {
+          const parsed = JSON.parse(objMatch[0])
+          if (parsed.done === true && typeof parsed.summary === 'string') {
+            return parsed.summary
+          }
+        } catch { /* ignore */ }
+      }
+    }
+    return null
   }
 
   /** Helper to build an AgentResult */
