@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Send, Sparkles, Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, Ban, Plus, MessageSquare, Trash2, Pencil, PanelLeftClose, PanelLeft } from 'lucide-react'
+import { Send, Sparkles, Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, Ban, Plus, MessageSquare, Trash2, Pencil, PanelLeftClose, PanelLeft, Mic, MicOff, Volume2, VolumeX } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
+import { useVoice } from '../../hooks/useVoice'
 import type { TaskUpdate, TaskStatus, ChatSession } from '@shared/types'
 
 interface LiveTask {
@@ -22,6 +23,11 @@ export function CommandCenter() {
   const [loaded, setLoaded] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  // Voice input/output
+  const voice = useVoice({
+    onResult: (transcript) => setInput((prev) => (prev ? prev + ' ' : '') + transcript),
+  })
 
   // Auto-scroll to bottom when tasks change
   const scrollToBottom = useCallback(() => {
@@ -377,18 +383,40 @@ export function CommandCenter() {
               {/* Task Input — pinned to bottom */}
               <div className="sticky bottom-0 z-10 pt-2 pb-4 px-4 bg-gradient-to-t from-primary via-primary to-transparent">
                 <form onSubmit={handleSubmit} className="glass-card p-4">
+                  {/* Interim transcript indicator */}
+                  {voice.isListening && voice.interimTranscript && (
+                    <div className="mb-2 px-3 py-1.5 text-xs text-gray-400 italic bg-white/[0.02] rounded-lg border border-white/[0.05] truncate">
+                      {voice.interimTranscript}…
+                    </div>
+                  )}
                   <div className="flex gap-3">
                     <input
                       ref={inputRef}
                       type="text"
                       value={input}
                       onChange={(e) => setInput(e.target.value)}
-                      placeholder="e.g., Build a REST API for user authentication..."
+                      placeholder={voice.isListening ? 'Listening...' : 'e.g., Build a REST API for user authentication...'}
                       disabled={submitting}
                       className="flex-1 bg-white/[0.03] border border-white/[0.08] rounded-lg px-4 py-3 text-sm text-white
                                  placeholder:text-gray-600 focus:outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20
                                  disabled:opacity-50 transition-all"
                     />
+                    {/* Mic toggle */}
+                    {voice.canListen && (
+                      <button
+                        type="button"
+                        onClick={voice.toggleListening}
+                        disabled={submitting}
+                        title={voice.isListening ? 'Stop listening' : 'Voice input'}
+                        className={`flex items-center justify-center w-11 rounded-lg border transition-all
+                          ${voice.isListening
+                            ? 'bg-red-500/20 border-red-500/40 text-red-400 animate-pulse'
+                            : 'bg-white/[0.03] border-white/[0.08] text-gray-400 hover:text-white hover:border-white/20'
+                          } disabled:opacity-30 disabled:cursor-not-allowed`}
+                      >
+                        {voice.isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                      </button>
+                    )}
                     <button
                       type="submit"
                       disabled={!input.trim() || submitting}
@@ -456,6 +484,10 @@ function TaskCard({ task, onCancel }: { task: LiveTask; onCancel: (id: string) =
                   ? <Markdown content={task.result} />
                   : <Markdown content={JSON.stringify(task.result, null, 2)} />
                 }
+                {/* Read aloud button */}
+                {'speechSynthesis' in window && (
+                  <SpeakButton text={typeof task.result === 'string' ? task.result : JSON.stringify(task.result)} />
+                )}
               </div>
             )}
 
@@ -509,4 +541,49 @@ function StatusIcon({ status }: { status: TaskStatus }) {
     default:
       return <Clock className="w-4 h-4 text-gray-500 flex-shrink-0 mt-0.5" />
   }
+}
+
+// ─── Speak Button (TTS) ───
+
+function SpeakButton({ text }: { text: string }) {
+  const [speaking, setSpeaking] = useState(false)
+
+  const toggle = useCallback(() => {
+    if (speaking) {
+      speechSynthesis.cancel()
+      setSpeaking(false)
+      return
+    }
+    // Strip markdown formatting for cleaner speech
+    const clean = text
+      .replace(/```[\s\S]*?```/g, ' code block ')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/[#*_~>\-|[\]()]/g, '')
+      .replace(/\n+/g, '. ')
+      .replace(/\s+/g, ' ')
+      .trim()
+
+    const utterance = new SpeechSynthesisUtterance(clean)
+    utterance.rate = 1.0
+    utterance.onend = () => setSpeaking(false)
+    utterance.onerror = () => setSpeaking(false)
+    setSpeaking(true)
+    speechSynthesis.speak(utterance)
+  }, [speaking, text])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => { if (speaking) speechSynthesis.cancel() }
+  }, [speaking])
+
+  return (
+    <button
+      onClick={toggle}
+      className="mt-2 flex items-center gap-1.5 text-[11px] text-gray-500 hover:text-gray-300 transition-colors"
+      title={speaking ? 'Stop reading' : 'Read aloud'}
+    >
+      {speaking ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
+      {speaking ? 'Stop' : 'Read aloud'}
+    </button>
+  )
 }
