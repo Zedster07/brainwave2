@@ -23,6 +23,7 @@ import { getPeopleStore } from '../memory/people'
 import { getProspectiveStore } from '../memory/prospective'
 import { ReflectionAgent } from './reflection'
 import { getSoftEngine } from '../rules'
+import { getPromptRegistry } from '../prompts'
 
 // ─── Task Record (stored in DB) ────────────────────────────
 

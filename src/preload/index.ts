@@ -208,6 +208,10 @@ const api: BrainwaveAPI = {
 
   getUnratedRuns: (limit?: number) =>
     ipcRenderer.invoke(IPC_CHANNELS.CALIBRATION_GET_UNRATED, limit),
+
+  // Prompt Versioning
+  getPromptVersions: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.PROMPT_LIST_VERSIONS),
 }
 
 // Expose typed API to renderer

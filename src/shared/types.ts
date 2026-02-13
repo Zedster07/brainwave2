@@ -99,6 +99,9 @@ export const IPC_CHANNELS = {
   CALIBRATION_SUBMIT_FEEDBACK: 'calibration:submit-feedback',
   CALIBRATION_GET_REPORT: 'calibration:get-report',
   CALIBRATION_GET_UNRATED: 'calibration:get-unrated',
+
+  // Prompt Versioning
+  PROMPT_LIST_VERSIONS: 'prompt:list-versions',
 } as const
 
 // ─── IPC Payload Types ───
@@ -320,6 +323,9 @@ export interface BrainwaveAPI {
   submitCalibrationFeedback: (runId: string, feedback: 'positive' | 'negative') => Promise<void>
   getCalibrationReport: () => Promise<CalibrationReportInfo>
   getUnratedRuns: (limit?: number) => Promise<UnratedRunInfo[]>
+
+  // Prompt Versioning
+  getPromptVersions: () => Promise<Array<{ name: string; version: string; label: string; hash: string }>>
 }
 
 // ─── Calibration Types ───

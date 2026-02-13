@@ -10,6 +10,7 @@ import type { LLMRequest, LLMResponse, AgentModelConfig } from '../llm'
 import { getEventBus, type AgentType } from './event-bus'
 import { getDatabase } from '../db/database'
 import { getSoftEngine } from '../rules'
+import { getPromptRegistry } from '../prompts'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -50,6 +51,7 @@ export interface AgentResult {
   tokensIn: number
   tokensOut: number
   model: string
+  promptVersion?: string // e.g. "v1:a4f2c9e1"
   suggestedMemories?: SuggestedMemory[]
   artifacts?: Artifact[]
   error?: string
@@ -79,6 +81,8 @@ export abstract class BaseAgent {
 
   protected bus = getEventBus()
   protected db = getDatabase()
+  /** Tracks the prompt version used in the most recent think() call */
+  protected lastPromptVersion: string | undefined
 
   /** Get the system prompt for this agent */
   protected abstract getSystemPrompt(context: AgentContext): string
@@ -113,6 +117,7 @@ export abstract class BaseAgent {
         tokensIn: response.tokensIn,
         tokensOut: response.tokensOut,
         model: response.model,
+        promptVersion: this.lastPromptVersion,
         duration: Date.now() - startTime,
       }
 
@@ -151,6 +156,7 @@ export abstract class BaseAgent {
             tokensIn: response.tokensIn,
             tokensOut: response.tokensOut,
             model: response.model,
+            promptVersion: this.lastPromptVersion,
             duration: Date.now() - startTime,
           }
 
@@ -238,6 +244,14 @@ export abstract class BaseAgent {
 
     const systemPrompt = this.getSystemPrompt(context)
 
+    // Register/update prompt in the registry for version tracking
+    const registry = getPromptRegistry()
+    const promptName = `${this.type}-system`
+    if (!registry.has(promptName)) {
+      registry.register(promptName, 'v1', () => systemPrompt)
+    }
+    this.lastPromptVersion = registry.getVersion(promptName)?.version
+
     // Inject soft rules as constraints
     const constraintBlock = getSoftEngine().buildConstraintBlock(this.type)
 
@@ -292,8 +306,8 @@ export abstract class BaseAgent {
   private logRun(task: SubTask, context: AgentContext, result: AgentResult): void {
     try {
       this.db.run(
-        `INSERT INTO agent_runs (id, agent_type, task_id, status, input, output, llm_model, tokens_in, tokens_out, cost_usd, confidence, started_at, completed_at, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), CURRENT_TIMESTAMP, ?)`,
+        `INSERT INTO agent_runs (id, agent_type, task_id, status, input, output, llm_model, tokens_in, tokens_out, cost_usd, confidence, prompt_version, started_at, completed_at, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), CURRENT_TIMESTAMP, ?)`,
         randomUUID(),
         this.type,
         context.taskId,
@@ -305,6 +319,7 @@ export abstract class BaseAgent {
         result.tokensOut,
         0, // TODO: calculate cost from model pricing
         result.confidence,
+        result.promptVersion ?? null,
         `-${result.duration / 1000} seconds`,
         result.error ?? null
       )

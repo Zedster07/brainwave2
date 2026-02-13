@@ -11,6 +11,7 @@ import { getEventBus } from '../agents/event-bus'
 import { getMemoryManager } from '../memory'
 import { getPeopleStore } from '../memory/people'
 import { getCalibrationTracker } from '../agents/calibration'
+import { getPromptRegistry } from '../prompts'
 import { getProceduralStore } from '../memory/procedural'
 import { getProspectiveStore } from '../memory/prospective'
 import { getHardEngine, getSoftEngine } from '../rules'
@@ -497,5 +498,11 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.CALIBRATION_GET_UNRATED, async (_event, limit?: number) => {
     return getCalibrationTracker().getUnratedRuns(limit)
+  })
+
+  // ─── Prompt Versioning ───
+
+  ipcMain.handle(IPC_CHANNELS.PROMPT_LIST_VERSIONS, async () => {
+    return getPromptRegistry().listAll()
   })
 }

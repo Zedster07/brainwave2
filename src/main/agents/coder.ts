@@ -244,8 +244,8 @@ OUTPUT FORMAT (JSON):
     try {
       const { randomUUID } = require('crypto')
       this.db.run(
-        `INSERT INTO agent_runs (id, agent_type, task_id, status, input, output, llm_model, tokens_in, tokens_out, cost_usd, confidence, started_at, completed_at, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), CURRENT_TIMESTAMP, ?)`,
+        `INSERT INTO agent_runs (id, agent_type, task_id, status, input, output, llm_model, tokens_in, tokens_out, cost_usd, confidence, prompt_version, started_at, completed_at, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), CURRENT_TIMESTAMP, ?)`,
         randomUUID(),
         this.type,
         context.taskId,
@@ -257,6 +257,7 @@ OUTPUT FORMAT (JSON):
         result.tokensOut,
         0,
         result.confidence,
+        result.promptVersion ?? null,
         `-${result.duration / 1000} seconds`,
         result.error ?? null
       )
