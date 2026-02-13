@@ -7,6 +7,7 @@ interface LiveTask {
   prompt: string
   status: TaskStatus
   currentStep?: string
+  activityLog: string[]   // accumulated step-by-step history
   progress?: number
   result?: unknown
   error?: string
@@ -35,6 +36,7 @@ export function CommandCenter() {
             status: h.status,
             result: h.result,
             error: h.error,
+            activityLog: [] as string[],
             timestamp: h.createdAt,
           }))
         return [...prev, ...historical]
@@ -52,13 +54,25 @@ export function CommandCenter() {
       setTasks((prev) => {
         const existing = prev.find((t) => t.id === update.taskId)
         if (existing) {
-          return prev.map((t) =>
-            t.id === update.taskId
-              ? { ...t, status: update.status, currentStep: update.currentStep, progress: update.progress, result: update.result, error: update.error, timestamp: update.timestamp }
-              : t
-          )
+          return prev.map((t) => {
+            if (t.id !== update.taskId) return t
+            // Accumulate steps into activity log
+            const activityLog = [...t.activityLog]
+            if (update.currentStep && update.currentStep !== t.currentStep) {
+              activityLog.push(update.currentStep)
+            }
+            return {
+              ...t,
+              status: update.status,
+              currentStep: update.currentStep,
+              progress: update.progress,
+              result: update.result ?? t.result,
+              error: update.error ?? t.error,
+              activityLog,
+              timestamp: update.timestamp,
+            }
+          })
         }
-        // Shouldn't happen — task was added on submit — but handle gracefully
         return prev
       })
     })
@@ -81,14 +95,14 @@ export function CommandCenter() {
       })
 
       setTasks((prev) => [
-        { id: taskId, prompt, status: 'queued', timestamp: Date.now() },
+        { id: taskId, prompt, status: 'queued', activityLog: [], timestamp: Date.now() },
         ...prev,
       ])
     } catch (err) {
       console.error('[CommandCenter] Submit failed:', err)
       // Show inline error
       setTasks((prev) => [
-        { id: crypto.randomUUID(), prompt, status: 'failed', error: err instanceof Error ? err.message : 'Submission failed', timestamp: Date.now() },
+        { id: crypto.randomUUID(), prompt, status: 'failed', activityLog: [], error: err instanceof Error ? err.message : 'Submission failed', timestamp: Date.now() },
         ...prev,
       ])
     } finally {
@@ -175,6 +189,7 @@ export function CommandCenter() {
 
 function TaskCard({ task, onCancel }: { task: LiveTask; onCancel: (id: string) => void }) {
   const isActive = task.status === 'queued' || task.status === 'planning' || task.status === 'executing'
+  const [expanded, setExpanded] = useState(isActive) // auto-expand while active
 
   return (
     <div className={`glass-card p-4 ${isActive ? 'border border-accent/20' : ''}`}>
@@ -182,11 +197,30 @@ function TaskCard({ task, onCancel }: { task: LiveTask; onCancel: (id: string) =
         <div className="flex items-start gap-3 flex-1 min-w-0">
           <StatusIcon status={task.status} />
           <div className="flex-1 min-w-0">
-            <p className="text-sm text-white leading-relaxed">{task.prompt}</p>
+            <p className="text-sm text-white leading-relaxed font-medium">{task.prompt}</p>
 
-            {/* Progress info */}
-            {task.currentStep && (
-              <p className="text-[11px] text-accent/80 mt-1.5">{task.currentStep}</p>
+            {/* Live delegation step */}
+            {isActive && task.currentStep && (
+              <p className="text-[11px] text-accent/80 mt-1.5 animate-pulse">{task.currentStep}</p>
+            )}
+
+            {/* Activity log — step-by-step delegation */}
+            {task.activityLog.length > 0 && (
+              <div className="mt-2">
+                <button
+                  onClick={() => setExpanded(!expanded)}
+                  className="text-[10px] text-gray-500 hover:text-gray-300 transition-colors"
+                >
+                  {expanded ? '▾' : '▸'} {task.activityLog.length} steps
+                </button>
+                {expanded && (
+                  <div className="mt-1 space-y-0.5 border-l border-white/[0.06] pl-2 ml-1">
+                    {task.activityLog.map((step, i) => (
+                      <p key={i} className="text-[11px] text-gray-500 leading-relaxed">{step}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Error message */}
@@ -194,21 +228,17 @@ function TaskCard({ task, onCancel }: { task: LiveTask; onCancel: (id: string) =
               <p className="text-[11px] text-red-400/80 mt-1.5">{task.error}</p>
             )}
 
-            {/* Result preview */}
+            {/* Result */}
             {task.status === 'completed' && task.result && (
-              typeof task.result === 'string' ? (
-                <p className="mt-2 text-sm text-gray-300 leading-relaxed">{task.result}</p>
-              ) : (
-                <div className="mt-2 p-2 bg-white/[0.03] rounded text-[11px] text-gray-400 max-h-40 overflow-y-auto font-mono whitespace-pre-wrap">
-                  {JSON.stringify(task.result, null, 2)}
-                </div>
-              )
+              <div className="mt-3 text-sm text-gray-300 leading-relaxed whitespace-pre-wrap">
+                {typeof task.result === 'string' ? task.result : JSON.stringify(task.result, null, 2)}
+              </div>
             )}
 
             <div className="flex items-center gap-3 mt-2 text-[10px] text-gray-600">
               <span className="capitalize">{task.status.replace('_', ' ')}</span>
               <span>{new Date(task.timestamp).toLocaleTimeString()}</span>
-              {task.progress !== undefined && task.progress > 0 && (
+              {isActive && task.progress !== undefined && task.progress > 0 && (
                 <span>{task.progress}%</span>
               )}
             </div>

@@ -123,10 +123,20 @@ export function registerIpcHandlers(): void {
     taskId: data.taskId, status: 'queued', timestamp: Date.now(),
   }))
   eventBus.onEvent('task:planning', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
-    taskId: data.taskId, status: 'planning', timestamp: Date.now(),
+    taskId: data.taskId, status: 'planning', currentStep: 'Analyzing task...', timestamp: Date.now(),
+  }))
+  eventBus.onEvent('plan:created', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+    taskId: data.taskId, status: 'executing',
+    currentStep: `Plan created: ${data.steps} steps → ${data.agents.join(', ')}`,
+    timestamp: Date.now(),
   }))
   eventBus.onEvent('task:progress', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
     taskId: data.taskId, status: 'executing', progress: data.progress, currentStep: data.currentStep, timestamp: Date.now(),
+  }))
+  eventBus.onEvent('plan:step-completed', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+    taskId: data.taskId, status: 'executing',
+    currentStep: `✓ ${data.agentType} completed step "${data.stepId}"`,
+    timestamp: Date.now(),
   }))
   eventBus.onEvent('task:completed', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
     taskId: data.taskId, status: 'completed', result: data.result, timestamp: Date.now(),

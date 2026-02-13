@@ -21,12 +21,22 @@ export function AgentMonitor() {
   const [agents, setAgents] = useState<AgentStatus[]>([])
   const [logs, setLogs] = useState<AgentLogEntry[]>([])
   const logEndRef = useRef<HTMLDivElement>(null)
+  // Track which agents have real-time state overrides (from log events)
+  const realtimeState = useRef(new Map<string, { state: string; taskId?: string; updatedAt: number }>())
 
-  // Load agent status
+  // Load agent status — only once to discover agent list, not for state
   const loadAgents = useCallback(async () => {
     try {
       const status = await window.brainwave.getAgentStatus()
-      setAgents(status)
+      // Merge: use polled data for agent list but preserve real-time state
+      setAgents(status.map((a) => {
+        const rt = realtimeState.current.get(a.type)
+        if (rt && Date.now() - rt.updatedAt < 30000) {
+          // Real-time state is recent, use it
+          return { ...a, state: rt.state as AgentStatus['state'], currentTaskId: rt.taskId }
+        }
+        return a
+      }))
     } catch (err) {
       console.error('Failed to load agent status:', err)
     }
@@ -41,12 +51,12 @@ export function AgentMonitor() {
 
   useEffect(() => {
     loadAgents()
-    // Poll agent status every 3s
-    const interval = setInterval(loadAgents, 3000)
+    // Poll agent list every 5s (for discovery, not state)
+    const interval = setInterval(loadAgents, 5000)
     return () => clearInterval(interval)
   }, [loadAgents])
 
-  // Subscribe to agent log events
+  // Subscribe to agent log events — these drive real-time state
   useEffect(() => {
     const unsubscribe = window.brainwave.onAgentLog((log: AgentLogEntry) => {
       setLogs((prev) => {
@@ -54,21 +64,32 @@ export function AgentMonitor() {
         return next.length > MAX_LOGS ? next.slice(0, MAX_LOGS) : next
       })
 
-      // Update agent state based on log
-      setAgents((prev) =>
-        prev.map((a) => {
-          if (a.type === log.agentType) {
-            const isThinking = log.message.includes('Thinking')
-            const isCompleted = log.message.includes('Completed')
-            return {
-              ...a,
-              state: isThinking ? 'thinking' : isCompleted ? 'idle' : a.state,
-              currentTaskId: log.taskId || a.currentTaskId,
-            }
-          }
-          return a
+      // Update agent state based on log and track in ref
+      const isThinking = log.message.includes('Thinking')
+      const isCompleted = log.message.includes('Completed')
+      const isError = log.level === 'error'
+      const newState = isThinking ? 'thinking' : (isCompleted || isError) ? 'idle' : null
+
+      if (newState) {
+        realtimeState.current.set(log.agentType, {
+          state: newState,
+          taskId: isThinking ? log.taskId : undefined,
+          updatedAt: Date.now(),
         })
-      )
+
+        setAgents((prev) =>
+          prev.map((a) => {
+            if (a.type === log.agentType) {
+              return {
+                ...a,
+                state: newState as AgentStatus['state'],
+                currentTaskId: isThinking ? log.taskId : a.currentTaskId,
+              }
+            }
+            return a
+          })
+        )
+      }
     })
     return unsubscribe
   }, [])

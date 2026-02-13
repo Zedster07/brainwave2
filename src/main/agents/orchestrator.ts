@@ -18,6 +18,7 @@ import { getEventBus, type AgentType } from './event-bus'
 import { getDatabase } from '../db/database'
 import { getMemoryManager } from '../memory'
 import { getWorkingMemory } from '../memory/working-memory'
+import { LLMFactory } from '../llm/factory'
 import { getPeopleStore } from '../memory/people'
 import { getProspectiveStore } from '../memory/prospective'
 import { ReflectionAgent } from './reflection'
@@ -502,7 +503,10 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
     const results = await this.executePlan(task, plan, relevantMemories)
     if (task.status === 'cancelled') return
 
-    const finalResult = this.compileResults(plan, results)
+    // For single-step plans, use agent output directly
+    const finalResult = plan.subTasks.length === 1
+      ? (results.get(plan.subTasks[0].id)?.output ?? null)
+      : await this.synthesizeAnswer(plan, results)
     await this.completeTask(task, finalResult, plan, memoryManager)
   }
 
@@ -516,6 +520,11 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
     memoryManager: ReturnType<typeof getMemoryManager>
   ): Promise<void> {
     // Planning phase (LLM call to decompose)
+    this.bus.emitEvent('task:progress', {
+      taskId: task.id, progress: 0,
+      currentStep: 'Planner is breaking down the task...',
+    })
+
     const plan = await this.planner.decompose(task.id, task.prompt)
     task.plan = plan
 
@@ -525,6 +534,14 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
       task.id
     )
 
+    // Notify renderer of the plan with step details
+    this.bus.emitEvent('plan:created', {
+      taskId: task.id,
+      planId: plan.id,
+      steps: plan.subTasks.length,
+      agents: plan.requiredAgents,
+    })
+
     // Execution phase — run the DAG
     task.status = 'in_progress'
     this.db.run(`UPDATE tasks SET status = 'in_progress', started_at = CURRENT_TIMESTAMP WHERE id = ?`, task.id)
@@ -532,7 +549,12 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
     const results = await this.executePlan(task, plan, relevantMemories)
     if (task.status === 'cancelled') return
 
-    const finalResult = this.compileResults(plan, results)
+    // Synthesize a human-readable answer from all agent outputs
+    this.bus.emitEvent('task:progress', {
+      taskId: task.id, progress: 95,
+      currentStep: 'Synthesizing final answer...',
+    })
+    const finalResult = await this.synthesizeAnswer(plan, results)
     await this.completeTask(task, finalResult, plan, memoryManager)
 
     // Auto-reflect (async, non-blocking)
@@ -657,12 +679,13 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
       const executions = ready.map(async (subTask) => {
         subTask.status = 'in-progress'
 
+        const stepIndex = plan.subTasks.indexOf(subTask) + 1
         this.bus.emitEvent('task:progress', {
           taskId: task.id,
           progress: Math.round(
             ((completed.size) / plan.subTasks.length) * 100
           ),
-          currentStep: subTask.description,
+          currentStep: `[${stepIndex}/${plan.subTasks.length}] ${subTask.assignedAgent} → ${subTask.description}`,
         })
 
         const result = await this.executeSubTask(subTask, {
@@ -739,35 +762,47 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
     return this.execute(subTask, context)
   }
 
-  /** Compile all sub-task results into a final output */
-  private compileResults(plan: TaskPlan, results: Map<string, AgentResult>): unknown {
-    // For single-task plans, return the result directly
-    if (plan.subTasks.length === 1) {
-      const only = results.get(plan.subTasks[0].id)
-      return only?.output ?? null
-    }
+  /**
+   * Synthesize a human-readable answer from all agent outputs.
+   * Makes a final LLM call to compile scattered outputs into one coherent response.
+   */
+  private async synthesizeAnswer(plan: TaskPlan, results: Map<string, AgentResult>): Promise<string> {
+    // Build context from all agent outputs
+    const agentOutputs = plan.subTasks.map((st) => {
+      const result = results.get(st.id)
+      const output = result?.output
+      const outputStr = typeof output === 'string' ? output : JSON.stringify(output, null, 2)
+      return `### Step: ${st.description} (Agent: ${st.assignedAgent}, Status: ${st.status})\n${outputStr}`
+    }).join('\n\n')
 
-    // For multi-task plans, compile a structured summary
-    const compiled: Record<string, unknown> = {
-      originalTask: plan.originalTask,
-      complexity: plan.estimatedComplexity,
-      steps: plan.subTasks.map((st) => {
-        const result = results.get(st.id)
-        return {
-          id: st.id,
-          description: st.description,
-          agent: st.assignedAgent,
-          status: st.status,
-          output: result?.output,
-          confidence: result?.confidence,
-          error: st.error,
-        }
-      }),
-      overallConfidence:
-        [...results.values()].reduce((sum, r) => sum + r.confidence, 0) / results.size,
-    }
+    try {
+      const adapter = LLMFactory.getForAgent('orchestrator')
+      const response = await adapter.complete({
+        system: `You are the Brainwave AI assistant, synthesizing results from multiple specialist agents into one cohesive answer for the user.
 
-    return compiled
+Rules:
+- Write a clear, well-structured, human-readable response
+- Do NOT include raw JSON, confidence scores, or internal metadata
+- Do NOT mention agents, steps, or internal processes
+- Just answer the user's original question directly and thoroughly
+- Use markdown formatting (headers, lists, bold) for readability
+- If an agent couldn't complete its step, work around it using the other agents' outputs`,
+        user: `Original question: "${plan.originalTask}"\n\nAgent outputs:\n${agentOutputs}\n\nSynthesize these into a clear, comprehensive answer.`,
+        temperature: 0.5,
+        maxTokens: 4096,
+      })
+      return response.content
+    } catch (err) {
+      console.warn('[Orchestrator] Synthesis failed, falling back to raw compilation:', err)
+      // Fallback: concatenate agent outputs as plain text
+      return plan.subTasks
+        .map((st) => {
+          const result = results.get(st.id)
+          return typeof result?.output === 'string' ? result.output : JSON.stringify(result?.output)
+        })
+        .filter(Boolean)
+        .join('\n\n---\n\n')
+    }
   }
 
   /** Mark a task as failed */
