@@ -51,44 +51,45 @@ export interface AgentModelConfig {
 
 // ─── Beast Mode: Maximum quality, cost no object ────────────
 export const BEAST_MODE_MODELS: Record<string, AgentModelConfig> = {
-  orchestrator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.6', temperature: 0.3, maxTokens: 8192 },
+  orchestrator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.5', temperature: 0.3, maxTokens: 8192 },
   planner:      { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5', temperature: 0.4, maxTokens: 8192 },
   researcher:   { provider: 'openrouter', model: 'google/gemini-2.5-pro', temperature: 0.5 },
-  coder:        { provider: 'openrouter', model: 'anthropic/claude-opus-4.6', temperature: 0.2, maxTokens: 8192 },
+  coder:        { provider: 'openrouter', model: 'anthropic/claude-opus-4.5', temperature: 0.2, maxTokens: 8192 },
   writer:       { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5', temperature: 0.7 },
   analyst:      { provider: 'openrouter', model: 'google/gemini-2.5-pro', temperature: 0.3 },
   critic:       { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5', temperature: 0.2 },
   reviewer:     { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5', temperature: 0.2, maxTokens: 4096 },
   reflection:   { provider: 'openrouter', model: 'google/gemini-2.5-pro', temperature: 0.4, maxTokens: 4096 },
-  executor:     { provider: 'openrouter', model: 'anthropic/claude-sonnet-4-20250514', temperature: 0.1 },
+  executor:     { provider: 'openrouter', model: 'anthropic/claude-sonnet-4.5', temperature: 0.1 },
 }
 
 // ─── Normal Mode: Balanced quality & cost ───────────────────
 export const NORMAL_MODE_MODELS: Record<string, AgentModelConfig> = {
-  orchestrator: { provider: 'openrouter', model: 'anthropic/claude-sonnet-4-20250514', temperature: 0.3, maxTokens: 8192 },
+  orchestrator: { provider: 'openrouter', model: 'anthropic/claude-sonnet-4', temperature: 0.3, maxTokens: 8192 },
   planner:      { provider: 'openrouter', model: 'google/gemini-2.5-pro', temperature: 0.4, maxTokens: 8192 },
   researcher:   { provider: 'openrouter', model: 'google/gemini-2.5-flash', temperature: 0.5 },
-  coder:        { provider: 'openrouter', model: 'anthropic/claude-sonnet-4-20250514', temperature: 0.2, maxTokens: 8192 },
-  writer:       { provider: 'openrouter', model: 'anthropic/claude-haiku-4.5', temperature: 0.7 },
+  coder:        { provider: 'openrouter', model: 'anthropic/claude-sonnet-4', temperature: 0.2, maxTokens: 8192 },
+  writer:       { provider: 'openrouter', model: 'anthropic/claude-3.5-haiku', temperature: 0.7 },
   analyst:      { provider: 'openrouter', model: 'google/gemini-2.5-flash', temperature: 0.3 },
-  critic:       { provider: 'openrouter', model: 'anthropic/claude-haiku-4.5', temperature: 0.2 },
-  reviewer:     { provider: 'openrouter', model: 'anthropic/claude-haiku-4.5', temperature: 0.2, maxTokens: 4096 },
+  critic:       { provider: 'openrouter', model: 'anthropic/claude-3.5-haiku', temperature: 0.2 },
+  reviewer:     { provider: 'openrouter', model: 'anthropic/claude-3.5-haiku', temperature: 0.2, maxTokens: 4096 },
   reflection:   { provider: 'openrouter', model: 'google/gemini-2.5-flash', temperature: 0.4, maxTokens: 4096 },
   executor:     { provider: 'openrouter', model: 'openai/gpt-4.1-mini', temperature: 0.1 },
 }
 
 // ─── Economy Mode: Maximum savings, minimum viable quality ──
+// All models verified to support response_format + tool calling on OpenRouter
 export const ECONOMY_MODE_MODELS: Record<string, AgentModelConfig> = {
   orchestrator: { provider: 'openrouter', model: 'google/gemini-2.5-flash', temperature: 0.3, maxTokens: 8192 },
   planner:      { provider: 'openrouter', model: 'deepseek/deepseek-chat', temperature: 0.4, maxTokens: 8192 },
   researcher:   { provider: 'openrouter', model: 'deepseek/deepseek-chat', temperature: 0.5 },
   coder:        { provider: 'openrouter', model: 'qwen/qwen3-coder', temperature: 0.2, maxTokens: 8192 },
   writer:       { provider: 'openrouter', model: 'deepseek/deepseek-chat', temperature: 0.7 },
-  analyst:      { provider: 'openrouter', model: 'deepseek/deepseek-r1', temperature: 0.3 },
+  analyst:      { provider: 'openrouter', model: 'deepseek/deepseek-chat', temperature: 0.3 },
   critic:       { provider: 'openrouter', model: 'openai/gpt-4.1-mini', temperature: 0.2 },
   reviewer:     { provider: 'openrouter', model: 'openai/gpt-4.1-mini', temperature: 0.2, maxTokens: 4096 },
-  reflection:   { provider: 'openrouter', model: 'openai/gpt-4.1-nano', temperature: 0.4, maxTokens: 4096 },
-  executor:     { provider: 'openrouter', model: 'openai/gpt-4.1-nano', temperature: 0.1 },
+  reflection:   { provider: 'openrouter', model: 'openai/gpt-4.1-mini', temperature: 0.4, maxTokens: 4096 },
+  executor:     { provider: 'openrouter', model: 'openai/gpt-4.1-mini', temperature: 0.1 },
 }
 
 // ─── Local Mode: Fully offline via Ollama ───────────────────
