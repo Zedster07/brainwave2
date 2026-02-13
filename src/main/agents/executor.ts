@@ -90,6 +90,10 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
   • Permission denied? Try an alternative location or command.
   • Command not found? Try an equivalent command.
   NEVER give up after one failure — always attempt to self-correct.
+- If a tool call SUCCEEDS but the task is NOT yet complete, call ANOTHER tool to continue.
+  For example: if asked to "find the Steam directory" and directory_list shows folder contents but Steam isn't there,
+  call directory_list on subdirectories or use shell_execute with a search command. Keep going until you have the answer.
+- When the task IS complete, respond with a plain text summary (NOT a JSON tool call) to signal you're done.
 - Always provide a clear summary of what was accomplished.${toolSection}`
   }
 
@@ -119,15 +123,16 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
     const artifacts: Artifact[] = []
     const toolResults: Array<{ tool: string; success: boolean; content: string }> = []
 
-    const MAX_TOOL_ATTEMPTS = 3
+    const MAX_STEPS = 6
 
     try {
-      // Multi-turn tool loop — allows the LLM to self-correct on failures
+      // Agentic multi-step loop — the LLM keeps calling tools until the task is done.
+      // After each tool result (success or failure), the full history is fed back so
+      // the LLM can decide: call another tool, or respond with a final text answer.
       let currentPrompt = task.description
-      let lastResult: { success: boolean; content: string } | null = null
 
-      for (let attempt = 1; attempt <= MAX_TOOL_ATTEMPTS; attempt++) {
-        // Step 1: Ask the LLM what tool to call
+      for (let step = 1; step <= MAX_STEPS; step++) {
+        // Ask the LLM what to do next
         const response = await this.think(currentPrompt, context, {
           temperature: modelConfig?.temperature ?? 0.1,
           maxTokens: modelConfig?.maxTokens,
@@ -138,117 +143,115 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
         totalTokensOut += response.tokensOut
         model = response.model
 
-        // Step 2: Try to parse a tool call from the response
+        // Try to parse a tool call from the response
         const toolCall = this.parseToolCall(response.content)
 
         if (!toolCall) {
-          // LLM didn't call a tool — return its text response directly
-          return this.buildResult(
-            lastResult?.success === false ? 'partial' : 'success',
+          // LLM responded with plain text — task is complete (or it gave up)
+          const anySuccess = toolResults.some((t) => t.success)
+          const finalResult = this.buildResult(
+            anySuccess ? 'success' : (toolResults.length > 0 ? 'partial' : 'success'),
             response.content,
-            0.7,
+            anySuccess ? 0.85 : 0.7,
             totalTokensIn,
             totalTokensOut,
             model,
             startTime,
             artifacts
           )
+
+          this.bus.emitEvent('agent:completed', {
+            agentType: this.type,
+            taskId: context.taskId,
+            confidence: finalResult.confidence,
+            tokensIn: totalTokensIn,
+            tokensOut: totalTokensOut,
+            toolsCalled: toolResults.map((t) => t.tool),
+          })
+
+          return finalResult
         }
 
-        // Step 3: Execute the tool — route to local provider or MCP registry
+        // Execute the tool
         this.bus.emitEvent('agent:acting', {
           agentType: this.type,
           taskId: context.taskId,
-          action: `Calling tool: ${toolCall.tool}${attempt > 1 ? ` (attempt ${attempt})` : ''}`,
+          action: `Calling tool: ${toolCall.tool}${step > 1 ? ` (step ${step})` : ''}`,
         })
 
         const result = toolCall.tool.startsWith('local::')
           ? await localProvider.callTool(toolCall.tool.split('::')[1], toolCall.args)
           : await registry.callTool(toolCall.tool, toolCall.args)
+
         toolResults.push({
           tool: toolCall.tool,
           success: result.success,
           content: result.content,
         })
-        lastResult = result
 
-        // Store raw tool output as artifact
         artifacts.push({
           type: 'json',
-          name: `tool-result-${toolCall.tool.split('::').pop()}${attempt > 1 ? `-attempt${attempt}` : ''}`,
+          name: `tool-result-${toolCall.tool.split('::').pop()}-step${step}`,
           content: JSON.stringify(result, null, 2),
         })
 
-        // Step 4: If the tool FAILED and we have retries left, ask the LLM to self-correct
-        if (!result.success && attempt < MAX_TOOL_ATTEMPTS) {
-          currentPrompt =
-            `Original task: ${task.description}\n\n` +
-            `Attempt ${attempt} failed:\n` +
-            `Tool called: ${toolCall.tool}\n` +
-            `Error: ${result.content}\n\n` +
-            `The tool call failed. Analyze the error and try a DIFFERENT approach.\n` +
-            `For example: use shell_execute or directory_list to discover the correct path, ` +
-            `try an alternative command, or adjust the arguments.\n` +
-            `Respond with a new tool call JSON to retry.`
-          continue // Go back to Step 1 with the error context
-        }
+        // Build context for the next iteration — include the full history
+        const historyLines = toolResults.map((t, i) =>
+          `Step ${i + 1}: ${t.tool} → ${t.success ? 'SUCCESS' : 'FAILED'}:\n${t.content.length > 1500 ? t.content.slice(0, 1500) + '\n...(truncated)' : t.content}`
+        ).join('\n\n')
 
-        // Step 5: Tool succeeded (or last attempt) — get a final summary from the LLM
-        const historyContext = toolResults.length > 1
-          ? `\n\nPrevious attempts:\n${toolResults.slice(0, -1).map((t, i) =>
-              `  Attempt ${i + 1}: ${t.tool} → ${t.success ? 'success' : 'failed'}: ${t.content.slice(0, 200)}`
-            ).join('\n')}\n`
-          : ''
-
-        const summaryPrompt =
+        currentPrompt =
           `Original task: ${task.description}\n\n` +
-          `Tool called: ${toolCall.tool}\n` +
-          `Tool result (success=${result.success}):\n${result.content}` +
-          `${historyContext}\n\n` +
-          `Provide a clear summary of the result. If the tool failed, explain what went wrong.`
-
-        const summaryResponse = await this.think(summaryPrompt, context, {
-          temperature: 0.3,
-          maxTokens: modelConfig?.maxTokens,
-        })
-
-        totalTokensIn += summaryResponse.tokensIn
-        totalTokensOut += summaryResponse.tokensOut
-
-        const finalResult = this.buildResult(
-          result.success ? 'success' : 'partial',
-          summaryResponse.content,
-          result.success ? 0.85 : 0.4,
-          totalTokensIn,
-          totalTokensOut,
-          model,
-          startTime,
-          artifacts
-        )
-
-        this.bus.emitEvent('agent:completed', {
-          agentType: this.type,
-          taskId: context.taskId,
-          confidence: finalResult.confidence,
-          tokensIn: totalTokensIn,
-          tokensOut: totalTokensOut,
-          toolsCalled: toolResults.map((t) => t.tool),
-        })
-
-        return finalResult
+          `== Tool History ==\n${historyLines}\n\n` +
+          `== What to do next ==\n` +
+          (result.success
+            ? `The last tool call succeeded. Is the task complete? ` +
+              `If YES: respond with a plain text summary (no JSON, no tool call). ` +
+              `If NO: call another tool to continue working toward the goal.`
+            : `The last tool call FAILED. Analyze the error and try a DIFFERENT approach. ` +
+              `Use a different tool or different arguments to work around the problem. ` +
+              `Respond with a new tool call JSON.`)
       }
 
-      // Shouldn't reach here, but safety net
-      return this.buildResult(
-        'failed',
-        `Failed after ${MAX_TOOL_ATTEMPTS} attempts`,
-        0,
+      // Exhausted all steps — ask for a final summary
+      const summaryPrompt =
+        `Original task: ${task.description}\n\n` +
+        `You've used ${MAX_STEPS} tool calls. Here's what happened:\n` +
+        toolResults.map((t, i) =>
+          `Step ${i + 1}: ${t.tool} → ${t.success ? 'SUCCESS' : 'FAILED'}: ${t.content.slice(0, 300)}`
+        ).join('\n') +
+        `\n\nProvide a final summary of what was accomplished and what remains incomplete.`
+
+      const summaryResponse = await this.think(summaryPrompt, context, {
+        temperature: 0.3,
+        maxTokens: modelConfig?.maxTokens,
+      })
+
+      totalTokensIn += summaryResponse.tokensIn
+      totalTokensOut += summaryResponse.tokensOut
+
+      const anySuccess = toolResults.some((t) => t.success)
+      const finalResult = this.buildResult(
+        anySuccess ? 'partial' : 'failed',
+        summaryResponse.content,
+        anySuccess ? 0.6 : 0.3,
         totalTokensIn,
         totalTokensOut,
         model,
         startTime,
         artifacts
       )
+
+      this.bus.emitEvent('agent:completed', {
+        agentType: this.type,
+        taskId: context.taskId,
+        confidence: finalResult.confidence,
+        tokensIn: totalTokensIn,
+        tokensOut: totalTokensOut,
+        toolsCalled: toolResults.map((t) => t.tool),
+      })
+
+      return finalResult
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err)
 
