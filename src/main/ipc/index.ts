@@ -326,35 +326,89 @@ export function registerIpcHandlers(): void {
     })
   }
 
+  // ─── Task Live State Accumulator ───
+  // Keeps currentStep + activityLog in main process memory so the renderer
+  // can replay them when the user navigates away and back.
+  const taskLiveState = new Map<string, { currentStep?: string; activityLog: string[]; progress?: number; status: string }>()
+
+  function updateLiveState(taskId: string, update: { currentStep?: string; progress?: number; status: string }) {
+    let state = taskLiveState.get(taskId)
+    if (!state) {
+      state = { activityLog: [], status: update.status }
+      taskLiveState.set(taskId, state)
+    }
+    state.status = update.status
+    if (update.progress !== undefined) state.progress = update.progress
+    if (update.currentStep && update.currentStep !== state.currentStep) {
+      state.activityLog.push(update.currentStep)
+      state.currentStep = update.currentStep
+    }
+    // Clean up completed/failed/cancelled tasks after 5 min to avoid memory leak
+    if (update.status === 'completed' || update.status === 'failed' || update.status === 'cancelled') {
+      setTimeout(() => taskLiveState.delete(taskId), 5 * 60 * 1000)
+    }
+  }
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_GET_TASK_LIVE_STATE, async (_event, taskIds: string[]) => {
+    const result: Record<string, { currentStep?: string; activityLog: string[]; progress?: number; status: string }> = {}
+    for (const id of taskIds) {
+      const state = taskLiveState.get(id)
+      if (state) result[id] = { ...state, activityLog: [...state.activityLog] }
+    }
+    return result
+  })
+
   // Task lifecycle events → renderer
-  eventBus.onEvent('task:submitted', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
-    taskId: data.taskId, status: 'queued', timestamp: Date.now(),
-  }))
-  eventBus.onEvent('task:planning', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
-    taskId: data.taskId, status: 'planning', currentStep: 'Analyzing task...', timestamp: Date.now(),
-  }))
-  eventBus.onEvent('plan:created', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
-    taskId: data.taskId, status: 'executing',
-    currentStep: `Plan created: ${data.steps} steps → ${data.agents.join(', ')}`,
-    timestamp: Date.now(),
-  }))
-  eventBus.onEvent('task:progress', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
-    taskId: data.taskId, status: 'executing', progress: data.progress, currentStep: data.currentStep, timestamp: Date.now(),
-  }))
-  eventBus.onEvent('plan:step-completed', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
-    taskId: data.taskId, status: 'executing',
-    currentStep: `✓ ${data.agentType} completed step "${data.stepId}"`,
-    timestamp: Date.now(),
-  }))
-  eventBus.onEvent('task:completed', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
-    taskId: data.taskId, status: 'completed', result: data.result, timestamp: Date.now(),
-  }))
-  eventBus.onEvent('task:failed', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
-    taskId: data.taskId, status: 'failed', error: data.error, timestamp: Date.now(),
-  }))
-  eventBus.onEvent('task:cancelled', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
-    taskId: data.taskId, status: 'cancelled', timestamp: Date.now(),
-  }))
+  eventBus.onEvent('task:submitted', (data) => {
+    updateLiveState(data.taskId, { status: 'queued' })
+    forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+      taskId: data.taskId, status: 'queued', timestamp: Date.now(),
+    })
+  })
+  eventBus.onEvent('task:planning', (data) => {
+    updateLiveState(data.taskId, { status: 'planning', currentStep: 'Analyzing task...' })
+    forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+      taskId: data.taskId, status: 'planning', currentStep: 'Analyzing task...', timestamp: Date.now(),
+    })
+  })
+  eventBus.onEvent('plan:created', (data) => {
+    const step = `Plan created: ${data.steps} steps → ${data.agents.join(', ')}`
+    updateLiveState(data.taskId, { status: 'executing', currentStep: step })
+    forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+      taskId: data.taskId, status: 'executing', currentStep: step, timestamp: Date.now(),
+    })
+  })
+  eventBus.onEvent('task:progress', (data) => {
+    updateLiveState(data.taskId, { status: 'executing', progress: data.progress, currentStep: data.currentStep })
+    forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+      taskId: data.taskId, status: 'executing', progress: data.progress, currentStep: data.currentStep, timestamp: Date.now(),
+    })
+  })
+  eventBus.onEvent('plan:step-completed', (data) => {
+    const step = `✓ ${data.agentType} completed step "${data.stepId}"`
+    updateLiveState(data.taskId, { status: 'executing', currentStep: step })
+    forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+      taskId: data.taskId, status: 'executing', currentStep: step, timestamp: Date.now(),
+    })
+  })
+  eventBus.onEvent('task:completed', (data) => {
+    updateLiveState(data.taskId, { status: 'completed' })
+    forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+      taskId: data.taskId, status: 'completed', result: data.result, timestamp: Date.now(),
+    })
+  })
+  eventBus.onEvent('task:failed', (data) => {
+    updateLiveState(data.taskId, { status: 'failed' })
+    forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+      taskId: data.taskId, status: 'failed', error: data.error, timestamp: Date.now(),
+    })
+  })
+  eventBus.onEvent('task:cancelled', (data) => {
+    updateLiveState(data.taskId, { status: 'cancelled' })
+    forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+      taskId: data.taskId, status: 'cancelled', timestamp: Date.now(),
+    })
+  })
 
   // Agent activity events → renderer log
   eventBus.onEvent('agent:thinking', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
@@ -379,11 +433,13 @@ export function registerIpcHandlers(): void {
     id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agent, agentType: data.agent,
     level: 'error', message: `⚠ ESCALATION: ${data.message}`, timestamp: Date.now(),
   }))
-  eventBus.onEvent('task:escalation', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
-    taskId: data.taskId, status: 'executing',
-    currentStep: `⚠ ${data.agent} failed after ${data.attempts} attempts — continuing with remaining steps`,
-    timestamp: Date.now(),
-  }))
+  eventBus.onEvent('task:escalation', (data) => {
+    const step = `⚠ ${data.agent} failed after ${data.attempts} attempts — continuing with remaining steps`
+    updateLiveState(data.taskId, { status: 'executing', currentStep: step })
+    forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+      taskId: data.taskId, status: 'executing', currentStep: step, timestamp: Date.now(),
+    })
+  })
 
   // ─── Memory (wired to MemoryManager) ───
   const memoryManager = getMemoryManager()

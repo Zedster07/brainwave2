@@ -12,12 +12,79 @@
 import { readFile, writeFile, unlink, mkdir, stat, rename, readdir } from 'node:fs/promises'
 import { exec } from 'node:child_process'
 import { resolve, dirname, basename, join } from 'node:path'
+import https from 'node:https'
+import http from 'node:http'
 import { getHardEngine } from '../rules'
 import { getEventBus } from '../agents/event-bus'
 import type { McpTool, McpToolCallResult } from '../mcp/types'
 
 // Max output from shell commands (100 KB)
 const MAX_SHELL_OUTPUT = 100 * 1024
+
+/**
+ * Make an HTTP/HTTPS request using Node.js core modules.
+ * This bypasses Electron's net.fetch() which uses Chromium's networking stack
+ * and gets flagged as a bot by sites like DuckDuckGo.
+ */
+function nodeHttpRequest(
+  url: string,
+  options: {
+    method?: 'GET' | 'POST'
+    headers?: Record<string, string>
+    body?: string
+    timeoutMs?: number
+  } = {}
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url)
+    const isHttps = parsed.protocol === 'https:'
+    const lib = isHttps ? https : http
+
+    const reqOptions = {
+      hostname: parsed.hostname,
+      port: parsed.port || (isHttps ? 443 : 80),
+      path: parsed.pathname + parsed.search,
+      method: options.method ?? 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        ...options.headers,
+      },
+    }
+
+    const req = lib.request(reqOptions, (res) => {
+      // Follow redirects (up to 3)
+      if (res.statusCode && [301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
+        nodeHttpRequest(res.headers.location, options).then(resolve).catch(reject)
+        return
+      }
+
+      const chunks: Buffer[] = []
+      res.on('data', (chunk: Buffer) => chunks.push(chunk))
+      res.on('end', () => {
+        resolve({
+          status: res.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString('utf-8'),
+        })
+      })
+      res.on('error', reject)
+    })
+
+    req.on('error', reject)
+
+    // Timeout
+    const timeout = options.timeoutMs ?? 15_000
+    req.setTimeout(timeout, () => {
+      req.destroy(new Error(`Request timed out after ${timeout}ms`))
+    })
+
+    if (options.body) {
+      req.write(options.body)
+    }
+    req.end()
+  })
+}
 
 // Max file read size (5 MB)
 const MAX_READ_SIZE = 5 * 1024 * 1024
@@ -705,26 +772,18 @@ class LocalToolProvider {
     }
 
     try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 15_000)
-
-      const response = await fetch('https://html.duckduckgo.com/html/', {
+      const { status, body: html } = await nodeHttpRequest('https://html.duckduckgo.com/html/', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         },
         body: `q=${encodeURIComponent(query)}`,
-        signal: controller.signal,
+        timeoutMs: 15_000,
       })
 
-      clearTimeout(timer)
-
-      if (!response.ok) {
-        return this.error('local::web_search', `DuckDuckGo returned HTTP ${response.status}`, start)
+      if (status < 200 || status >= 300) {
+        return this.error('local::web_search', `DuckDuckGo returned HTTP ${status}`, start)
       }
-
-      const html = await response.text()
 
       // Parse results from DuckDuckGo HTML response
       const results: Array<{ title: string; url: string; snippet: string }> = []
@@ -771,7 +830,7 @@ class LocalToolProvider {
         duration: Date.now() - start,
       }
     } catch (err) {
-      const message = err instanceof Error && err.name === 'AbortError'
+      const message = err instanceof Error && err.message.includes('timed out')
         ? 'Search timed out after 15s'
         : this.errMsg(err)
       return this.error('local::web_search', message, start)
@@ -801,25 +860,14 @@ class LocalToolProvider {
     }
 
     try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 20_000)
-
-      const response = await fetch(url, {
+      const { status, body: html } = await nodeHttpRequest(url, {
         method: 'GET',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        },
-        signal: controller.signal,
+        timeoutMs: 20_000,
       })
 
-      clearTimeout(timer)
-
-      if (!response.ok) {
-        return this.error('local::webpage_fetch', `HTTP ${response.status} ${response.statusText}`, start)
+      if (status < 200 || status >= 300) {
+        return this.error('local::webpage_fetch', `HTTP ${status}`, start)
       }
-
-      const html = await response.text()
 
       // Strip scripts, styles, and HTML tags to get clean text
       let text = html
@@ -850,7 +898,7 @@ class LocalToolProvider {
         duration: Date.now() - start,
       }
     } catch (err) {
-      const message = err instanceof Error && err.name === 'AbortError'
+      const message = err instanceof Error && err.message.includes('timed out')
         ? 'Fetch timed out after 20s'
         : this.errMsg(err)
       return this.error('local::webpage_fetch', message, start)

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { Send, Sparkles, Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, Ban, Plus, MessageSquare, Trash2, Pencil, PanelLeftClose, PanelLeft, Mic, MicOff, Volume2, VolumeX } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
 import { useVoice } from '../../hooks/useVoice'
-import type { TaskUpdate, TaskStatus, ChatSession } from '@shared/types'
+import type { TaskUpdate, TaskStatus, ChatSession, TaskLiveState } from '@shared/types'
 
 interface LiveTask {
   id: string
@@ -63,18 +63,41 @@ export function CommandCenter() {
       return
     }
     setLoaded(false)
-    window.brainwave.getSessionTasks(activeSessionId, 50).then((history) => {
-      setTasks(
-        history.reverse().map((h) => ({
-          id: h.id,
-          prompt: h.prompt,
-          status: h.status,
-          result: h.result,
-          error: h.error,
-          activityLog: [] as string[],
-          timestamp: h.createdAt,
-        }))
-      )
+    window.brainwave.getSessionTasks(activeSessionId, 50).then(async (history) => {
+      const loadedTasks: LiveTask[] = history.reverse().map((h) => ({
+        id: h.id,
+        prompt: h.prompt,
+        status: h.status,
+        result: h.result,
+        error: h.error,
+        activityLog: [] as string[],
+        timestamp: h.createdAt,
+      }))
+
+      // Replay missed live state for active tasks (survives navigation)
+      const activeIds = loadedTasks
+        .filter((t) => t.status === 'queued' || t.status === 'planning' || t.status === 'executing')
+        .map((t) => t.id)
+
+      if (activeIds.length > 0) {
+        try {
+          const liveStates = await window.brainwave.getTaskLiveState(activeIds)
+          for (const task of loadedTasks) {
+            const live = liveStates[task.id]
+            if (live) {
+              task.currentStep = live.currentStep
+              task.activityLog = live.activityLog
+              task.progress = live.progress
+              // Use the live status in case it advanced since DB was written
+              if (live.status) task.status = live.status
+            }
+          }
+        } catch (err) {
+          console.warn('[CommandCenter] Failed to fetch task live state:', err)
+        }
+      }
+
+      setTasks(loadedTasks)
       setLoaded(true)
       scrollToBottom()
     }).catch((err) => {

@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession, type NotificationPayload } from '@shared/types'
+import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession, type NotificationPayload, type TaskLiveState } from '@shared/types'
 
 const api: BrainwaveAPI = {
   // ─── Window Controls ───
@@ -232,6 +232,10 @@ const api: BrainwaveAPI = {
 
   getSessionTasks: (sessionId: string, limit?: number) =>
     ipcRenderer.invoke(IPC_CHANNELS.SESSION_GET_TASKS, sessionId, limit) as Promise<TaskRecord[]>,
+
+  // Task live state (replay missed events on remount)
+  getTaskLiveState: (taskIds: string[]) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_GET_TASK_LIVE_STATE, taskIds) as Promise<Record<string, TaskLiveState>>,
 
   // LLM Health
   getCircuitBreakerStatus: () =>

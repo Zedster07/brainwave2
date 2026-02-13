@@ -146,6 +146,9 @@ export const IPC_CHANNELS = {
 
   // Speech-to-Text
   STT_TRANSCRIBE: 'stt:transcribe',
+
+  // Task live state (replay missed events on remount)
+  AGENT_GET_TASK_LIVE_STATE: 'agent:get-task-live-state',
 } as const
 
 // ─── IPC Payload Types ───
@@ -159,6 +162,14 @@ export interface TaskSubmission {
 }
 
 export type TaskStatus = 'queued' | 'planning' | 'executing' | 'completed' | 'failed' | 'cancelled'
+
+/** Live state accumulated in main process — survives renderer navigation */
+export interface TaskLiveState {
+  currentStep?: string
+  activityLog: string[]
+  progress?: number
+  status: TaskStatus
+}
 
 export interface TaskUpdate {
   taskId: string
@@ -397,6 +408,9 @@ export interface BrainwaveAPI {
   deleteSession: (id: string) => Promise<boolean>
   renameSession: (id: string, title: string) => Promise<ChatSession | null>
   getSessionTasks: (sessionId: string, limit?: number) => Promise<TaskRecord[]>
+
+  // Task live state (replay missed events on remount)
+  getTaskLiveState: (taskIds: string[]) => Promise<Record<string, TaskLiveState>>
 
   // LLM Health
   getCircuitBreakerStatus: () => Promise<Array<{ state: string; failureCount: number; name: string }>>
