@@ -71,6 +71,12 @@ interface TriageResult {
     predicate: string
     object: string
   }>
+  toolingNeeds?: {          // what real-world capabilities the task requires
+    webSearch?: boolean      // needs live internet data or web search
+    fileSystem?: boolean     // needs to read/write/create files on disk
+    shellCommand?: boolean   // needs to execute terminal commands
+    httpRequest?: boolean    // needs to call external APIs
+  }
   reminder?: {             // extracted intention/reminder — stored as prospective memory
     intention: string
     triggerType: 'time' | 'event' | 'condition'
@@ -191,16 +197,20 @@ LANES:
    You MUST provide "agent" with one of: researcher, coder, writer, analyst, critic, reviewer, executor.
 
    IMPORTANT — AGENT CAPABILITIES:
-   - executor: HAS FULL LOCAL COMPUTER ACCESS — can read/write/create/delete/move files, list directories,
-     execute any shell command (git, npm, python, pip, node, curl, etc.), and make HTTP network requests.
-     ALL gated by safety rules — it CANNOT touch protected OS directories or run destructive system commands.
-     Use executor for ANY task involving: files, folders, directories, commands, scripts, downloads, APIs, processes.
-   - researcher: Web search, documentation lookup, fact-finding, summarization
+   - executor: THE ONLY AGENT WITH TOOLS. Can search the web (web_search), fetch web pages (webpage_fetch),
+     read/write/create/delete/move files, list directories, execute shell commands (git, npm, python, etc.),
+     and make HTTP requests. Use executor for ANY task that needs real-world interaction.
+   - researcher: Deep reasoning, analysis, and knowledge synthesis using ONLY training data.
+     Has NO internet access, NO tools. Can answer from existing knowledge but CANNOT look up live/current info.
    - coder: Code generation, modification, debugging, explanation (writes code in chat, NOT to disk — use executor for disk writes)
    - writer: Creative writing, documentation, content generation, blog posts
    - analyst: Data analysis, pattern recognition, strategic reasoning
    - critic: Critical evaluation, argument analysis, quality assessment
    - reviewer: Code review, accuracy verification, quality checking
+
+   ROUTING RULE: If the task needs ANY real-world data (web search, current prices, latest news,
+   live info, file access, shell commands, API calls) → it MUST go to executor. The other agents
+   can only reason from their training knowledge — they have NO tools.
 
    Examples:
    - "write a fibonacci function" → coder
@@ -295,11 +305,25 @@ Examples:
 - "when the tests pass, let me know" → { "intention": "notify user", "triggerType": "event", "triggerValue": "tests pass", "priority": 0.5 }
 Only include if the user clearly expresses a future intention or reminder.
 
+TOOLING NEEDS ASSESSMENT:
+Determine what real-world capabilities this task requires. This is CRITICAL for correct routing.
+- webSearch: true if the task needs ANY live/current information from the internet — news, prices, weather,
+  latest versions, current events, real-time data, looking up something the user doesn't know, fact-checking
+  against current sources, or any request that can't be reliably answered from training knowledge alone.
+  Examples: "what's the weather?", "latest iPhone price", "who won yesterday's game?", "find info about X",
+  "what's trending?", "search for Y", "look up Z" → webSearch: true
+- fileSystem: true if the task needs to read, write, create, delete, move, or list files/directories on disk.
+- shellCommand: true if the task needs to execute terminal/shell commands (git, npm, python, etc.).
+- httpRequest: true if the task needs to call external APIs or download resources.
+Set ALL to false for tasks answerable purely from knowledge, reasoning, or conversation.
+When in doubt about whether something needs live data, set webSearch to true — it's better to search and confirm than to guess.
+
 OUTPUT FORMAT (JSON):
 {
   "lane": "conversational" | "direct" | "complex",
   "reply": "your response (only for conversational)",
   "agent": "researcher" | "coder" | "writer" | "analyst" | "critic" | "reviewer" | "executor" (only for direct),
+  "toolingNeeds": { "webSearch": false, "fileSystem": false, "shellCommand": false, "httpRequest": false },
   "shouldRemember": true/false,
   "personInfo": { "name": "...", "nickname": "...", "fullName": "...", "relationship": "...", "email": "...", "phone": "...", "age": 25, "occupation": "...", "company": "...", "traits": ["..."], "preferences": { "key": "value" } } (only if a person is mentioned — include only fields with known values),
   "semanticFacts": [{ "subject": "...", "predicate": "...", "object": "..." }] (only if facts/preferences shared),
@@ -316,6 +340,7 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
 
       console.log(`[Orchestrator] Triage → ${parsed.lane}: ${parsed.reasoning}`)
       if (parsed.agent) console.log(`[Orchestrator] Triage agent: ${parsed.agent}`)
+      if (parsed.toolingNeeds) console.log(`[Orchestrator] Triage toolingNeeds:`, JSON.stringify(parsed.toolingNeeds))
       if (parsed.shouldRemember) console.log(`[Orchestrator] Triage shouldRemember=true`)
       if (parsed.personInfo) console.log(`[Orchestrator] Triage personInfo:`, JSON.stringify(parsed.personInfo))
       if (parsed.reminder) console.log(`[Orchestrator] Triage reminder:`, JSON.stringify(parsed.reminder))
@@ -748,7 +773,7 @@ ${memoryContext}${peopleContext}${historyContext}`,
       originalTask: task.prompt,
       subTasks: [{
         id: 'direct-task',
-        description: this.augmentTaskForAgent(task.prompt, agentType),
+        description: this.augmentTaskForAgent(task.prompt, agentType, triage.toolingNeeds),
         assignedAgent: agentType,
         status: 'pending',
         dependencies: [],
@@ -1153,51 +1178,42 @@ Rules:
   private applyTriageGuards(triage: TriageResult, prompt: string): void {
     if (triage.lane !== 'direct') return
 
-    // ── Guard 1: Web search → executor ──
-    // Only executor has web_search/webpage_fetch tools. Researcher has NO tools.
-    const WEB_SEARCH_SIGNALS = [
-      /search\s+(the\s+)?(web|internet|online)/i,
-      /\b(find|search|look)\b.{0,20}\b(in|on|from|across|through)\s+(the\s+)?(web|internet|net)\b/i,
-      /find\s+(it\s+)?(online|on\s+the\s+web|on\s+the\s+internet)/i,
-      /look\s+(it\s+)?up\s+(online|on\s+the\s+web)/i,
-      /\bgoogle\b/i,
-      /browse\s+(the\s+)?(web|internet)/i,
-      /\bweb\s*search\b/i,
-      /\b(find|search|look\s+for)\b.{0,30}\b(online|on\s+the\s+(web|internet))\b/i,
-      /\b(search|look)\s+(for|up)\b.{0,40}\b(about|regarding|on)\b/i,
-    ]
-
-    const LIVE_DATA_SIGNALS = [
-      /\b(latest|newest|most\s+recent|current|up-to-date|today|this\s+(week|month|year))\b.*\b(news|release|model|update|version|price|stock|weather|event|announcement|result)/i,
-      /\b(released|launched|announced|came\s+out)\s+(this|last|in\s+\d{4})/i,
-      /what\s+(is|are)\s+(the\s+)?(latest|current|new)/i,
-    ]
-
-    const hasWebSearchIntent = WEB_SEARCH_SIGNALS.some(p => p.test(prompt))
-    const hasLiveDataNeed = LIVE_DATA_SIGNALS.some(p => p.test(prompt))
-
-    if ((hasWebSearchIntent || hasLiveDataNeed) && triage.agent !== 'executor') {
-      const reason = hasWebSearchIntent ? 'explicit web search request' : 'requires live/current data'
-      console.log(`[Orchestrator] \u{1F6E1} Routing guard: ${reason} — redirecting ${triage.agent} → executor`)
-      triage.agent = 'executor'
-      triage.reasoning += ` [GUARD: ${reason} — only executor has web_search tool]`
+    // ── Primary Defense: Capability-based routing via toolingNeeds ──
+    // The triage LLM understands intent perfectly — it flags what the task NEEDS.
+    // We just enforce that only executor has tools.
+    const needs = triage.toolingNeeds
+    if (needs) {
+      const needsTools = needs.webSearch || needs.fileSystem || needs.shellCommand || needs.httpRequest
+      if (needsTools && triage.agent !== 'executor') {
+        const flags = Object.entries(needs).filter(([, v]) => v).map(([k]) => k).join(', ')
+        console.log(`[Orchestrator] \u{1F6E1} Tooling guard: task needs [${flags}] — redirecting ${triage.agent} → executor`)
+        triage.agent = 'executor'
+        triage.reasoning += ` [GUARD: task requires tooling (${flags}) — only executor has tools]`
+        return // primary defense handled it, skip fallback
+      }
     }
 
-    // ── Guard 2: File/shell/network → executor ──
-    const FILE_SHELL_SIGNALS = [
+    // ── Fallback: Regex safety net (belt + suspenders) ──
+    // Catches cases where the LLM forgot to set toolingNeeds correctly.
+    const WEB_FALLBACK = [
+      /search\s+(the\s+)?(web|internet|online)/i,
+      /\bgoogle\b/i,
+      /\bweb\s*search\b/i,
+    ]
+    const FILE_FALLBACK = [
       /\b(read|write|create|delete|move|rename|copy)\s+(a\s+|the\s+)?(file|directory|folder)\b/i,
-      /\blist\s+(the\s+)?(files|directories|folders|contents)\b/i,
       /\b(run|execute)\s+(a\s+|the\s+)?(command|script|shell)\b/i,
       /\b(git|npm|pip|python|node|curl|wget|powershell|bash)\s/i,
-      /\bdownload\s+(a\s+|the\s+)?\w/i,
     ]
 
-    const needsExecutor = FILE_SHELL_SIGNALS.some(p => p.test(prompt))
+    const needsWebFallback = WEB_FALLBACK.some(p => p.test(prompt))
+    const needsFileFallback = FILE_FALLBACK.some(p => p.test(prompt))
 
-    if (needsExecutor && triage.agent !== 'executor') {
-      console.log(`[Orchestrator] \u{1F6E1} Routing guard: file/shell/network task — redirecting ${triage.agent} → executor`)
+    if ((needsWebFallback || needsFileFallback) && triage.agent !== 'executor') {
+      const reason = needsWebFallback ? 'web search (regex fallback)' : 'file/shell (regex fallback)'
+      console.log(`[Orchestrator] \u{1F6E1} Fallback guard: ${reason} — redirecting ${triage.agent} → executor`)
       triage.agent = 'executor'
-      triage.reasoning += ' [GUARD: file/shell/network tasks require executor]'
+      triage.reasoning += ` [GUARD FALLBACK: ${reason}]`
     }
   }
 
@@ -1250,17 +1266,11 @@ Rules:
    * Augment task description with tool hints when routing to executor.
    * Helps the executor LLM know which tool to use without guessing.
    */
-  private augmentTaskForAgent(description: string, agent: AgentType): string {
+  private augmentTaskForAgent(description: string, agent: AgentType, toolingNeeds?: TriageResult['toolingNeeds']): string {
     if (agent !== 'executor') return description
 
-    const lower = description.toLowerCase()
-
-    // Add web_search hint for web search tasks
-    const isWebSearch =
-      /\b(search\s+(the\s+)?(web|internet|online)|find\s+online|latest|newest|current|recent|browse)\b/.test(lower)
-    const isAboutFiles = /\b(file|directory|folder|path|disk)\b/.test(lower)
-
-    if (isWebSearch && !isAboutFiles && !lower.includes('web_search')) {
+    // Use toolingNeeds (from triage LLM) to add precise tool hints
+    if (toolingNeeds?.webSearch && !description.toLowerCase().includes('web_search')) {
       return description + '\n\nUse the web_search tool to find this information online. If you need to read a specific page in detail, use the webpage_fetch tool.'
     }
 
