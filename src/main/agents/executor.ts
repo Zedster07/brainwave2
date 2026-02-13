@@ -65,8 +65,16 @@ export class ExecutorAgent extends BaseAgent {
 - Desktop: ${desktopPath}
 - Documents: ${documentsPath}
 - Downloads: ${downloadsPath}
+- Shell working directory (CWD): ${process.cwd()}
 
 ALWAYS use these REAL paths — NEVER guess or use placeholders like "YourUsername".
+
+## CRITICAL: Shell Commands & Working Directory
+- shell_execute runs commands from CWD: ${process.cwd()}
+- This is the Brainwave app directory — NOT the user's home or Desktop!
+- ALWAYS use ABSOLUTE PATHS in shell commands (e.g. "node C:\\Users\\${username}\\Desktop\\hello.js")
+- Or specify the "cwd" argument: { "tool": "local::shell_execute", "args": { "command": "node hello.js", "cwd": "C:\\Users\\${username}\\Desktop" } }
+- NEVER run commands with relative paths assuming the user's Desktop or home directory
 
 ## Capabilities
 You have ALMOST FULL ACCESS to the user's computer. You can:
@@ -141,8 +149,31 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
       // Agentic multi-step loop — the LLM keeps calling tools until the task is done.
       // After each tool result (success or failure), the full history is fed back so
       // the LLM can decide: call another tool, or signal completion with { "done": true }.
+
+      // Build context from prior subtask results (sibling tasks in the plan)
+      let priorContext = ''
+      if (context.siblingResults && context.siblingResults.size > 0) {
+        const priorLines: string[] = []
+        for (const [stepId, result] of context.siblingResults) {
+          if (result.status === 'success' || result.status === 'partial') {
+            const output = typeof result.output === 'string'
+              ? result.output.slice(0, 500)
+              : JSON.stringify(result.output).slice(0, 500)
+            priorLines.push(`- ${stepId}: ${output}`)
+          }
+        }
+        if (priorLines.length > 0) {
+          priorContext = `\n\nPRIOR STEPS ALREADY COMPLETED (use this context — do NOT redo these):\n${priorLines.join('\n')}\n`
+        }
+      }
+
+      // Include the parent task for broader context
+      const parentContext = context.parentTask
+        ? `\nORIGINAL USER REQUEST: "${context.parentTask.slice(0, 300)}"\n`
+        : ''
+
       let currentPrompt =
-        `TASK: ${task.description}\n\n` +
+        `TASK: ${task.description}\n${parentContext}${priorContext}\n` +
         `Respond with a JSON tool call to begin working on this task. ` +
         `Example: { "tool": "local::shell_execute", "args": { "command": "dir /s /b \\\\*steam* 2>nul" } }\n` +
         `Do NOT respond with text. You MUST output a JSON object.`
