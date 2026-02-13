@@ -4,7 +4,12 @@
  * Receives user tasks, consults memory, delegates to Planner,
  * executes the plan via the Agent Pool, compiles results.
  *
- * Flow: User Task → Memory Recall → Plan → Execute DAG → Review → Reflect → Respond
+ * Flow: User Task → Triage → (Direct Reply | Single Agent | Full Pipeline)
+ *
+ * Triage classifies prompts into 3 lanes:
+ * - conversational: greetings, small talk → instant reply (no agents)
+ * - direct: single-agent tasks → skip planner, go straight to the right agent
+ * - complex: multi-step work → full planner → DAG → reflection
  */
 import { randomUUID } from 'crypto'
 import { BaseAgent, type AgentContext, type AgentResult, type SubTask, type TaskPlan } from './base-agent'
@@ -29,6 +34,17 @@ export interface TaskRecord {
   completedAt?: number
 }
 
+// ─── Triage Classification ─────────────────────────────────
+
+type TriageLane = 'conversational' | 'direct' | 'complex'
+
+interface TriageResult {
+  lane: TriageLane
+  reply?: string          // only for conversational
+  agent?: AgentType       // only for direct
+  reasoning: string
+}
+
 // ─── Orchestrator ───────────────────────────────────────────
 
 export class Orchestrator extends BaseAgent {
@@ -51,9 +67,6 @@ Your responsibilities:
 4. Compile final results for the user
 5. Report confidence and reasoning transparently
 
-You NEVER do the actual work yourself. You plan, delegate, and oversee.
-When making decisions, explain your reasoning. Be transparent.
-
 You have access to these specialist agents:
 - Planner: Decomposes tasks into sub-tasks
 - Researcher: Searches the web, reads docs, finds answers
@@ -61,7 +74,59 @@ You have access to these specialist agents:
 - Reviewer: Quality checks all outputs
 - Reflection: Learns from completed tasks
 
-When the task is simple enough for a single agent, skip the planner and assign directly.`
+Decision framework:
+- Conversational prompts (greetings, small talk, simple questions) → reply directly
+- Single-agent tasks → delegate without planning overhead
+- Complex multi-step tasks → use Planner to decompose into sub-tasks`
+  }
+
+  // ─── Triage ──────────────────────────────────────────────
+
+  /**
+   * Smart triage — classify the prompt into a lane before doing work.
+   * This is a single, cheap LLM call that prevents over-engineering simple prompts.
+   */
+  private async triage(prompt: string, context: AgentContext): Promise<TriageResult> {
+    try {
+      const { parsed } = await this.thinkJSON<TriageResult>(
+        `Classify this user prompt and decide the best processing lane.
+
+PROMPT: "${prompt}"
+
+LANES:
+1. "conversational" — greetings, small talk, simple questions that need no tools/agents.
+   You MUST provide "reply" with a natural, friendly response.
+   Examples: "hello", "what's your name?", "thanks", "how are you?"
+
+2. "direct" — a task clearly suited for ONE specialist agent, no decomposition needed.
+   You MUST provide "agent" with one of: researcher, coder, reviewer.
+   Examples: "write a fibonacci function", "summarize this article", "review this code"
+
+3. "complex" — multi-step tasks requiring planning, multiple agents, or coordination.
+   Examples: "build a REST API with auth", "research X then write code for it"
+
+OUTPUT FORMAT (JSON):
+{
+  "lane": "conversational" | "direct" | "complex",
+  "reply": "your response (only for conversational)",
+  "agent": "researcher" | "coder" | "reviewer" (only for direct),
+  "reasoning": "one-line explanation of why this lane was chosen"
+}
+
+Be generous with "conversational" — if the user is just chatting, reply directly.
+Be generous with "direct" — most prompts need only one agent.
+Only use "complex" when the task genuinely requires multiple steps or agents.`,
+        context,
+        { temperature: 0.2 }
+      )
+
+      console.log(`[Orchestrator] Triage → ${parsed.lane}: ${parsed.reasoning}`)
+      return parsed
+    } catch (err) {
+      // If triage itself fails, fall back to full pipeline
+      console.warn('[Orchestrator] Triage failed, falling back to complex:', err)
+      return { lane: 'complex', reasoning: 'triage failed, using full pipeline' }
+    }
   }
 
   /** Register the function used to execute individual agent tasks */
@@ -151,70 +216,197 @@ When the task is simple enough for a single agent, skip the planner and assign d
         console.warn('[Orchestrator] Memory recall failed, continuing without:', err)
       }
 
-      // 1. Planning phase
+      // 1. Triage — classify the prompt before doing heavy work
       task.status = 'planning'
       this.db.run(`UPDATE tasks SET status = 'planning' WHERE id = ?`, task.id)
       this.bus.emitEvent('task:planning', { taskId: task.id })
 
-      const plan = await this.planner.decompose(task.id, task.prompt)
-      task.plan = plan
+      const triageContext: AgentContext = { taskId: task.id, relevantMemories }
+      const triage = await this.triage(task.prompt, triageContext)
 
-      // Store plan in DB
-      this.db.run(
-        `UPDATE tasks SET plan = ?, assigned_agent = 'orchestrator' WHERE id = ?`,
-        JSON.stringify(plan),
-        task.id
-      )
-
-      // 2. Execution phase — run the DAG
-      task.status = 'in_progress'
-      this.db.run(`UPDATE tasks SET status = 'in_progress', started_at = CURRENT_TIMESTAMP WHERE id = ?`, task.id)
-
-      const results = await this.executePlan(task, plan, relevantMemories)
-
-      // Check if task was cancelled during execution
-      if (task.status === 'cancelled') return
-
-      // 3. Compile results
-      const finalResult = this.compileResults(plan, results)
-
-      // 4. Mark complete
-      task.status = 'completed'
-      task.result = finalResult
-      task.completedAt = Date.now()
-
-      this.db.run(
-        `UPDATE tasks SET status = 'completed', result = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?`,
-        JSON.stringify(finalResult),
-        task.id
-      )
-
-      this.bus.emitEvent('task:completed', { taskId: task.id, result: finalResult })
-
-      // 5. Store the experience as episodic memory for future recall
-      try {
-        await memoryManager.storeEpisodic({
-          content: `Task completed: "${task.prompt.slice(0, 200)}". Result: ${JSON.stringify(finalResult).slice(0, 500)}`,
-          source: 'orchestrator',
-          importance: task.priority === 'high' ? 0.8 : task.priority === 'normal' ? 0.5 : 0.3,
-          emotionalValence: 0.6, // positive — successful completion
-          tags: ['task-completed', `priority-${task.priority}`],
-          participants: ['orchestrator', ...plan.requiredAgents],
-        })
-      } catch (err) {
-        console.warn('[Orchestrator] Failed to store task memory:', err)
+      // 2. Route based on triage lane
+      switch (triage.lane) {
+        case 'conversational':
+          await this.handleConversational(task, triage, memoryManager)
+          break
+        case 'direct':
+          await this.handleDirect(task, triage, relevantMemories, memoryManager)
+          break
+        case 'complex':
+          await this.handleComplex(task, relevantMemories, memoryManager)
+          break
       }
 
-      // 6. Auto-reflect (async, non-blocking — don't fail the task if reflection fails)
-      this.triggerReflection(task, plan, results).catch((err) => {
-        console.warn('[Orchestrator] Reflection failed:', err)
-      })
-
-      // 7. Clear working memory for this task
+      // 3. Clear working memory
       workingMemory.clear()
     } catch (err) {
       this.failTask(task, err instanceof Error ? err.message : String(err))
       throw err
+    }
+  }
+
+  // ─── Lane Handlers ────────────────────────────────────────
+
+  /**
+   * Conversational lane — instant reply, no agents.
+   * Cheapest path: triage already generated the reply.
+   */
+  private async handleConversational(
+    task: TaskRecord,
+    triage: TriageResult,
+    memoryManager: ReturnType<typeof getMemoryManager>
+  ): Promise<void> {
+    const reply = triage.reply ?? 'Hello! How can I help you?'
+
+    task.status = 'completed'
+    task.result = reply
+    task.completedAt = Date.now()
+
+    this.db.run(
+      `UPDATE tasks SET status = 'completed', result = ?, assigned_agent = 'orchestrator', completed_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      JSON.stringify(reply),
+      task.id
+    )
+
+    this.bus.emitEvent('task:completed', { taskId: task.id, result: reply })
+
+    // Light memory storage for conversational context
+    try {
+      await memoryManager.storeEpisodic({
+        content: `User said: "${task.prompt.slice(0, 100)}". Replied directly (conversational).`,
+        source: 'orchestrator',
+        importance: 0.1,
+        emotionalValence: 0.5,
+        tags: ['conversational'],
+        participants: ['orchestrator'],
+      })
+    } catch {
+      // Not critical
+    }
+  }
+
+  /**
+   * Direct lane — skip planner, route to a single agent.
+   * Medium cost: one triage call + one agent call, no planning or reflection overhead.
+   */
+  private async handleDirect(
+    task: TaskRecord,
+    triage: TriageResult,
+    relevantMemories: string[],
+    memoryManager: ReturnType<typeof getMemoryManager>
+  ): Promise<void> {
+    const agentType = triage.agent ?? ('coder' as AgentType)
+
+    // Build a single-step plan inline (no planner LLM call)
+    const plan: TaskPlan = {
+      id: `plan_${randomUUID().slice(0, 8)}`,
+      taskId: task.id,
+      originalTask: task.prompt,
+      subTasks: [{
+        id: 'direct-task',
+        description: task.prompt,
+        assignedAgent: agentType,
+        status: 'pending',
+        dependencies: [],
+        attempts: 0,
+        maxAttempts: 2,
+      }],
+      estimatedComplexity: 'simple',
+      requiredAgents: [agentType],
+    }
+
+    task.plan = plan
+    this.db.run(
+      `UPDATE tasks SET plan = ?, assigned_agent = ? WHERE id = ?`,
+      JSON.stringify(plan),
+      agentType,
+      task.id
+    )
+
+    this.bus.emitEvent('plan:created', {
+      taskId: task.id,
+      planId: plan.id,
+      steps: 1,
+      agents: [agentType],
+    })
+
+    // Execute
+    task.status = 'in_progress'
+    this.db.run(`UPDATE tasks SET status = 'in_progress', started_at = CURRENT_TIMESTAMP WHERE id = ?`, task.id)
+
+    const results = await this.executePlan(task, plan, relevantMemories)
+    if (task.status === 'cancelled') return
+
+    const finalResult = this.compileResults(plan, results)
+    await this.completeTask(task, finalResult, plan, memoryManager)
+  }
+
+  /**
+   * Complex lane — full pipeline: planner → DAG → reflection.
+   * Most expensive path, used only when genuinely needed.
+   */
+  private async handleComplex(
+    task: TaskRecord,
+    relevantMemories: string[],
+    memoryManager: ReturnType<typeof getMemoryManager>
+  ): Promise<void> {
+    // Planning phase (LLM call to decompose)
+    const plan = await this.planner.decompose(task.id, task.prompt)
+    task.plan = plan
+
+    this.db.run(
+      `UPDATE tasks SET plan = ?, assigned_agent = 'orchestrator' WHERE id = ?`,
+      JSON.stringify(plan),
+      task.id
+    )
+
+    // Execution phase — run the DAG
+    task.status = 'in_progress'
+    this.db.run(`UPDATE tasks SET status = 'in_progress', started_at = CURRENT_TIMESTAMP WHERE id = ?`, task.id)
+
+    const results = await this.executePlan(task, plan, relevantMemories)
+    if (task.status === 'cancelled') return
+
+    const finalResult = this.compileResults(plan, results)
+    await this.completeTask(task, finalResult, plan, memoryManager)
+
+    // Auto-reflect (async, non-blocking)
+    this.triggerReflection(task, plan, results).catch((err) => {
+      console.warn('[Orchestrator] Reflection failed:', err)
+    })
+  }
+
+  /** Shared completion logic for direct and complex lanes */
+  private async completeTask(
+    task: TaskRecord,
+    result: unknown,
+    plan: TaskPlan,
+    memoryManager: ReturnType<typeof getMemoryManager>
+  ): Promise<void> {
+    task.status = 'completed'
+    task.result = result
+    task.completedAt = Date.now()
+
+    this.db.run(
+      `UPDATE tasks SET status = 'completed', result = ?, completed_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      JSON.stringify(result),
+      task.id
+    )
+
+    this.bus.emitEvent('task:completed', { taskId: task.id, result })
+
+    // Store experience as episodic memory
+    try {
+      await memoryManager.storeEpisodic({
+        content: `Task completed: "${task.prompt.slice(0, 200)}". Result: ${JSON.stringify(result).slice(0, 500)}`,
+        source: 'orchestrator',
+        importance: task.priority === 'high' ? 0.8 : task.priority === 'normal' ? 0.5 : 0.3,
+        emotionalValence: 0.6,
+        tags: ['task-completed', `priority-${task.priority}`],
+        participants: ['orchestrator', ...plan.requiredAgents],
+      })
+    } catch (err) {
+      console.warn('[Orchestrator] Failed to store task memory:', err)
     }
   }
 

@@ -169,9 +169,13 @@ function TaskCard({ task, onCancel }: { task: LiveTask; onCancel: (id: string) =
 
             {/* Result preview */}
             {task.status === 'completed' && task.result && (
-              <div className="mt-2 p-2 bg-white/[0.03] rounded text-[11px] text-gray-400 max-h-24 overflow-y-auto">
-                {typeof task.result === 'string' ? task.result : JSON.stringify(task.result, null, 2)}
-              </div>
+              typeof task.result === 'string' ? (
+                <p className="mt-2 text-sm text-gray-300 leading-relaxed">{task.result}</p>
+              ) : (
+                <div className="mt-2 p-2 bg-white/[0.03] rounded text-[11px] text-gray-400 max-h-40 overflow-y-auto font-mono whitespace-pre-wrap">
+                  {JSON.stringify(task.result, null, 2)}
+                </div>
+              )
             )}
 
             <div className="flex items-center gap-3 mt-2 text-[10px] text-gray-600">
