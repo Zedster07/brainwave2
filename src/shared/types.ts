@@ -65,6 +65,11 @@ export const IPC_CHANNELS = {
   MODEL_MODE_GET: 'model-mode:get',
   MODEL_MODE_SET: 'model-mode:set',
   MODEL_MODE_GET_CONFIGS: 'model-mode:get-configs',
+  MODEL_MODE_GET_PRESETS: 'model-mode:get-presets',
+  OPENROUTER_LIST_MODELS: 'openrouter:list-models',
+  MODEL_OVERRIDE_SET: 'model-override:set',
+  MODEL_OVERRIDE_RESET: 'model-override:reset',
+  MODEL_OVERRIDE_RESET_ALL: 'model-override:reset-all',
 
   // Rules
   RULES_GET_SAFETY: 'rules:get-safety',
@@ -352,6 +357,11 @@ export interface BrainwaveAPI {
   getModelMode: () => Promise<string>
   setModelMode: (mode: string) => Promise<void>
   getModelConfigs: () => Promise<Record<string, { provider: string; model: string }>>
+  getModelPresets: () => Promise<Record<string, Record<string, { provider: string; model: string }>>>
+  listOpenRouterModels: () => Promise<Array<{ id: string; name: string }>>
+  setAgentModel: (agent: string, modelId: string) => Promise<void>
+  resetAgentModel: (agent: string) => Promise<void>
+  resetAllAgentModels: () => Promise<void>
 
   // Ollama (Local LLM)
   ollamaHealthCheck: (host?: string) => Promise<boolean>

@@ -1,7 +1,7 @@
 import { app, BrowserWindow, shell, session } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
-import { registerIpcHandlers } from './ipc'
+import { registerIpcHandlers, applyModelOverrides } from './ipc'
 import { createTray, destroyTray } from './services/tray.service'
 import { getScheduler } from './services/scheduler.service'
 import { getDatabase } from './db/database'
@@ -119,6 +119,8 @@ app.whenReady().then(() => {
       if (['beast', 'normal', 'economy', 'local'].includes(mode)) {
         LLMFactory.setMode(mode as 'beast' | 'normal' | 'economy' | 'local')
         console.log(`[Main] Model mode restored: ${mode}`)
+        // Apply any per-agent overrides saved for this mode
+        applyModelOverrides(db, mode)
       }
     }
   } catch (err) {

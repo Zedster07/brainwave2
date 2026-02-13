@@ -164,6 +164,21 @@ const api: BrainwaveAPI = {
   getModelConfigs: () =>
     ipcRenderer.invoke(IPC_CHANNELS.MODEL_MODE_GET_CONFIGS) as Promise<Record<string, { provider: string; model: string }>>,
 
+  getModelPresets: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MODEL_MODE_GET_PRESETS) as Promise<Record<string, Record<string, { provider: string; model: string }>>>,
+
+  listOpenRouterModels: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.OPENROUTER_LIST_MODELS) as Promise<Array<{ id: string; name: string }>>,
+
+  setAgentModel: (agent: string, modelId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MODEL_OVERRIDE_SET, agent, modelId) as Promise<void>,
+
+  resetAgentModel: (agent: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MODEL_OVERRIDE_RESET, agent) as Promise<void>,
+
+  resetAllAgentModels: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MODEL_OVERRIDE_RESET_ALL) as Promise<void>,
+
   // ─── Ollama (Local LLM) ───
   ollamaHealthCheck: (host?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.OLLAMA_HEALTH, host) as Promise<boolean>,

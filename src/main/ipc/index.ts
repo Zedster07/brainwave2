@@ -8,6 +8,7 @@ import type { TaskSubmission, MemoryQuery, CreateScheduledJobInput } from '@shar
 import { getScheduler } from '../services/scheduler.service'
 import { getDatabase } from '../db/database'
 import { LLMFactory, getAllCircuitBreakerStatus } from '../llm'
+import { MODEL_MODE_PRESETS } from '../llm/types'
 import { OllamaProvider } from '../llm/ollama'
 import { getMcpRegistry } from '../mcp'
 import type { McpServerConfig } from '../mcp'
@@ -190,6 +191,28 @@ function importMcpServersFromJson(
   }
 
   return { imported, skipped, errors }
+}
+
+/**
+ * Apply saved model overrides from DB for the given mode.
+ * Called after setMode() and on app startup.
+ */
+export function applyModelOverrides(db: ReturnType<typeof getDatabase>, mode: string): void {
+  const dbKey = `model_overrides_${mode}`
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(dbKey) as { value: string } | undefined
+  if (!row) return
+
+  try {
+    const overrides: Record<string, string> = JSON.parse(row.value)
+    for (const [agent, modelId] of Object.entries(overrides)) {
+      if (modelId) {
+        LLMFactory.setAgentModel(agent, { provider: 'openrouter', model: modelId })
+        console.log(`[Model Override] Restored ${agent} → ${modelId}`)
+      }
+    }
+  } catch (err) {
+    console.error('[Model Override] Failed to parse overrides:', err)
+  }
 }
 
 export function registerIpcHandlers(): void {
@@ -683,10 +706,100 @@ export function registerIpcHandlers(): void {
       'model_mode',
       JSON.stringify(mode)
     )
+
+    // Apply any saved overrides for the new mode
+    applyModelOverrides(db, mode)
   })
 
   ipcMain.handle(IPC_CHANNELS.MODEL_MODE_GET_CONFIGS, async () => {
     return LLMFactory.getAllAgentConfigs()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MODEL_MODE_GET_PRESETS, async () => {
+    return MODEL_MODE_PRESETS
+  })
+
+  // ─── OpenRouter Model List ───
+  let openRouterModelsCache: Array<{ id: string; name: string }> | null = null
+
+  ipcMain.handle(IPC_CHANNELS.OPENROUTER_LIST_MODELS, async () => {
+    if (openRouterModelsCache) return openRouterModelsCache
+
+    try {
+      const response = await fetch('https://openrouter.ai/api/v1/models')
+      if (!response.ok) throw new Error(`OpenRouter API error: ${response.status}`)
+      const data = await response.json() as { data: Array<{ id: string; name: string }> }
+      openRouterModelsCache = data.data.map((m) => ({ id: m.id, name: m.name }))
+      // Refresh cache after 10 minutes
+      setTimeout(() => { openRouterModelsCache = null }, 10 * 60 * 1000)
+      return openRouterModelsCache
+    } catch (err) {
+      console.error('[OpenRouter] Failed to fetch models:', err)
+      return []
+    }
+  })
+
+  // ─── Per-Agent Model Overrides ───
+  ipcMain.handle(IPC_CHANNELS.MODEL_OVERRIDE_SET, async (_event, agent: string, modelId: string) => {
+    const mode = LLMFactory.getMode()
+    const dbKey = `model_overrides_${mode}`
+
+    // Read existing overrides
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(dbKey) as { value: string } | undefined
+    const overrides: Record<string, string> = row ? JSON.parse(row.value) : {}
+
+    // Save the override
+    overrides[agent] = modelId
+    db.run(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+      dbKey,
+      JSON.stringify(overrides)
+    )
+
+    // Apply immediately
+    LLMFactory.setAgentModel(agent, { provider: 'openrouter', model: modelId })
+    console.log(`[Model Override] ${agent} → ${modelId} (mode: ${mode})`)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MODEL_OVERRIDE_RESET, async (_event, agent: string) => {
+    const mode = LLMFactory.getMode()
+    const dbKey = `model_overrides_${mode}`
+
+    // Remove agent from overrides
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(dbKey) as { value: string } | undefined
+    const overrides: Record<string, string> = row ? JSON.parse(row.value) : {}
+    delete overrides[agent]
+    db.run(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+      dbKey,
+      JSON.stringify(overrides)
+    )
+
+    // Revert to preset default
+    const preset = MODEL_MODE_PRESETS[mode]
+    if (preset[agent]) {
+      LLMFactory.setAgentModel(agent, { ...preset[agent] })
+    }
+    console.log(`[Model Override] Reset ${agent} to preset default (mode: ${mode})`)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MODEL_OVERRIDE_RESET_ALL, async () => {
+    const mode = LLMFactory.getMode()
+    const dbKey = `model_overrides_${mode}`
+
+    // Clear all overrides
+    db.run(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+      dbKey,
+      JSON.stringify({})
+    )
+
+    // Reload the preset
+    LLMFactory.setMode(mode)
+    console.log(`[Model Override] Reset all agents to preset defaults (mode: ${mode})`)
   })
 
   // ─── LLM Health ───

@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2, Globe, ArrowRightLeft, FilePlus2, FolderTree } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2, Globe, ArrowRightLeft, FilePlus2, FolderTree, RotateCcw } from 'lucide-react'
+import { ModelSelector } from '../../components/ModelSelector'
 import type { PluginInfoData, McpServerConfigInfo, McpServerStatusInfo } from '@shared/types'
 
 type SettingsTab = 'general' | 'models' | 'rules' | 'storage' | 'plugins' | 'tools'
@@ -184,13 +185,23 @@ function ModelSettings() {
   const [modeLoading, setModeLoading] = useState(false)
   const [ollamaStatus, setOllamaStatus] = useState<'unknown' | 'checking' | 'online' | 'offline'>('unknown')
   const [ollamaModels, setOllamaModels] = useState<Array<{ name: string; size: number }>>([]) 
+  const [openRouterModels, setOpenRouterModels] = useState<Array<{ id: string; name: string }>>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [presets, setPresets] = useState<Record<string, Record<string, { provider: string; model: string }>> | null>(null)
 
-  // Load current mode and agent configs on mount
+  // Load current mode, agent configs, presets, and OpenRouter models on mount
   useEffect(() => {
     window.brainwave.getModelMode().then(setModelMode).catch(console.error)
     window.brainwave.getModelConfigs().then(setAgentConfigs).catch(console.error)
+    window.brainwave.getModelPresets().then(setPresets).catch(console.error)
     // Auto-check Ollama status
     checkOllamaStatus()
+    // Load OpenRouter models
+    setModelsLoading(true)
+    window.brainwave.listOpenRouterModels()
+      .then(setOpenRouterModels)
+      .catch(console.error)
+      .finally(() => setModelsLoading(false))
   }, [])
 
   const checkOllamaStatus = useCallback(async () => {
@@ -266,17 +277,51 @@ function ModelSettings() {
         </div>
       </div>
 
-      {/* Current Agent Assignments */}
+      {/* Current Agent Assignments (Editable) */}
       {agentConfigs && (
         <div>
-          <p className="text-xs text-gray-500 mb-2">Current agent → model assignments:</p>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs text-gray-500">Agent → model assignments (click to change):</p>
+            <button
+              onClick={async () => {
+                await window.brainwave.resetAllAgentModels()
+                const configs = await window.brainwave.getModelConfigs()
+                setAgentConfigs(configs)
+              }}
+              className="flex items-center gap-1 text-[10px] text-gray-500 hover:text-amber-400 transition-colors"
+              title="Reset all agents to preset defaults"
+            >
+              <RotateCcw className="w-3 h-3" />
+              Reset all
+            </button>
+          </div>
           <div className="grid grid-cols-2 gap-1.5">
-            {Object.entries(agentConfigs).map(([agent, config]) => (
-              <div key={agent} className="flex items-center justify-between bg-white/[0.03] rounded px-3 py-1.5">
-                <span className="text-[11px] text-gray-400 capitalize">{agent}</span>
-                <span className="text-[10px] text-gray-500 font-mono truncate ml-2 max-w-[180px]">{config.model}</span>
-              </div>
-            ))}
+            {Object.entries(agentConfigs).map(([agent, config]) => {
+              const presetModel = presets?.[modelMode]?.[agent]?.model
+              const isOverridden = presetModel ? config.model !== presetModel : false
+              return (
+                <div key={agent} className="flex items-center gap-2 bg-white/[0.03] rounded px-3 py-1.5 min-w-0">
+                  <span className="text-[11px] text-gray-400 capitalize shrink-0 w-20">{agent}</span>
+                  <ModelSelector
+                    value={config.model}
+                    presetDefault={presetModel}
+                    isOverridden={isOverridden}
+                    models={openRouterModels}
+                    loading={modelsLoading}
+                    onChange={async (modelId) => {
+                      await window.brainwave.setAgentModel(agent, modelId)
+                      const configs = await window.brainwave.getModelConfigs()
+                      setAgentConfigs(configs)
+                    }}
+                    onReset={async () => {
+                      await window.brainwave.resetAgentModel(agent)
+                      const configs = await window.brainwave.getModelConfigs()
+                      setAgentConfigs(configs)
+                    }}
+                  />
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
