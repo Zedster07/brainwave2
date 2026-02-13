@@ -19,6 +19,7 @@ import { getDatabase } from '../db/database'
 import { getMemoryManager } from '../memory'
 import { getWorkingMemory } from '../memory/working-memory'
 import { getPeopleStore } from '../memory/people'
+import { getProspectiveStore } from '../memory/prospective'
 import { ReflectionAgent } from './reflection'
 
 // ─── Task Record (stored in DB) ────────────────────────────
@@ -48,6 +49,17 @@ interface TriageResult {
     name: string
     relationship?: string
     traits?: string[]
+  }
+  semanticFacts?: Array<{  // extracted facts/preferences — stored as semantic memory
+    subject: string
+    predicate: string
+    object: string
+  }>
+  reminder?: {             // extracted intention/reminder — stored as prospective memory
+    intention: string
+    triggerType: 'time' | 'event' | 'condition'
+    triggerValue: string
+    priority?: number
   }
   reasoning: string
 }
@@ -128,6 +140,23 @@ Examples:
 - "my friend John is a designer" → { "name": "John", "relationship": "friend", "traits": ["designer"] }
 Only include "personInfo" if a person's name is clearly stated.
 
+FACT / PREFERENCE EXTRACTION:
+If the user states facts, preferences, or knowledge worth remembering, extract as "semanticFacts".
+Each fact is a subject-predicate-object triple.
+Examples:
+- "I prefer TypeScript over JavaScript" → [{ "subject": "user", "predicate": "prefers", "object": "TypeScript over JavaScript" }]
+- "our backend uses Express" → [{ "subject": "project_backend", "predicate": "uses", "object": "Express" }]
+- "my favorite color is blue" → [{ "subject": "user", "predicate": "favorite_color_is", "object": "blue" }]
+Only include if the user shares actual knowledge or preferences. Do NOT extract from greetings or questions.
+
+REMINDER / INTENTION EXTRACTION:
+If the user expresses a future intention or asks for a reminder, extract as "reminder".
+Examples:
+- "remind me to review the PR tomorrow" → { "intention": "review the PR", "triggerType": "time", "triggerValue": "tomorrow", "priority": 0.7 }
+- "I need to deploy before Friday" → { "intention": "deploy", "triggerType": "time", "triggerValue": "before Friday", "priority": 0.8 }
+- "when the tests pass, let me know" → { "intention": "notify user", "triggerType": "event", "triggerValue": "tests pass", "priority": 0.5 }
+Only include if the user clearly expresses a future intention or reminder.
+
 OUTPUT FORMAT (JSON):
 {
   "lane": "conversational" | "direct" | "complex",
@@ -135,6 +164,8 @@ OUTPUT FORMAT (JSON):
   "agent": "researcher" | "coder" | "reviewer" (only for direct),
   "shouldRemember": true/false,
   "personInfo": { "name": "...", "relationship": "...", "traits": ["..."] } (only if a person is mentioned),
+  "semanticFacts": [{ "subject": "...", "predicate": "...", "object": "..." }] (only if facts/preferences shared),
+  "reminder": { "intention": "...", "triggerType": "time|event|condition", "triggerValue": "...", "priority": 0.5 } (only if reminder/intention expressed),
   "reasoning": "one-line explanation of why this lane was chosen"
 }
 
@@ -359,6 +390,42 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
         console.log(`[Orchestrator] Created/updated person: ${person.name} (${person.id})`)
       } catch (err) {
         console.warn('[Orchestrator] Failed to store person:', err)
+      }
+    }
+
+    // Store semantic facts/preferences if triage extracted any
+    if (triage.semanticFacts?.length) {
+      for (const fact of triage.semanticFacts) {
+        try {
+          await memoryManager.storeSemantic({
+            subject: fact.subject,
+            predicate: fact.predicate,
+            object: fact.object,
+            confidence: 0.8,
+            source: 'conversation',
+            tags: ['user-stated', 'conversational'],
+          })
+          console.log(`[Orchestrator] Stored semantic fact: ${fact.subject} ${fact.predicate} ${fact.object}`)
+        } catch (err) {
+          console.warn('[Orchestrator] Failed to store semantic fact:', err)
+        }
+      }
+    }
+
+    // Create prospective memory if triage detected a reminder/intention
+    if (triage.reminder) {
+      try {
+        const prospectiveStore = getProspectiveStore()
+        const entry = prospectiveStore.store({
+          intention: triage.reminder.intention,
+          triggerType: triage.reminder.triggerType,
+          triggerValue: triage.reminder.triggerValue,
+          priority: triage.reminder.priority ?? 0.5,
+          tags: ['user-requested', 'conversational'],
+        })
+        console.log(`[Orchestrator] Created prospective memory: ${entry.intention} (${entry.id})`)
+      } catch (err) {
+        console.warn('[Orchestrator] Failed to store prospective memory:', err)
       }
     }
 
