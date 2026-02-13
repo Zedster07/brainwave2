@@ -8,6 +8,7 @@ import { getDatabase } from './db/database'
 import { MigrationRunner } from './db/migrations'
 import { ALL_MIGRATIONS } from './db/migrations/index'
 import { LLMFactory } from './llm'
+import { initMemoryManager } from './memory/memory-manager'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -89,6 +90,9 @@ app.whenReady().then(() => {
   } catch (err) {
     console.warn('[Main] Failed to load LLM keys from DB:', err)
   }
+
+  // ── Initialize Memory Manager ──
+  initMemoryManager()
 
   // Register IPC handlers before creating window
   registerIpcHandlers()

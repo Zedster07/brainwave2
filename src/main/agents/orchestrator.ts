@@ -11,6 +11,8 @@ import { BaseAgent, type AgentContext, type AgentResult, type SubTask, type Task
 import { PlannerAgent } from './planner'
 import { getEventBus, type AgentType } from './event-bus'
 import { getDatabase } from '../db/database'
+import { getMemoryManager } from '../memory'
+import { getWorkingMemory } from '../memory/working-memory'
 
 // ─── Task Record (stored in DB) ────────────────────────────
 
@@ -126,6 +128,27 @@ When the task is simple enough for a single agent, skip the planner and assign d
 
   private async processTask(task: TaskRecord): Promise<void> {
     try {
+      // 0. Memory recall — gather relevant context from past experiences
+      const memoryManager = getMemoryManager()
+      const workingMemory = getWorkingMemory()
+
+      workingMemory.setTask(task.id, task.prompt)
+
+      let relevantMemories: string[] = []
+      try {
+        relevantMemories = await memoryManager.recallForContext(task.prompt, 8)
+        if (relevantMemories.length > 0) {
+          workingMemory.setScratchpad('recalled_memories', JSON.stringify(relevantMemories))
+          this.bus.emitEvent('system:log', {
+            level: 'info',
+            message: `Recalled ${relevantMemories.length} relevant memories for task`,
+            data: { taskId: task.id },
+          })
+        }
+      } catch (err) {
+        console.warn('[Orchestrator] Memory recall failed, continuing without:', err)
+      }
+
       // 1. Planning phase
       task.status = 'planning'
       this.db.run(`UPDATE tasks SET status = 'planning' WHERE id = ?`, task.id)
@@ -145,7 +168,7 @@ When the task is simple enough for a single agent, skip the planner and assign d
       task.status = 'in_progress'
       this.db.run(`UPDATE tasks SET status = 'in_progress', started_at = CURRENT_TIMESTAMP WHERE id = ?`, task.id)
 
-      const results = await this.executePlan(task, plan)
+      const results = await this.executePlan(task, plan, relevantMemories)
 
       // Check if task was cancelled during execution
       if (task.status === 'cancelled') return
@@ -165,6 +188,23 @@ When the task is simple enough for a single agent, skip the planner and assign d
       )
 
       this.bus.emitEvent('task:completed', { taskId: task.id, result: finalResult })
+
+      // 5. Store the experience as episodic memory for future recall
+      try {
+        await memoryManager.storeEpisodic({
+          content: `Task completed: "${task.prompt.slice(0, 200)}". Result: ${JSON.stringify(finalResult).slice(0, 500)}`,
+          source: 'orchestrator',
+          importance: task.priority === 'high' ? 0.8 : task.priority === 'normal' ? 0.5 : 0.3,
+          emotionalValence: 0.6, // positive — successful completion
+          tags: ['task-completed', `priority-${task.priority}`],
+          participants: ['orchestrator', ...plan.requiredAgents],
+        })
+      } catch (err) {
+        console.warn('[Orchestrator] Failed to store task memory:', err)
+      }
+
+      // 6. Clear working memory for this task
+      workingMemory.clear()
     } catch (err) {
       this.failTask(task, err instanceof Error ? err.message : String(err))
       throw err
@@ -177,7 +217,8 @@ When the task is simple enough for a single agent, skip the planner and assign d
    */
   private async executePlan(
     task: TaskRecord,
-    plan: TaskPlan
+    plan: TaskPlan,
+    relevantMemories: string[] = []
   ): Promise<Map<string, AgentResult>> {
     const results = new Map<string, AgentResult>()
     const remaining = new Set(plan.subTasks.map((st) => st.id))
@@ -217,6 +258,7 @@ When the task is simple enough for a single agent, skip the planner and assign d
           taskId: task.id,
           planId: plan.id,
           parentTask: plan.originalTask,
+          relevantMemories,
           siblingResults: results,
         })
 

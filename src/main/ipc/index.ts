@@ -7,6 +7,7 @@ import { LLMFactory } from '../llm'
 import { getOrchestrator } from '../agents/orchestrator'
 import { getAgentPool } from '../agents/agent-pool'
 import { getEventBus } from '../agents/event-bus'
+import { getMemoryManager } from '../memory'
 
 export function registerIpcHandlers(): void {
   // ─── Window Controls ───
@@ -99,15 +100,42 @@ export function registerIpcHandlers(): void {
     level: 'error', message: data.error, timestamp: Date.now(),
   }))
 
-  // ─── Memory (stubs) ───
-  ipcMain.handle(IPC_CHANNELS.MEMORY_QUERY, async (_event, _query: MemoryQuery) => {
-    // TODO: Wire to MemoryManager
-    return []
+  // ─── Memory (wired to MemoryManager) ───
+  const memoryManager = getMemoryManager()
+
+  ipcMain.handle(IPC_CHANNELS.MEMORY_QUERY, async (_event, query: MemoryQuery) => {
+    const results = await memoryManager.recall(query.query, {
+      memoryTypes: query.type && query.type !== 'people' && query.type !== 'procedural'
+        ? [query.type as 'episodic' | 'semantic']
+        : ['episodic', 'semantic'],
+      limit: query.limit ?? 20,
+    })
+
+    // Map RecallResults to the MemoryEntry shape the renderer expects
+    return results.map((r) => ({
+      id: r.id,
+      type: r.type,
+      content: r.content,
+      importance: r.relevance,
+      createdAt: 'createdAt' in r.entry ? (r.entry as Record<string, unknown>).createdAt : new Date().toISOString(),
+      lastAccessed: 'lastAccessed' in r.entry ? (r.entry as Record<string, unknown>).lastAccessed : new Date().toISOString(),
+      accessCount: 'accessCount' in r.entry ? (r.entry as Record<string, unknown>).accessCount : 0,
+      tags: 'tags' in r.entry ? (r.entry as Record<string, unknown>).tags : [],
+    }))
   })
 
   ipcMain.handle(IPC_CHANNELS.MEMORY_GET_PEOPLE, async () => {
-    // TODO: Wire to MemoryManager
-    return []
+    // People are stored as semantic memories with predicate "is_person" or subject type "person"
+    const personMemories = memoryManager.semantic.getByPredicate('is_person')
+    return personMemories.map((entry) => ({
+      id: entry.id,
+      name: entry.subject,
+      relationship: entry.object,
+      traits: entry.tags,
+      preferences: {} as Record<string, string>,
+      lastInteraction: entry.updatedAt,
+      interactionCount: entry.accessCount,
+    }))
   })
 
   // ─── Settings (DB-backed) ───
