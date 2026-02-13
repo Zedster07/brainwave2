@@ -44,9 +44,9 @@ export function ReflectionJournal() {
   const loadReflections = useCallback(async () => {
     setLoading(true)
     try {
+      // Search both episodic + semantic memories tagged with 'reflection'
       const results = await window.brainwave.queryMemory({
-        query: 'reflection lesson pattern insight learning',
-        type: 'semantic',
+        query: 'reflection',
         limit: 100,
       })
       setEntries(results)

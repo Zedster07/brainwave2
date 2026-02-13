@@ -59,12 +59,14 @@ interface SpeechRecognitionEvent {
 export function useVoice(options: UseVoiceOptions = {}): VoiceState & VoiceActions {
   const { onResult, lang = 'en-US', continuous = false } = options
 
-  // Browser capabilities
-  const SpeechRecognitionClass =
+  // Browser capabilities — resolve once and store in a ref to avoid re-renders
+  const speechRecognitionRef = useRef(
     (window as unknown as { SpeechRecognition?: new () => SpeechRecognition }).SpeechRecognition ??
-    (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognition }).webkitSpeechRecognition
+    (window as unknown as { webkitSpeechRecognition?: new () => SpeechRecognition }).webkitSpeechRecognition ??
+    null
+  )
 
-  const canListen = !!SpeechRecognitionClass
+  const canListen = !!speechRecognitionRef.current
   const canSpeak = 'speechSynthesis' in window
 
   const [isListening, setIsListening] = useState(false)
@@ -81,14 +83,16 @@ export function useVoice(options: UseVoiceOptions = {}): VoiceState & VoiceActio
   }, [onResult])
 
   const startListening = useCallback(() => {
+    const SpeechRecognitionClass = speechRecognitionRef.current
     if (!SpeechRecognitionClass) {
       setError('Speech recognition not supported in this browser')
       return
     }
 
-    // Clean up existing instance
+    // Clean up existing instance (stop gracefully, don't abort)
     if (recognitionRef.current) {
-      recognitionRef.current.abort()
+      try { recognitionRef.current.stop() } catch { /* ignore */ }
+      recognitionRef.current = null
     }
 
     const recognition = new SpeechRecognitionClass()
@@ -141,7 +145,7 @@ export function useVoice(options: UseVoiceOptions = {}): VoiceState & VoiceActio
 
     recognitionRef.current = recognition
     recognition.start()
-  }, [SpeechRecognitionClass, lang, continuous])
+  }, [lang, continuous])
 
   const stopListening = useCallback(() => {
     if (recognitionRef.current) {

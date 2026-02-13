@@ -21,7 +21,7 @@ export function CommandCenter() {
   const [submitting, setSubmitting] = useState(false)
   const [tasks, setTasks] = useState<LiveTask[]>([])
   const [loaded, setLoaded] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Voice input/output
@@ -132,6 +132,8 @@ export function CommandCenter() {
 
     const prompt = input.trim()
     setInput('')
+    // Reset textarea height
+    if (inputRef.current) inputRef.current.style.height = 'auto'
     setSubmitting(true)
 
     try {
@@ -390,16 +392,30 @@ export function CommandCenter() {
                     </div>
                   )}
                   <div className="flex gap-3">
-                    <input
+                    <textarea
                       ref={inputRef}
-                      type="text"
                       value={input}
                       onChange={(e) => setInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault()
+                          if (input.trim() && !submitting) {
+                            handleSubmit(e as unknown as React.FormEvent)
+                          }
+                        }
+                      }}
                       placeholder={voice.isListening ? 'Listening...' : 'e.g., Build a REST API for user authentication...'}
                       disabled={submitting}
+                      rows={1}
                       className="flex-1 bg-white/[0.03] border border-white/[0.08] rounded-lg px-4 py-3 text-sm text-white
                                  placeholder:text-gray-600 focus:outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20
-                                 disabled:opacity-50 transition-all"
+                                 disabled:opacity-50 transition-all resize-none overflow-hidden"
+                      style={{ minHeight: '44px', maxHeight: '160px', height: 'auto' }}
+                      onInput={(e) => {
+                        const target = e.target as HTMLTextAreaElement
+                        target.style.height = 'auto'
+                        target.style.height = `${Math.min(target.scrollHeight, 160)}px`
+                      }}
                     />
                     {/* Mic toggle */}
                     {voice.canListen && (
