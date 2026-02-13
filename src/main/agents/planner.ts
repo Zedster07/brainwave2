@@ -50,7 +50,7 @@ AVAILABLE AGENT TYPES:
 - critic: Critical evaluation, argument analysis, quality assessment
 - reviewer: Code review, accuracy verification, quality checking
 - reflection: Post-task analysis and lesson extraction
-- executor: Task execution, automation scripts, tool usage
+- executor: LOCAL TOOL ACCESS — can read/write/delete files on disk and execute shell commands. Use for any file system or command-line tasks.
 
 IMPORTANT:
 - For simple tasks that don't need decomposition, create a single sub-task
