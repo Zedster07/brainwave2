@@ -50,10 +50,21 @@ export interface UpdatePersonInput {
 export class PeopleStore {
   private db = getDatabase()
 
-  /** Create a new person */
+  /** Create a new person (with alias-aware dedup) */
   store(input: StorePersonInput): PersonEntry {
     // Check for existing person with same name
-    const existing = this.getByName(input.name)
+    let existing = this.getByName(input.name)
+
+    // If not found by name, check if any existing person has this name as a
+    // nickname/alias in their preferences, or if the input has a nickname
+    // that matches an existing person's name
+    if (!existing) {
+      existing = this.findByAlias(input.name)
+    }
+    if (!existing && input.preferences?.nickname) {
+      existing = this.getByName(input.preferences.nickname) ?? this.findByAlias(input.preferences.nickname)
+    }
+
     if (existing) {
       // Merge instead of duplicate
       return this.update(existing.id, {
@@ -118,6 +129,23 @@ export class PeopleStore {
       limit
     )
     return rows.map((r) => this.deserialize(r))
+  }
+
+  /**
+   * Find a person by alias — checks nickname, full_name, and other alias fields
+   * stored in the preferences JSON column.
+   */
+  findByAlias(alias: string): PersonEntry | null {
+    const lowerAlias = alias.toLowerCase()
+    // Search preferences JSON for nickname, full_name, or alias matches
+    const rows = this.db.all<RawPersonRow>(
+      `SELECT * FROM people WHERE
+       LOWER(json_extract(preferences, '$.nickname')) = ? OR
+       LOWER(json_extract(preferences, '$.full_name')) = ? OR
+       LOWER(json_extract(preferences, '$.alias')) = ?`,
+      lowerAlias, lowerAlias, lowerAlias
+    )
+    return rows.length > 0 ? this.deserialize(rows[0]) : null
   }
 
   /** Search people by name or traits */

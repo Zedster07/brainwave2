@@ -607,11 +607,18 @@ ${memoryContext}${peopleContext}${historyContext}`,
     if (triage.personInfo?.name) {
       try {
         const peopleStore = getPeopleStore()
+        const prefs = { ...(triage.personInfo.preferences ?? {}) }
+
+        // If name differs from nickname, store full_name as an alias for future dedup
+        if (prefs.nickname && prefs.nickname.toLowerCase() !== triage.personInfo.name.toLowerCase()) {
+          prefs.full_name = triage.personInfo.name
+        }
+
         const person = peopleStore.store({
           name: triage.personInfo.name,
           relationship: triage.personInfo.relationship,
           traits: triage.personInfo.traits,
-          preferences: triage.personInfo.preferences,
+          preferences: prefs,
         })
         console.log(`[Orchestrator] Created/updated person: ${person.name} (${person.id})`)
       } catch (err) {
@@ -1103,16 +1110,20 @@ Rules:
     // Only executor has web_search/webpage_fetch tools. Researcher has NO tools.
     const WEB_SEARCH_SIGNALS = [
       /search\s+(the\s+)?(web|internet|online)/i,
+      /\b(find|search|look)\b.{0,20}\b(in|on|from|across|through)\s+(the\s+)?(web|internet|net)\b/i,
       /find\s+(it\s+)?(online|on\s+the\s+web|on\s+the\s+internet)/i,
       /look\s+(it\s+)?up\s+(online|on\s+the\s+web)/i,
-      /\bgoogle\s/i,
+      /\bgoogle\b/i,
       /browse\s+(the\s+)?(web|internet)/i,
       /\bweb\s*search\b/i,
+      /\b(find|search|look\s+for)\b.{0,30}\b(online|on\s+the\s+(web|internet))\b/i,
+      /\b(search|look)\s+(for|up)\b.{0,40}\b(about|regarding|on)\b/i,
     ]
 
     const LIVE_DATA_SIGNALS = [
-      /\b(latest|newest|most\s+recent|current|up-to-date)\b.*\b(news|release|model|update|version|price|stock|weather|event|announcement)/i,
+      /\b(latest|newest|most\s+recent|current|up-to-date|today|this\s+(week|month|year))\b.*\b(news|release|model|update|version|price|stock|weather|event|announcement|result)/i,
       /\b(released|launched|announced|came\s+out)\s+(this|last|in\s+\d{4})/i,
+      /what\s+(is|are)\s+(the\s+)?(latest|current|new)/i,
     ]
 
     const hasWebSearchIntent = WEB_SEARCH_SIGNALS.some(p => p.test(prompt))
