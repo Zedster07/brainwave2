@@ -61,18 +61,37 @@ export class AgentPool {
   private queue: QueuedTask[] = []
   private activeCount = 0
   private maxConcurrent: number
+  private agentStates = new Map<AgentType, { state: 'idle' | 'thinking' | 'acting' | 'waiting'; taskId?: string }>()
 
   constructor(maxConcurrent = 3) {
     this.maxConcurrent = maxConcurrent
+
+    // Track real agent state from events
+    this.bus.onEvent('agent:thinking', (data) => {
+      this.agentStates.set(data.agentType, { state: 'thinking', taskId: data.taskId })
+    })
+    this.bus.onEvent('agent:completed', (data) => {
+      this.agentStates.set(data.agentType, { state: 'idle' })
+    })
+    this.bus.onEvent('agent:error', (data) => {
+      this.agentStates.set(data.agentType, { state: 'idle' })
+    })
   }
 
   /** Register built-in agents. Called during app startup. */
   registerDefaults(): void {
+    // Core agents with full implementations
     this.registry.register(new PlannerAgent())
     this.registry.register(new ResearcherAgent())
     this.registry.register(new CoderAgent())
     this.registry.register(new ReviewerAgent())
     this.registry.register(new ReflectionAgent())
+
+    // Extended agents — use generic fallback with their model configs
+    this.registry.register(new GenericAgent('writer', ['writing', 'content-creation', 'documentation'], 'Creative writing, documentation, and content generation'))
+    this.registry.register(new GenericAgent('analyst', ['analysis', 'data-interpretation', 'reasoning'], 'Data analysis, pattern recognition, and strategic reasoning'))
+    this.registry.register(new GenericAgent('critic', ['critique', 'evaluation', 'quality-assessment'], 'Critical evaluation, argument analysis, and quality assessment'))
+    this.registry.register(new GenericAgent('executor', ['execution', 'automation', 'tooling'], 'Task execution, automation scripts, and tool usage'))
   }
 
   /** Execute a sub-task through the correct agent */
@@ -108,6 +127,16 @@ export class AgentPool {
       maxConcurrent: this.maxConcurrent,
       agents: this.registry.listTypes(),
     }
+  }
+
+  /** Get state for a specific agent */
+  getAgentState(type: AgentType): { state: 'idle' | 'thinking' | 'acting' | 'waiting'; taskId?: string } {
+    return this.agentStates.get(type) ?? { state: 'idle' }
+  }
+
+  /** Get state for all agents */
+  getAllAgentStates(): Map<AgentType, { state: 'idle' | 'thinking' | 'acting' | 'waiting'; taskId?: string }> {
+    return this.agentStates
   }
 
   /** Update max concurrent agents */
@@ -169,23 +198,24 @@ export class AgentPool {
 
 class GenericAgent extends BaseAgent {
   readonly type: AgentType
-  readonly capabilities = ['general']
+  readonly capabilities: string[]
   readonly description: string
 
-  constructor(agentType: AgentType) {
+  constructor(agentType: AgentType, capabilities: string[] = ['general'], description?: string) {
     super()
     this.type = agentType
-    this.description = `Generic fallback agent acting as "${agentType}"`
+    this.capabilities = capabilities
+    this.description = description ?? `Generic fallback agent acting as "${agentType}"`
   }
 
   protected getSystemPrompt(context: AgentContext): string {
     return `You are a ${this.type} agent in the Brainwave system.
 
 Your role is to complete the assigned task as a ${this.type} specialist.
+Capabilities: ${this.capabilities.join(', ')}
+
 Be thorough, accurate, and clear in your output.
-
 If you cannot complete the task, explain why and suggest what would be needed.
-
 Always report your confidence level (0-1) and reasoning.`
   }
 }

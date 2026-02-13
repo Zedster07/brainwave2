@@ -26,6 +26,9 @@ const api: BrainwaveAPI = {
   getTaskHistory: (limit?: number) =>
     ipcRenderer.invoke(IPC_CHANNELS.AGENT_GET_TASK_HISTORY, limit),
 
+  getLogHistory: (limit?: number) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_GET_LOG_HISTORY, limit),
+
   // ─── Events (main → renderer) ───
   onTaskUpdate: (callback: (update: TaskUpdate) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, update: TaskUpdate) => callback(update)

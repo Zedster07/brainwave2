@@ -45,8 +45,12 @@ RULES:
 AVAILABLE AGENT TYPES:
 - researcher: Web search, documentation lookup, fact-finding, summarization
 - coder: Code generation, modification, debugging, explanation
-- reviewer: Quality checking, code review, accuracy verification
+- writer: Creative writing, documentation, content generation, blog posts
+- analyst: Data analysis, pattern recognition, strategic reasoning
+- critic: Critical evaluation, argument analysis, quality assessment
+- reviewer: Code review, accuracy verification, quality checking
 - reflection: Post-task analysis and lesson extraction
+- executor: Task execution, automation scripts, tool usage
 
 IMPORTANT:
 - For simple tasks that don't need decomposition, create a single sub-task

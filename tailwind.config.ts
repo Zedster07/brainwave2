@@ -28,10 +28,12 @@ const config: Config = {
           planner: '#06B6D4',
           researcher: '#3B82F6',
           coder: '#10B981',
+          writer: '#A855F7',
+          analyst: '#14B8A6',
+          critic: '#EF4444',
           reviewer: '#F97316',
-          memory: '#A855F7',
           reflection: '#EC4899',
-          scheduler: '#14B8A6',
+          executor: '#6366F1',
         },
         // Status
         status: {

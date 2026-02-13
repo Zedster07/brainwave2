@@ -118,8 +118,9 @@ LANES:
    Examples: "hello", "what's your name?", "thanks", "how are you?"
 
 2. "direct" — a task clearly suited for ONE specialist agent, no decomposition needed.
-   You MUST provide "agent" with one of: researcher, coder, reviewer.
-   Examples: "write a fibonacci function", "summarize this article", "review this code"
+   You MUST provide "agent" with one of: researcher, coder, writer, analyst, critic, reviewer, executor.
+   Examples: "write a fibonacci function" → coder, "summarize this article" → researcher, "review this code" → reviewer,
+            "write me a blog post" → writer, "analyze this data" → analyst, "evaluate these options" → critic
 
 3. "complex" — multi-step tasks requiring planning, multiple agents, or coordination.
    Examples: "build a REST API with auth", "research X then write code for it"
@@ -161,7 +162,7 @@ OUTPUT FORMAT (JSON):
 {
   "lane": "conversational" | "direct" | "complex",
   "reply": "your response (only for conversational)",
-  "agent": "researcher" | "coder" | "reviewer" (only for direct),
+  "agent": "researcher" | "coder" | "writer" | "analyst" | "critic" | "reviewer" | "executor" (only for direct),
   "shouldRemember": true/false,
   "personInfo": { "name": "...", "relationship": "...", "traits": ["..."] } (only if a person is mentioned),
   "semanticFacts": [{ "subject": "...", "predicate": "...", "object": "..." }] (only if facts/preferences shared),

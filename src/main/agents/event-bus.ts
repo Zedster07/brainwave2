@@ -13,12 +13,12 @@ export type AgentType =
   | 'planner'
   | 'researcher'
   | 'coder'
+  | 'writer'
+  | 'analyst'
+  | 'critic'
   | 'reviewer'
-  | 'file'
-  | 'memory'
   | 'reflection'
-  | 'scheduler'
-  | 'communication'
+  | 'executor'
 
 export interface AgentMessage {
   id: string

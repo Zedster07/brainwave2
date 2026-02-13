@@ -55,13 +55,18 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.AGENT_GET_STATUS, async () => {
     const pool = agentPool.getStatus()
-    // Return status for each registered agent type
-    return pool.agents.map((type) => ({
-      id: type,
-      type,
-      state: 'idle' as const,
-      model: LLMFactory.getAgentConfig(type)?.model,
-    }))
+    // Return status for each registered agent type + orchestrator
+    const agentTypes = ['orchestrator' as const, ...pool.agents]
+    return agentTypes.map((type) => {
+      const realState = agentPool.getAgentState(type)
+      return {
+        id: type,
+        type,
+        state: realState.state,
+        currentTaskId: realState.taskId,
+        model: LLMFactory.getAgentConfig(type)?.model,
+      }
+    })
   })
 
   ipcMain.handle(IPC_CHANNELS.AGENT_GET_TASKS, async () => {
@@ -70,6 +75,40 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.AGENT_GET_TASK_HISTORY, async (_event, limit?: number) => {
     return orchestrator.getTaskHistory(limit)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_GET_LOG_HISTORY, async (_event, limit?: number) => {
+    const db = getDatabase()
+    const rows = db.all(
+      `SELECT id, agent_type, task_id, status, llm_model, tokens_in, tokens_out, started_at, completed_at, error
+       FROM agent_runs ORDER BY started_at DESC LIMIT ?`,
+      limit ?? 100
+    ) as Array<{
+      id: string
+      agent_type: string
+      task_id: string | null
+      status: string
+      llm_model: string | null
+      tokens_in: number
+      tokens_out: number
+      started_at: string
+      completed_at: string | null
+      error: string | null
+    }>
+
+    return rows.map((row) => ({
+      id: row.id,
+      taskId: row.task_id ?? '',
+      agentId: row.agent_type,
+      agentType: row.agent_type,
+      level: row.status === 'failed' ? 'error' as const : 'info' as const,
+      message: row.status === 'completed'
+        ? `Completed (model: ${row.llm_model ?? 'unknown'}, tokens: ${row.tokens_in + row.tokens_out})`
+        : row.status === 'failed'
+          ? `Failed: ${row.error ?? 'unknown error'}`
+          : `${row.status} (model: ${row.llm_model ?? 'unknown'})`,
+      timestamp: new Date(row.started_at).getTime(),
+    }))
   })
 
   // Forward agent events to renderer

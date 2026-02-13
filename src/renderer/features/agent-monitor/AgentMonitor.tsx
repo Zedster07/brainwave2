@@ -7,10 +7,12 @@ const AGENT_COLORS: Record<string, string> = {
   planner: 'bg-agent-planner',
   researcher: 'bg-agent-researcher',
   coder: 'bg-agent-coder',
+  writer: 'bg-agent-writer',
+  analyst: 'bg-agent-analyst',
+  critic: 'bg-agent-critic',
   reviewer: 'bg-agent-reviewer',
-  memory: 'bg-agent-memory',
   reflection: 'bg-agent-reflection',
-  scheduler: 'bg-agent-scheduler',
+  executor: 'bg-agent-executor',
 }
 
 const MAX_LOGS = 200
@@ -28,6 +30,13 @@ export function AgentMonitor() {
     } catch (err) {
       console.error('Failed to load agent status:', err)
     }
+  }, [])
+
+  // Load persisted log history on mount
+  useEffect(() => {
+    window.brainwave.getLogHistory(100).then((history) => {
+      setLogs(history)
+    }).catch((err) => console.error('Failed to load log history:', err))
   }, [])
 
   useEffect(() => {
