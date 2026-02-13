@@ -129,19 +129,26 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
     const artifacts: Artifact[] = []
     const toolResults: Array<{ tool: string; success: boolean; content: string }> = []
 
-    const MAX_STEPS = 6
+    const MAX_STEPS = 8
+    let corrections = 0
+    const MAX_CORRECTIONS = 2
 
     try {
       // Agentic multi-step loop — the LLM keeps calling tools until the task is done.
       // After each tool result (success or failure), the full history is fed back so
       // the LLM can decide: call another tool, or signal completion with { "done": true }.
-      let currentPrompt = task.description
+      let currentPrompt =
+        `TASK: ${task.description}\n\n` +
+        `Respond with a JSON tool call to begin working on this task. ` +
+        `Example: { "tool": "local::shell_execute", "args": { "command": "dir /s /b \\\\*steam* 2>nul" } }\n` +
+        `Do NOT respond with text. You MUST output a JSON object.`
 
       for (let step = 1; step <= MAX_STEPS; step++) {
         // Ask the LLM what to do next
         const response = await this.think(currentPrompt, context, {
           temperature: modelConfig?.temperature ?? 0.1,
           maxTokens: modelConfig?.maxTokens,
+          responseFormat: 'json',
         })
 
         totalTokensIn += response.tokensIn
@@ -179,7 +186,29 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
         const toolCall = this.parseToolCall(response.content)
 
         if (!toolCall) {
-          // LLM didn't call a tool and didn't signal done — treat as final answer
+          // LLM output JSON but not a tool call or done signal.
+          // Re-prompt with correction if we haven't exceeded correction limit.
+          if (corrections < MAX_CORRECTIONS) {
+            corrections++
+            currentPrompt =
+              `TASK: ${task.description}\n\n` +
+              (toolResults.length > 0
+                ? `== TOOL HISTORY ==\n${toolResults.map((t, i) =>
+                    `Step ${i + 1}: ${t.tool} → ${t.success ? 'SUCCESS' : 'FAILED'}:\n${t.content.slice(0, 800)}`
+                  ).join('\n\n')}\n\n`
+                : '') +
+              `== ERROR: INVALID RESPONSE FORMAT ==\n` +
+              `Your last response was not a valid tool call or completion signal.\n` +
+              `You responded with: ${response.content.slice(0, 200)}\n\n` +
+              `You MUST respond with EXACTLY one of these JSON formats:\n\n` +
+              `To call a tool:\n{ "tool": "local::shell_execute", "args": { "command": "your command here" } }\n\n` +
+              `To call directory_list:\n{ "tool": "local::directory_list", "args": { "path": "C:\\\\" } }\n\n` +
+              `To signal task completion:\n{ "done": true, "summary": "your final answer here" }\n\n` +
+              `Do NOT include any text outside the JSON object. Respond with ONLY the JSON.`
+            continue
+          }
+
+          // Too many corrections — treat as final answer
           const anySuccess = toolResults.some((t) => t.success)
           const finalResult = this.buildResult(
             anySuccess ? 'success' : (toolResults.length > 0 ? 'partial' : 'success'),
