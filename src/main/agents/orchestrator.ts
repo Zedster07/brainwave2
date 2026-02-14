@@ -835,6 +835,16 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     const agentType = triage.agent ?? ('coder' as AgentType)
     console.log(`[Orchestrator] handleDirect() → agent=${agentType} | task="${task.prompt.slice(0, 100)}"`)
 
+    // Enrich task description with triage reasoning + recent conversation context.
+    // The triage LLM already resolved vague references ("try again" → "retry the Ouedkniss TV search"),
+    // so we prepend that understanding to the subtask description.
+    let enrichedDescription = task.prompt
+    if (triage.reasoning && task.prompt.length < 100) {
+      // Short/vague prompts benefit most from enrichment
+      enrichedDescription = `${triage.reasoning}\n\nUser said: "${task.prompt}"`
+    }
+    enrichedDescription = this.augmentTaskForAgent(enrichedDescription, agentType, triage.toolingNeeds)
+
     // Build a single-step plan inline (no planner LLM call)
     const plan: TaskPlan = {
       id: `plan_${randomUUID().slice(0, 8)}`,
@@ -842,7 +852,7 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
       originalTask: task.prompt,
       subTasks: [{
         id: 'direct-task',
-        description: this.augmentTaskForAgent(task.prompt, agentType, triage.toolingNeeds),
+        description: enrichedDescription,
         assignedAgent: agentType,
         status: 'pending',
         dependencies: [],
@@ -924,7 +934,25 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
       currentStep: 'Planner is breaking down the task...',
     })
 
-    const plan = await this.planner.decompose(task.id, task.prompt)
+    // Build enriched prompt with conversation context so planner can resolve references
+    let plannerPrompt = task.prompt
+    if (conversationHistory.length > 0) {
+      const recent = conversationHistory.slice(-6)
+      const historyStr = recent.map((msg) =>
+        `${msg.role === 'user' ? 'User' : 'Brainwave'}: ${msg.content.slice(0, 400)}`
+      ).join('\n')
+      plannerPrompt = `${task.prompt}\n\nCONVERSATION CONTEXT (previous exchanges this session):\n${historyStr}`
+    }
+
+    let plan: TaskPlan
+    try {
+      plan = await this.planner.decompose(task.id, plannerPrompt)
+    } catch (err) {
+      // Planner JSON parse failure — fall back to direct execution with executor
+      console.warn(`[Orchestrator] Planner failed, falling back to direct execution:`, err instanceof Error ? err.message : err)
+      const fallbackTriage: TriageResult = { ...({ lane: 'direct', agent: 'executor', reasoning: `Planner failed: ${err instanceof Error ? err.message : String(err)}. Falling back to executor.` } as TriageResult) }
+      return this.handleDirect(task, fallbackTriage, relevantMemories, memoryManager, conversationHistory)
+    }
 
     // Apply code-level plan guards — fix misrouted subtasks before execution
     this.applyPlanGuards(plan)

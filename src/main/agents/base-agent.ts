@@ -49,6 +49,7 @@ export interface AgentContext {
   planId?: string
   parentTask?: string
   relevantMemories?: string[]
+  conversationHistory?: Array<{ role: 'user' | 'assistant'; content: string }>
   siblingResults?: Map<string, AgentResult>
   images?: ImageAttachment[]
   blackboard?: BlackboardHandle
@@ -539,6 +540,17 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         ? `\nORIGINAL USER REQUEST: "${context.parentTask.slice(0, 300)}"\n`
         : ''
 
+      // Inject recent conversation history so agents can resolve references like "try again"
+      let historyContext = ''
+      if (context.conversationHistory && context.conversationHistory.length > 0) {
+        // Keep last 6 messages (3 exchanges) to stay within token budget
+        const recent = context.conversationHistory.slice(-6)
+        const lines = recent.map((msg) =>
+          `${msg.role === 'user' ? 'User' : 'Brainwave'}: ${msg.content.slice(0, 500)}`
+        ).join('\n')
+        historyContext = `\n\nRECENT CONVERSATION (use this to understand references like "try again", "do that", etc.):\n${lines}\n`
+      }
+
       // Inject shared blackboard context from other agents
       let blackboardContext = ''
       if (context.blackboard) {
@@ -550,7 +562,7 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
       }
 
       let currentPrompt =
-        `TASK: ${task.description}\n${parentContext}${priorContext}${blackboardContext}\n` +
+        `TASK: ${task.description}\n${parentContext}${historyContext}${priorContext}${blackboardContext}\n` +
         `Respond with a JSON tool call to begin working on this task. ` +
         `Do NOT respond with text. You MUST output a JSON object.`
 
