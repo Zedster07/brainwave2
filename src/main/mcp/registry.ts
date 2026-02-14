@@ -30,18 +30,19 @@ class McpRegistry {
     }
 
     // Connect in parallel for faster startup
-    const results = await Promise.allSettled(
+    let connected = 0
+    await Promise.allSettled(
       toConnect.map(async (config) => {
         try {
           await this.connect(config.id)
-          console.log(`[MCP] ✓ Connected: "${config.name}"`)
+          connected++
+          console.log(`[MCP] Connected: "${config.name}"`)
         } catch (err) {
-          console.warn(`[MCP] ✗ Auto-connect failed for "${config.name}":`, err instanceof Error ? err.message : err)
+          console.warn(`[MCP] Auto-connect failed for "${config.name}":`, err instanceof Error ? err.message : err)
         }
       })
     )
 
-    const connected = results.filter((r) => r.status === 'fulfilled').length
     console.log(`[MCP] Startup complete: ${connected}/${toConnect.length} servers connected`)
   }
 
