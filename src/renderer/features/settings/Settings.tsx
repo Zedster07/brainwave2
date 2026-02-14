@@ -1311,6 +1311,17 @@ function ToolsSettings() {
 
   useEffect(() => { refresh() }, [refresh])
 
+  // Poll statuses every 3s so we see servers come online after startup
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const st = await window.brainwave.mcpGetStatuses()
+        setStatuses(st)
+      } catch { /* ignore */ }
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [])
+
   const getStatus = (id: string) => statuses.find((s) => s.id === id)
 
   const handleAdd = async () => {

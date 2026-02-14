@@ -95,8 +95,14 @@ class McpRegistry {
 
     // Create client & connect
     const client = new McpClient(config)
-    await client.connect()
+    // Store client first so error state is visible in getStatuses()
     this.clients.set(serverId, client)
+    try {
+      await client.connect()
+    } catch (err) {
+      // Client remains in map with state='error' so UI can show the failure
+      throw err
+    }
   }
 
   /** Disconnect from a specific server */
