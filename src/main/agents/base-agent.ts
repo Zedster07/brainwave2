@@ -18,6 +18,7 @@ import { getLocalToolProvider } from '../tools'
 import { getAgentPermissions, filterToolsForAgent, canAgentCallTool, hasToolAccess } from '../tools/permissions'
 import type { McpTool, McpToolCallResult } from '../mcp/types'
 import type { ImageAttachment } from '@shared/types'
+import type { BlackboardHandle } from './blackboard'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -49,6 +50,7 @@ export interface AgentContext {
   relevantMemories?: string[]
   siblingResults?: Map<string, AgentResult>
   images?: ImageAttachment[]
+  blackboard?: BlackboardHandle
 }
 
 export interface AgentResult {
@@ -522,8 +524,18 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         ? `\nORIGINAL USER REQUEST: "${context.parentTask.slice(0, 300)}"\n`
         : ''
 
+      // Inject shared blackboard context from other agents
+      let blackboardContext = ''
+      if (context.blackboard) {
+        blackboardContext = context.blackboard.board.formatForPrompt(
+          context.blackboard.planId,
+          this.type,
+          context.taskId
+        )
+      }
+
       let currentPrompt =
-        `TASK: ${task.description}\n${parentContext}${priorContext}\n` +
+        `TASK: ${task.description}\n${parentContext}${priorContext}${blackboardContext}\n` +
         `Respond with a JSON tool call to begin working on this task. ` +
         `Do NOT respond with text. You MUST output a JSON object.`
 
@@ -569,6 +581,17 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         if (doneSignal) {
           console.log(`[${this.type}] Done signal at step ${step}: "${doneSignal.slice(0, 200)}..."`)
           const anySuccess = toolResults.some((t) => t.success)
+
+          // Write final summary to blackboard for downstream agents
+          if (context.blackboard) {
+            context.blackboard.board.write(
+              context.blackboard.planId,
+              'final-summary',
+              doneSignal.slice(0, 1500),
+              this.type,
+              context.taskId
+            )
+          }
 
           this.bus.emitEvent('agent:completed', {
             agentType: this.type,
@@ -676,6 +699,18 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
           content: result.content,
         })
 
+        // Auto-write successful tool results to the shared blackboard
+        if (result.success && context.blackboard) {
+          const toolShortName = toolCall.tool.split('::').pop() ?? toolCall.tool
+          context.blackboard.board.write(
+            context.blackboard.planId,
+            `${toolShortName}-result`,
+            result.content.slice(0, 1500),
+            this.type,
+            context.taskId
+          )
+        }
+
         artifacts.push({
           type: 'json',
           name: `tool-result-${toolCall.tool.split('::').pop()}-step${step}`,
@@ -687,9 +722,20 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
           `Step ${i + 1}: ${t.tool} → ${t.success ? 'SUCCESS' : 'FAILED'}:\n${t.content.length > 1500 ? t.content.slice(0, 1500) + '\n...(truncated)' : t.content}`
         ).join('\n\n')
 
+        // Refresh blackboard context (other agents may have written since we started)
+        let latestBlackboard = ''
+        if (context.blackboard) {
+          latestBlackboard = context.blackboard.board.formatForPrompt(
+            context.blackboard.planId,
+            this.type,
+            context.taskId
+          )
+        }
+
         currentPrompt =
           `TASK: ${task.description}\n\n` +
           `== TOOL HISTORY (${toolResults.length} step${toolResults.length > 1 ? 's' : ''}) ==\n${historyLines}\n\n` +
+          (latestBlackboard ? `== SHARED CONTEXT FROM OTHER AGENTS ==${latestBlackboard}\n\n` : '') +
           `== INSTRUCTIONS ==\n` +
           `You have ${MAX_STEPS - step} tool calls remaining.\n` +
           (result.success

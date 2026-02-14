@@ -26,6 +26,7 @@ import { getSoftEngine } from '../rules'
 import { getPromptRegistry } from '../prompts'
 import { getMcpRegistry } from '../mcp'
 import type { ImageAttachment } from '@shared/types'
+import { Blackboard } from './blackboard'
 
 // ─── Task Record (stored in DB) ────────────────────────────
 
@@ -1059,6 +1060,13 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     const remaining = new Set(plan.subTasks.map((st) => st.id))
     const completed = new Set<string>()
 
+    // Create a shared blackboard for this plan
+    const blackboard = Blackboard.getInstance()
+    const blackboardHandle = { planId: plan.id, board: blackboard }
+    console.log(`[Orchestrator] Created blackboard for plan "${plan.id}" (${plan.subTasks.length} steps)`)
+
+    try {
+
     while (remaining.size > 0) {
       // Check for cancellation
       if (task.status === 'cancelled') break
@@ -1099,6 +1107,7 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
           conversationHistory,
           siblingResults: results,
           images: task.images,
+          blackboard: blackboardHandle,
         })
 
         results.set(subTask.id, result)
@@ -1184,6 +1193,16 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     })
 
     return results
+
+    } finally {
+      // Clean up the blackboard for this plan
+      const entryCount = blackboard.count(plan.id)
+      blackboard.clear(plan.id)
+      console.log(`[Orchestrator] Cleared blackboard for plan "${plan.id}" (${entryCount} entries)`)
+
+      // Periodic TTL cleanup of stale plans
+      blackboard.cleanup()
+    }
   }
 
   /**
