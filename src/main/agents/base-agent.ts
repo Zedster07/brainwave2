@@ -510,10 +510,14 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
     // No hard step cap — agents run until done, timed out, or stuck in a loop
     const TIMEOUT_MS = permConfig.timeoutMs ?? 5 * 60 * 1000
     const MAX_LOOP_REPEATS = 3 // same tool+args repeated this many times = loop
-    const ABSOLUTE_MAX_STEPS = 50 // safety valve — should never be reached
+    const MAX_TOOL_FREQUENCY = 8 // same tool name (any args) called this many times = stuck
+    const MAX_CONSECUTIVE_SAME = 5 // same tool called N times in a row (different args) = stuck
+    const ABSOLUTE_MAX_STEPS = 25 // safety valve — reduced from 50, should never be reached
     let corrections = 0
     const MAX_CORRECTIONS = 2
     const toolCallHistory: Array<{ tool: string; argsHash: string }> = []
+    const toolFrequency: Map<string, number> = new Map() // track per-tool call count
+    let stuckWarningGiven = false // soft-loop warning before hard break
 
     console.log(`[${this.type}] executeWithTools | taskId=${context.taskId} | model=${model} | tools=${allowedTools.length} | timeout=${Math.round(TIMEOUT_MS / 1000)}s`)
     console.log(`[${this.type}] Task: "${task.description.slice(0, 200)}"`)
@@ -709,15 +713,105 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
           continue
         }
 
-        // ── Loop detection ──
+        // ── Loop detection (multi-strategy) ──
         const argsHash = JSON.stringify(toolCall.args ?? {})
-        const callSig = `${toolCall.tool}:${argsHash}`
+        const toolBaseName = toolCall.tool.split('::').pop() ?? toolCall.tool
         toolCallHistory.push({ tool: toolCall.tool, argsHash })
-        const repeatCount = toolCallHistory.filter(h => `${h.tool}:${h.argsHash}` === callSig).length
-        if (repeatCount >= MAX_LOOP_REPEATS) {
+
+        // Update per-tool frequency
+        const freq = (toolFrequency.get(toolBaseName) ?? 0) + 1
+        toolFrequency.set(toolBaseName, freq)
+
+        // Strategy 1: Exact match — same tool + identical args N times
+        const callSig = `${toolCall.tool}:${argsHash}`
+        const exactRepeatCount = toolCallHistory.filter(h => `${h.tool}:${h.argsHash}` === callSig).length
+        if (exactRepeatCount >= MAX_LOOP_REPEATS) {
           loopDetected = true
-          console.warn(`[${this.type}] Loop detected: "${toolCall.tool}" called ${repeatCount}× with identical args`)
+          console.warn(`[${this.type}] Loop detected (exact match): "${toolBaseName}" called ${exactRepeatCount}× with identical args`)
           break
+        }
+
+        // Strategy 2: Per-tool frequency — same tool name called too many times total
+        if (freq >= MAX_TOOL_FREQUENCY) {
+          if (!stuckWarningGiven) {
+            stuckWarningGiven = true
+            console.warn(`[${this.type}] Stuck warning: "${toolBaseName}" called ${freq} times total — injecting warning`)
+            // Don't execute this call — instead warn the agent
+            toolResults.push({
+              tool: toolCall.tool,
+              success: false,
+              content: `STUCK DETECTION: You have called "${toolBaseName}" ${freq} times now with different arguments but similar results. You are NOT making progress. You MUST either: (1) use a COMPLETELY DIFFERENT tool/approach, or (2) signal completion with { "done": true, "summary": "..." } summarizing what you found so far.`,
+            })
+            this.bus.emitEvent('agent:tool-result', {
+              agentType: this.type,
+              taskId: context.taskId,
+              tool: toolCall.tool,
+              success: false,
+              summary: `Stuck warning: ${toolBaseName} called ${freq}× — agent must change approach`,
+              step,
+            })
+            const warningHistory = toolResults.map((t, i) =>
+              `Step ${i + 1}: ${t.tool} → ${t.success ? 'SUCCESS' : 'FAILED'}:\n${t.content.slice(0, 800)}`
+            ).join('\n\n')
+            currentPrompt =
+              `TASK: ${task.description}\n\n` +
+              `== TOOL HISTORY (${toolResults.length} step${toolResults.length > 1 ? 's' : ''}) ==\n${warningHistory}\n\n` +
+              `== ⚠️ STUCK DETECTION ==\n` +
+              `You have called "${toolBaseName}" ${freq} times. You are looping.\n` +
+              `The results are NOT improving. STOP calling "${toolBaseName}".\n\n` +
+              `You MUST do ONE of these:\n` +
+              `1. Use a COMPLETELY DIFFERENT tool to accomplish the task\n` +
+              `2. Signal completion: { "done": true, "summary": "what you found so far" }\n\n` +
+              `Do NOT call "${toolBaseName}" again.`
+            continue
+          }
+          // Already warned — hard break
+          loopDetected = true
+          console.warn(`[${this.type}] Loop detected (frequency): "${toolBaseName}" called ${freq}× — already warned, breaking`)
+          break
+        }
+
+        // Strategy 3: Consecutive same-tool — same tool N times in a row with different args
+        if (toolCallHistory.length >= MAX_CONSECUTIVE_SAME) {
+          const lastN = toolCallHistory.slice(-MAX_CONSECUTIVE_SAME)
+          const allSameTool = lastN.every(h => h.tool === toolCall.tool)
+          if (allSameTool) {
+            if (!stuckWarningGiven) {
+              stuckWarningGiven = true
+              console.warn(`[${this.type}] Stuck warning: "${toolBaseName}" called ${MAX_CONSECUTIVE_SAME}× consecutively — injecting warning`)
+              // Don't execute — warn first
+              toolResults.push({
+                tool: toolCall.tool,
+                success: false,
+                content: `STUCK DETECTION: You have called "${toolBaseName}" ${MAX_CONSECUTIVE_SAME} times in a row. You are stuck in a loop. STOP and either try a completely different approach or signal completion.`,
+              })
+              this.bus.emitEvent('agent:tool-result', {
+                agentType: this.type,
+                taskId: context.taskId,
+                tool: toolCall.tool,
+                success: false,
+                summary: `Stuck warning: ${toolBaseName} called ${MAX_CONSECUTIVE_SAME}× consecutively`,
+                step,
+              })
+              const warningHistory = toolResults.map((t, i) =>
+                `Step ${i + 1}: ${t.tool} → ${t.success ? 'SUCCESS' : 'FAILED'}:\n${t.content.slice(0, 800)}`
+              ).join('\n\n')
+              currentPrompt =
+                `TASK: ${task.description}\n\n` +
+                `== TOOL HISTORY (${toolResults.length} step${toolResults.length > 1 ? 's' : ''}) ==\n${warningHistory}\n\n` +
+                `== ⚠️ STUCK DETECTION ==\n` +
+                `You called "${toolBaseName}" ${MAX_CONSECUTIVE_SAME} times in a row. You are looping.\n` +
+                `STOP calling "${toolBaseName}" and either:\n` +
+                `1. Try a COMPLETELY DIFFERENT tool\n` +
+                `2. Signal completion: { "done": true, "summary": "what you found so far" }\n\n` +
+                `Do NOT call "${toolBaseName}" again.`
+              continue
+            }
+            // Already warned — hard break
+            loopDetected = true
+            console.warn(`[${this.type}] Loop detected (consecutive): "${toolBaseName}" called ${MAX_CONSECUTIVE_SAME}× in a row — already warned, breaking`)
+            break
+          }
         }
 
         // ── Handle delegation tool call ──
@@ -927,7 +1021,7 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
 
       // Loop detected or safety-valve hit — request a summary
       const stopReason = loopDetected
-        ? `Loop detected — you called the same tool with identical arguments ${MAX_LOOP_REPEATS} times.`
+        ? `Loop detected — you kept calling the same tool(s) repeatedly without making progress.`
         : `Safety limit reached (${ABSOLUTE_MAX_STEPS} steps).`
       const summaryPrompt =
         `Original task: ${task.description}\n\n` +
