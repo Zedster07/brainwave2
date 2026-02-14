@@ -428,6 +428,17 @@ export function registerIpcHandlers(): void {
     level: 'error', message: data.error, timestamp: Date.now(),
   }))
 
+  // Live tool-result streaming → renderer (appears in activity log as results arrive)
+  eventBus.onEvent('agent:tool-result', (data) => {
+    const icon = data.success ? '✓' : '✗'
+    const toolName = data.tool.split('::').pop() ?? data.tool
+    const step = `${icon} ${data.agentType}→${toolName}: ${data.summary.slice(0, 150)}`
+    updateLiveState(data.taskId, { status: 'executing', currentStep: step })
+    forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+      taskId: data.taskId, status: 'executing', currentStep: step, timestamp: Date.now(),
+    })
+  })
+
   // Escalation events — agent retries exhausted
   eventBus.onEvent('task:escalation', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
     id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agent, agentType: data.agent,

@@ -12,6 +12,8 @@ import { ReviewerAgent } from './reviewer'
 import { ReflectionAgent } from './reflection'
 import { ExecutorAgent } from './executor'
 import { getEventBus, type AgentType } from './event-bus'
+import { randomUUID } from 'crypto'
+import { MAX_DELEGATION_DEPTH } from './delegation'
 
 // ─── Agent Registry ─────────────────────────────────────────
 
@@ -150,6 +152,30 @@ export class AgentPool {
 
   private async run(agent: BaseAgent, subTask: SubTask, context: AgentContext): Promise<AgentResult> {
     this.activeCount++
+
+    // Inject delegation capability if not at max depth
+    const currentDepth = context.delegationDepth ?? 0
+    if (currentDepth < MAX_DELEGATION_DEPTH && !context.delegateFn) {
+      context.delegateFn = async (agentType: AgentType, task: string) => {
+        const delegatedTask: SubTask = {
+          id: `delegate-${randomUUID().slice(0, 8)}`,
+          description: task,
+          assignedAgent: agentType,
+          status: 'pending',
+          dependencies: [],
+          attempts: 0,
+          maxAttempts: 1,
+        }
+        const delegatedContext: AgentContext = {
+          ...context,
+          delegationDepth: currentDepth + 1,
+          taskId: delegatedTask.id,
+          delegateFn: undefined, // Will be re-injected by run() at the next level
+        }
+        console.log(`[AgentPool] Delegation: ${agent.type} → ${agentType} (depth ${currentDepth + 1}) | "${task.slice(0, 120)}"`)
+        return this.executeTask(delegatedTask, delegatedContext)
+      }
+    }
 
     try {
       const result = await agent.execute(subTask, context)

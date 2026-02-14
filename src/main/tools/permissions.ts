@@ -36,16 +36,14 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
   // Full access — the power user
   executor: {
     tier: 'full',
-    maxSteps: 8,
-    timeoutMs: 3 * 60 * 1000, // 3 min
+    timeoutMs: 10 * 60 * 1000, // 10 min — browser automation can be long
   },
 
   // Read + web search — can look things up, can't modify
   researcher: {
     tier: 'read',
     allowedLocalTools: ['web_search', 'webpage_fetch', 'file_read', 'directory_list', 'http_request'],
-    maxSteps: 5,
-    timeoutMs: 2 * 60 * 1000,
+    timeoutMs: 5 * 60 * 1000,
   },
 
   // Read filesystem + write code — can read context, write files
@@ -53,32 +51,28 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
     tier: 'readWrite',
     allowedLocalTools: ['file_read', 'file_write', 'file_create', 'directory_list', 'web_search', 'webpage_fetch'],
     blockedLocalTools: ['shell_execute', 'file_delete'],
-    maxSteps: 6,
-    timeoutMs: 2 * 60 * 1000,
+    timeoutMs: 5 * 60 * 1000,
   },
 
   // Read-only — can check actual code/files for review
   reviewer: {
     tier: 'read',
     allowedLocalTools: ['file_read', 'directory_list', 'web_search', 'webpage_fetch'],
-    maxSteps: 4,
-    timeoutMs: 90 * 1000,
+    timeoutMs: 3 * 60 * 1000,
   },
 
   // Read-only — can look up data for analysis
   analyst: {
     tier: 'read',
     allowedLocalTools: ['file_read', 'directory_list', 'web_search', 'webpage_fetch', 'http_request'],
-    maxSteps: 4,
-    timeoutMs: 90 * 1000,
+    timeoutMs: 3 * 60 * 1000,
   },
 
   // Read-only web — can fact-check claims
   critic: {
     tier: 'read',
     allowedLocalTools: ['web_search', 'webpage_fetch'],
-    maxSteps: 3,
-    timeoutMs: 60 * 1000,
+    timeoutMs: 2 * 60 * 1000,
   },
 
   // Pure reasoning — no tools needed

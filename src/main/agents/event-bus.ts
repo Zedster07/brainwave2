@@ -68,7 +68,8 @@ export interface EventMap {
   // Agent lifecycle
   'agent:thinking': { agentType: AgentType; taskId: string; model: string }
   'agent:acting': { agentType: AgentType; taskId: string; action: string }
-  'agent:completed': { agentType: AgentType; taskId: string; confidence: number; tokensIn: number; tokensOut: number }
+  'agent:tool-result': { agentType: AgentType; taskId: string; tool: string; success: boolean; summary: string; step: number }
+  'agent:completed': { agentType: AgentType; taskId: string; confidence: number; tokensIn: number; tokensOut: number; toolsCalled?: string[] }
   'agent:error': { agentType: AgentType; taskId: string; error: string }
   'agent:idle': { agentType: AgentType }
 

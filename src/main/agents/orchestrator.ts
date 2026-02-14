@@ -786,7 +786,8 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     }
 
     // Create prospective memory if triage detected a reminder/intention
-    if (triage.reminder) {
+    // Guard: LLMs sometimes emit an empty {} for reminder — only store if intention is present
+    if (triage.reminder?.intention && triage.reminder?.triggerType && triage.reminder?.triggerValue) {
       try {
         const prospectiveStore = getProspectiveStore()
         const entry = prospectiveStore.store({

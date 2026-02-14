@@ -19,6 +19,7 @@ import { getAgentPermissions, filterToolsForAgent, canAgentCallTool, hasToolAcce
 import type { McpTool, McpToolCallResult } from '../mcp/types'
 import type { ImageAttachment } from '@shared/types'
 import type { BlackboardHandle } from './blackboard'
+import { canDelegate, canDelegateAtDepth, buildDelegationToolDescription } from './delegation'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -51,6 +52,10 @@ export interface AgentContext {
   siblingResults?: Map<string, AgentResult>
   images?: ImageAttachment[]
   blackboard?: BlackboardHandle
+  /** Injected by AgentPool — allows agents to spawn sub-agents */
+  delegateFn?: (agentType: AgentType, task: string) => Promise<AgentResult>
+  /** Current delegation depth (0 = top-level, incremented per delegation) */
+  delegationDepth?: number
 }
 
 export interface AgentResult {
@@ -418,6 +423,12 @@ export abstract class BaseAgent {
     const permConfig = getAgentPermissions(this.type)
     const maxSteps = permConfig.maxSteps ?? 5
 
+    // Include delegation tool if this agent can delegate
+    const delegationDesc = buildDelegationToolDescription(this.type)
+    const delegationSection = delegationDesc
+      ? `\n\n## Agent Delegation\nYou can delegate sub-tasks to specialist agents:\n${delegationDesc}\n\nCall it like any other tool:\n{ "tool": "delegate_to_agent", "args": { "agent": "<type>", "task": "<description>" } }`
+      : ''
+
     return `
 
 ## Available Tools
@@ -434,6 +445,7 @@ To call a tool, respond with ONLY a JSON object:
 - After seeing the tool result, decide: call another tool OR provide your final answer
 - You have a maximum of ${maxSteps} tool calls per task
 - For file paths, always use absolute paths
+${delegationSection}
 
 When the task is FULLY complete and you have the final answer, respond with:
 { "done": true, "summary": "your final answer here" }
@@ -494,12 +506,15 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
     const artifacts: Artifact[] = []
     const toolResults: Array<{ tool: string; success: boolean; content: string }> = []
 
-    const MAX_STEPS = permConfig.maxSteps ?? 5
-    const TIMEOUT_MS = permConfig.timeoutMs ?? 2 * 60 * 1000
+    // No hard step cap — agents run until done, timed out, or stuck in a loop
+    const TIMEOUT_MS = permConfig.timeoutMs ?? 5 * 60 * 1000
+    const MAX_LOOP_REPEATS = 3 // same tool+args repeated this many times = loop
+    const ABSOLUTE_MAX_STEPS = 50 // safety valve — should never be reached
     let corrections = 0
     const MAX_CORRECTIONS = 2
+    const toolCallHistory: Array<{ tool: string; argsHash: string }> = []
 
-    console.log(`[${this.type}] executeWithTools | taskId=${context.taskId} | model=${model} | tools=${allowedTools.length} | maxSteps=${MAX_STEPS}`)
+    console.log(`[${this.type}] executeWithTools | taskId=${context.taskId} | model=${model} | tools=${allowedTools.length} | timeout=${Math.round(TIMEOUT_MS / 1000)}s`)
     console.log(`[${this.type}] Task: "${task.description.slice(0, 200)}"`)
 
     try {
@@ -539,7 +554,11 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         `Respond with a JSON tool call to begin working on this task. ` +
         `Do NOT respond with text. You MUST output a JSON object.`
 
-      for (let step = 1; step <= MAX_STEPS; step++) {
+      let step = 0
+      let loopDetected = false
+      while (step < ABSOLUTE_MAX_STEPS) {
+        step++
+
         // Check overall timeout
         if (Date.now() - startTime > TIMEOUT_MS) {
           const anySuccess = toolResults.some((t) => t.success)
@@ -563,7 +582,7 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         this.bus.emitEvent('agent:acting', {
           agentType: this.type,
           taskId: context.taskId,
-          action: `Step ${step}/${MAX_STEPS}: ${step === 1 ? 'Analyzing task...' : 'Deciding next action...'}`,
+          action: `Step ${step}: ${step === 1 ? 'Analyzing task...' : 'Deciding next action...'}`,
         })
 
         const response = await this.think(currentPrompt, context, {
@@ -678,6 +697,143 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
           continue
         }
 
+        // ── Loop detection ──
+        const argsHash = JSON.stringify(toolCall.args ?? {})
+        const callSig = `${toolCall.tool}:${argsHash}`
+        toolCallHistory.push({ tool: toolCall.tool, argsHash })
+        const repeatCount = toolCallHistory.filter(h => `${h.tool}:${h.argsHash}` === callSig).length
+        if (repeatCount >= MAX_LOOP_REPEATS) {
+          loopDetected = true
+          console.warn(`[${this.type}] Loop detected: "${toolCall.tool}" called ${repeatCount}× with identical args`)
+          break
+        }
+
+        // ── Handle delegation tool call ──
+        if (toolCall.tool === 'delegate_to_agent') {
+          const targetAgent = toolCall.args?.agent as AgentType | undefined
+          const delegatedTask = toolCall.args?.task as string | undefined
+
+          if (!targetAgent || !delegatedTask) {
+            toolResults.push({
+              tool: 'delegate_to_agent',
+              success: false,
+              content: 'INVALID ARGS: "delegate_to_agent" requires { "agent": "<type>", "task": "<description>" }',
+            })
+          } else if (!context.delegateFn) {
+            toolResults.push({
+              tool: 'delegate_to_agent',
+              success: false,
+              content: 'DELEGATION UNAVAILABLE: No delegation handler is available in this execution context.',
+            })
+          } else if (!canDelegateAtDepth(context.delegationDepth ?? 0)) {
+            toolResults.push({
+              tool: 'delegate_to_agent',
+              success: false,
+              content: `DELEGATION DEPTH EXCEEDED: Maximum delegation depth reached. Complete the task with your own capabilities.`,
+            })
+          } else {
+            const delegationPerm = canDelegate(this.type, targetAgent)
+            if (!delegationPerm.allowed) {
+              toolResults.push({
+                tool: 'delegate_to_agent',
+                success: false,
+                content: `DELEGATION DENIED: ${delegationPerm.reason}`,
+              })
+            } else {
+              console.log(`[${this.type}] Step ${step}: Delegating to ${targetAgent}: "${delegatedTask.slice(0, 150)}"`)
+
+              this.bus.emitEvent('agent:acting', {
+                agentType: this.type,
+                taskId: context.taskId,
+                action: `Delegating to ${targetAgent} (step ${step})`,
+              })
+
+              try {
+                const delegationResult = await context.delegateFn(targetAgent, delegatedTask)
+                const outputStr = typeof delegationResult.output === 'string'
+                  ? delegationResult.output
+                  : JSON.stringify(delegationResult.output)
+
+                toolResults.push({
+                  tool: `delegate_to_agent:${targetAgent}`,
+                  success: delegationResult.status === 'success' || delegationResult.status === 'partial',
+                  content: outputStr.slice(0, 3000),
+                })
+
+                totalTokensIn += delegationResult.tokensIn
+                totalTokensOut += delegationResult.tokensOut
+
+                // Write delegated result to blackboard
+                if (context.blackboard && (delegationResult.status === 'success' || delegationResult.status === 'partial')) {
+                  context.blackboard.board.write(
+                    context.blackboard.planId,
+                    `delegated-${targetAgent}-result`,
+                    outputStr.slice(0, 1500),
+                    this.type,
+                    context.taskId
+                  )
+                }
+
+                artifacts.push({
+                  type: 'json',
+                  name: `delegation-${targetAgent}-step${step}`,
+                  content: JSON.stringify({
+                    agent: targetAgent,
+                    status: delegationResult.status,
+                    confidence: delegationResult.confidence,
+                    output: outputStr.slice(0, 2000),
+                  }, null, 2),
+                })
+              } catch (err) {
+                toolResults.push({
+                  tool: `delegate_to_agent:${targetAgent}`,
+                  success: false,
+                  content: `DELEGATION FAILED: ${err instanceof Error ? err.message : String(err)}`,
+                })
+              }
+            }
+          }
+
+          // Emit delegation result for live streaming to UI
+          const delegEventResult = toolResults[toolResults.length - 1]
+          this.bus.emitEvent('agent:tool-result', {
+            agentType: this.type,
+            taskId: context.taskId,
+            tool: delegEventResult.tool,
+            success: delegEventResult.success,
+            summary: delegEventResult.content.slice(0, 500),
+            step,
+          })
+
+          // Build context for next iteration after delegation
+          const delegHistoryLines = toolResults.map((t, i) =>
+            `Step ${i + 1}: ${t.tool} → ${t.success ? 'SUCCESS' : 'FAILED'}:\n${t.content.length > 1500 ? t.content.slice(0, 1500) + '\n...(truncated)' : t.content}`
+          ).join('\n\n')
+
+          let delegBlackboard = ''
+          if (context.blackboard) {
+            delegBlackboard = context.blackboard.board.formatForPrompt(
+              context.blackboard.planId, this.type, context.taskId
+            )
+          }
+
+          const lastDelegResult = toolResults[toolResults.length - 1]
+          currentPrompt =
+            `TASK: ${task.description}\n\n` +
+            `== TOOL HISTORY (${toolResults.length} step${toolResults.length > 1 ? 's' : ''}) ==\n${delegHistoryLines}\n\n` +
+            (delegBlackboard ? `== SHARED CONTEXT FROM OTHER AGENTS ==${delegBlackboard}\n\n` : '') +
+            `== INSTRUCTIONS ==\n` +
+            `Continue working until the task is complete.\n` +
+            (lastDelegResult.success
+              ? `The delegation to ${targetAgent ?? 'agent'} succeeded. Analyze the result:\n` +
+                `- If the task is FULLY complete, respond with: { "done": true, "summary": "your answer" }\n` +
+                `- If NOT complete, call another tool or delegate again.`
+              : `The delegation FAILED. Try a different approach:\n` +
+                `- Use your own tools instead, or try a different agent.\n` +
+                `Respond with a new tool call JSON.`)
+          continue
+        }
+
         // ── Execute the tool ──
         console.log(`[${this.type}] Step ${step}: Calling ${toolCall.tool} args=${JSON.stringify(toolCall.args).slice(0, 200)}`)
 
@@ -717,6 +873,16 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
           content: JSON.stringify(result, null, 2),
         })
 
+        // Emit tool-result for live streaming to UI
+        this.bus.emitEvent('agent:tool-result', {
+          agentType: this.type,
+          taskId: context.taskId,
+          tool: toolCall.tool,
+          success: result.success,
+          summary: result.content.slice(0, 500),
+          step,
+        })
+
         // Build context for next iteration
         const historyLines = toolResults.map((t, i) =>
           `Step ${i + 1}: ${t.tool} → ${t.success ? 'SUCCESS' : 'FAILED'}:\n${t.content.length > 1500 ? t.content.slice(0, 1500) + '\n...(truncated)' : t.content}`
@@ -737,7 +903,7 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
           `== TOOL HISTORY (${toolResults.length} step${toolResults.length > 1 ? 's' : ''}) ==\n${historyLines}\n\n` +
           (latestBlackboard ? `== SHARED CONTEXT FROM OTHER AGENTS ==${latestBlackboard}\n\n` : '') +
           `== INSTRUCTIONS ==\n` +
-          `You have ${MAX_STEPS - step} tool calls remaining.\n` +
+          `Continue working until the task is complete.\n` +
           (result.success
             ? `The last tool call succeeded. Analyze the result:\n` +
               `- If the task is FULLY complete, respond with: { "done": true, "summary": "your answer" }\n` +
@@ -747,21 +913,40 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
               `Respond with a new tool call JSON.`)
       }
 
-      // Exhausted all steps — request a summary
+      // Loop detected or safety-valve hit — request a summary
+      const stopReason = loopDetected
+        ? `Loop detected — you called the same tool with identical arguments ${MAX_LOOP_REPEATS} times.`
+        : `Safety limit reached (${ABSOLUTE_MAX_STEPS} steps).`
       const summaryPrompt =
         `Original task: ${task.description}\n\n` +
-        `You've used ${MAX_STEPS} tool calls. Here's what happened:\n` +
-        toolResults.map((t, i) =>
-          `Step ${i + 1}: ${t.tool} → ${t.success ? 'SUCCESS' : 'FAILED'}: ${t.content.slice(0, 300)}`
+        `${stopReason} Here's what happened across ${toolResults.length} steps (showing last 10):\n` +
+        toolResults.slice(-10).map((t) =>
+          `${t.tool} → ${t.success ? 'SUCCESS' : 'FAILED'}: ${t.content.slice(0, 300)}`
         ).join('\n') +
-        `\n\nProvide a final summary of what was accomplished and what remains incomplete.`
+        `\n\nIMPORTANT: You have NO more tool calls. Do NOT output any JSON or tool calls.\n` +
+        `Write a plain-text summary for the user:\n` +
+        `1. What was accomplished\n` +
+        `2. What remains incomplete\n` +
+        `3. Suggest next steps if relevant\n\n` +
+        `Respond ONLY with plain text. No JSON. No tool calls.`
 
       const summaryResponse = await this.think(summaryPrompt, context, {
         temperature: 0.3,
         maxTokens: modelConfig?.maxTokens,
+        responseFormat: 'text',
       })
       totalTokensIn += summaryResponse.tokensIn
       totalTokensOut += summaryResponse.tokensOut
+
+      // Strip any lingering tool-call JSON the model may have sneaked in
+      let summaryText = summaryResponse.content
+      const toolCallMatch = summaryText.match(/\{\s*"tool"\s*:/)
+      if (toolCallMatch && toolCallMatch.index !== undefined) {
+        summaryText = summaryText.slice(0, toolCallMatch.index).trim()
+        if (!summaryText) {
+          summaryText = 'The task could not be fully completed within the available steps. Please try again or break the task into smaller steps.'
+        }
+      }
 
       const anySuccess = toolResults.some((t) => t.success)
 
@@ -776,7 +961,7 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
 
       return this.buildToolResult(
         anySuccess ? 'partial' : 'failed',
-        summaryResponse.content,
+        summaryText,
         anySuccess ? 0.6 : 0.3,
         totalTokensIn, totalTokensOut, model, startTime, artifacts
       )
