@@ -13,6 +13,7 @@ import { OllamaProvider } from '../llm/ollama'
 import { getMcpRegistry } from '../mcp'
 import type { McpServerConfig } from '../mcp'
 import { getPluginRegistry } from '../plugins'
+import { fetchDailyPulseSection } from '../services/daily-pulse'
 import { getOrchestrator } from '../agents/orchestrator'
 import { getAgentPool } from '../agents/agent-pool'
 import { getEventBus } from '../agents/event-bus'
@@ -1059,5 +1060,11 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.PLUGIN_DISABLE, async (_event, id: string) => {
     return pluginRegistry.disable(id)
+  })
+
+  // ─── Daily Pulse ───
+
+  ipcMain.handle(IPC_CHANNELS.DAILY_PULSE_GET, async (_event, section: string) => {
+    return fetchDailyPulseSection(section as any)
   })
 }

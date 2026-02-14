@@ -149,6 +149,9 @@ export const IPC_CHANNELS = {
 
   // Task live state (replay missed events on remount)
   AGENT_GET_TASK_LIVE_STATE: 'agent:get-task-live-state',
+
+  // Daily Pulse
+  DAILY_PULSE_GET: 'daily-pulse:get',
 } as const
 
 // ─── IPC Payload Types ───
@@ -433,6 +436,9 @@ export interface BrainwaveAPI {
 
   // Prompt Versioning
   getPromptVersions: () => Promise<Array<{ name: string; version: string; label: string; hash: string }>>
+
+  // Daily Pulse
+  getDailyPulseData: (section: string) => Promise<unknown>
 
   // Auto-Update
   checkForUpdate: () => Promise<void>

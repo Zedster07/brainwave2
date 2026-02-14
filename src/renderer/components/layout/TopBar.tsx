@@ -5,6 +5,7 @@ import { Activity, Zap, Loader2 } from 'lucide-react'
 // Map routes to page titles
 const PAGE_TITLES: Record<string, string> = {
   '/': 'Command Center',
+  '/daily-pulse': 'Daily Pulse',
   '/agents': 'Agent Monitor',
   '/plan': 'Plan Board',
   '/scheduler': 'Scheduler',

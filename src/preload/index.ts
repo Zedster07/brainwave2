@@ -217,6 +217,10 @@ const api: BrainwaveAPI = {
     return () => ipcRenderer.removeListener(IPC_CHANNELS.SCHEDULER_JOB_UPDATE, handler)
   },
 
+  // ─── Daily Pulse ───
+  getDailyPulseData: (section: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.DAILY_PULSE_GET, section),
+
   // ─── Chat Sessions ───
   createSession: (title?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.SESSION_CREATE, title) as Promise<ChatSession>,

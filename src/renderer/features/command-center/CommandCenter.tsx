@@ -294,7 +294,13 @@ export function CommandCenter() {
     <div className="flex h-full">
       {/* Session Sidebar */}
       {sidebarOpen && (
-        <div className="w-64 flex-shrink-0 border-r border-white/[0.06] flex flex-col bg-white/[0.01]">
+        <div style={{
+            // maxHeight:"90vh",
+            // minHeight:"90vh",
+            minWidth:"325px",
+            // position:"fixed",
+            // top:"130px"
+        }} className="w-64 flex-shrink-0 border-r border-white/[0.06] flex flex-col bg-white/[0.01]">
           {/* Sidebar Header */}
           <div className="p-3 flex items-center justify-between border-b border-white/[0.06]">
             <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Chats</span>

@@ -13,13 +13,14 @@ import { useUIStore } from '@renderer/stores/ui.store'
 
 const NAV_ROUTES = [
   '/',            // Ctrl+1 — Command Center
-  '/agents',      // Ctrl+2 — Agent Monitor
-  '/plan',        // Ctrl+3 — Plan Board
-  '/scheduler',   // Ctrl+4 — Scheduler
-  '/memory',      // Ctrl+5 — Memory Palace
-  '/graph',       // Ctrl+6 — Knowledge Graph
-  '/reflection',  // Ctrl+7 — Reflection
-  '/settings',    // Ctrl+8 — Settings
+  '/daily-pulse', // Ctrl+2 — Daily Pulse
+  '/agents',      // Ctrl+3 — Agent Monitor
+  '/plan',        // Ctrl+4 — Plan Board
+  '/scheduler',   // Ctrl+5 — Scheduler
+  '/memory',      // Ctrl+6 — Memory Palace
+  '/graph',       // Ctrl+7 — Knowledge Graph
+  '/reflection',  // Ctrl+8 — Reflection
+  '/settings',    // Ctrl+9 — Settings
 ]
 
 export function useKeyboardShortcuts(): void {

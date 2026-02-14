@@ -8,12 +8,14 @@ import { PlanBoard } from './features/plan-board/PlanBoard'
 import { Scheduler } from './features/scheduler/Scheduler'
 import { ReflectionJournal } from './features/reflection/ReflectionJournal'
 import { Settings } from './features/settings/Settings'
+import { DailyPulse } from './features/daily-pulse/DailyPulse'
 
 export default function App() {
   return (
     <AppShell>
       <Routes>
         <Route path="/" element={<CommandCenter />} />
+        <Route path="/daily-pulse" element={<DailyPulse />} />
         <Route path="/agents" element={<AgentMonitor />} />
         <Route path="/memory" element={<MemoryPalace />} />
         <Route path="/graph" element={<KnowledgeGraph />} />

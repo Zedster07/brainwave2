@@ -10,11 +10,13 @@ import {
   ChevronRight,
   Clock,
   GitBranch,
+  Sun,
 } from 'lucide-react'
 import { useUIStore } from '@renderer/stores/ui.store'
 
 const NAV_ITEMS = [
   { path: '/', label: 'Command Center', icon: Terminal, section: 'main' },
+  { path: '/daily-pulse', label: 'Daily Pulse', icon: Sun, section: 'main' },
   { path: '/agents', label: 'Agent Monitor', icon: Network, section: 'main' },
   { path: '/plan', label: 'Plan Board', icon: LayoutDashboard, section: 'main' },
   { path: '/scheduler', label: 'Scheduler', icon: Clock, section: 'main' },
