@@ -24,6 +24,7 @@ import { getProspectiveStore } from '../memory/prospective'
 import { ReflectionAgent } from './reflection'
 import { getSoftEngine } from '../rules'
 import { getPromptRegistry } from '../prompts'
+import { getMcpRegistry } from '../mcp'
 import type { ImageAttachment } from '@shared/types'
 
 // ─── Task Record (stored in DB) ────────────────────────────
@@ -100,6 +101,32 @@ export class Orchestrator extends BaseAgent {
   private activeTasks = new Map<string, TaskRecord>()
   private agentExecutor: AgentExecutorFn | null = null
 
+  /** Build a concise summary of connected MCP servers + local tools for prompt injection */
+  private getMcpSummary(): string {
+    try {
+      const registry = getMcpRegistry()
+      const statuses = registry.getStatuses()
+      const connected = statuses.filter((s) => s.state === 'connected')
+      const failed = statuses.filter((s) => s.state === 'error')
+      if (connected.length === 0 && failed.length === 0) return '\nMCP Servers: None configured.'
+      let summary = `\nMCP SERVERS (${connected.length} connected, ${failed.length} failed):`
+      for (const s of connected) {
+        summary += `\n- ${s.name} — CONNECTED (${s.toolCount} tools)`
+      }
+      for (const s of failed) {
+        summary += `\n- ${s.name} — FAILED: ${s.error ?? 'unknown error'}`
+      }
+      const disconnected = statuses.filter((s) => s.state === 'disconnected')
+      if (disconnected.length > 0) {
+        summary += `\n- ${disconnected.length} more server(s) configured but not connected`
+      }
+      summary += '\n\nLocal built-in tools: file_read, file_write, file_create, file_delete, file_move, directory_list, shell_execute, http_request, web_search, webpage_fetch, send_notification'
+      return summary
+    } catch {
+      return '\nMCP Servers: Unable to query status.'
+    }
+  }
+
   protected getSystemPrompt(_context: AgentContext): string {
     return `You are the Orchestrator — the central intelligence of the Brainwave system.
 
@@ -175,10 +202,13 @@ MANDATORY — CONTEXT-FIRST PROTOCOL (follow this BEFORE every task):
         ? `\n\nCONVERSATION HISTORY (this session so far):\n${conversationHistory.map((msg) => `${msg.role === 'user' ? 'User' : 'Brainwave'}: ${msg.content.slice(0, 300)}`).join('\n')}`
         : ''
 
+      const mcpSummary = this.getMcpSummary()
       const { parsed } = await this.thinkJSON<TriageResult>(
         `Classify this user prompt and decide the best processing lane.
 
 PROMPT: "${prompt}"${memoryBlock}${historyBlock}
+
+SYSTEM CAPABILITIES — AVAILABLE TOOLS:${mcpSummary}
 
 LANES:
 1. "conversational" — greetings, small talk, simple questions that need no tools/agents.
@@ -638,9 +668,12 @@ CRITICAL RULES:
 - Reference the conversation history naturally to maintain context
 - Keep responses focused and helpful
 - NEVER output tool calls, XML tags, JSON blocks, or code markers like <tool_call>, [TOOL_CALL], {"tool":...} etc. Just reply in plain natural language.
+- When asked about your capabilities, tools, or MCP servers, ONLY report what is listed in SYSTEM CAPABILITIES below. Do NOT guess or hallucinate additional servers/tools.
 ${task.images?.length ? '- The user has attached image(s). Describe and reference them naturally in your response.' : ''}
 
-${memoryContext}${peopleContext}${historyContext}`,
+${memoryContext}${peopleContext}${historyContext}
+
+SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
           user: task.prompt,
           temperature: 0.7,
           maxTokens: 1024,
