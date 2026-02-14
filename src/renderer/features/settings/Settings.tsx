@@ -962,6 +962,7 @@ function DailyPulseSettings() {
   const [userName, setUserName] = useSetting<string>('user_name', '')
   const [city, setCity] = useSetting<string>('daily_pulse_city', 'Algiers')
   const [interests, setInterests] = useSetting<string>('daily_pulse_interests', 'technology, AI, software development')
+  const [atlassianSite, setAtlassianSite] = useSetting<string>('daily_pulse_atlassian_site', '')
 
   // ── Atlassian MCP integration state ──
   const [atlassianStatus, setAtlassianStatus] = useState<'loading' | 'not-configured' | 'disconnected' | 'connecting' | 'connected' | 'error'>('loading')
@@ -1135,6 +1136,19 @@ function DailyPulseSettings() {
           Connect your Atlassian Cloud account to enable Jira &amp; Confluence in the Daily Pulse.
           Uses OAuth 2.1 — a browser window will open for authorization.
         </p>
+
+        <SettingRow
+          label="Atlassian Site URL"
+          description="Your Atlassian Cloud site (e.g. myteam.atlassian.net) — required for Jira queries"
+        >
+          <input
+            type="text"
+            value={atlassianSite ?? ''}
+            onChange={(e) => setAtlassianSite(e.target.value)}
+            placeholder="e.g. myteam.atlassian.net"
+            className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-accent/40"
+          />
+        </SettingRow>
 
         <div className="p-3 bg-white/[0.02] rounded-lg border border-white/[0.06]">
           <div className="flex items-center justify-between">

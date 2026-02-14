@@ -167,6 +167,13 @@ function parseNewsFromSearch(content: string, _topic: string): Array<Record<stri
 
 async function fetchJira(): Promise<unknown[]> {
   const registry = getMcpRegistry()
+  const db = getDatabase()
+
+  // Read user settings
+  const siteRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'daily_pulse_atlassian_site')
+  const nameRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'user_name')
+  const siteUrl = siteRow?.value?.trim() || ''
+  const userName = nameRow?.value?.trim() || ''
 
   // Look for Atlassian MCP tools (from atlassian/atlassian-mcp-server)
   // Tool names: searchJiraIssuesUsingJql, getJiraIssue, search (Rovo)
@@ -194,33 +201,72 @@ async function fetchJira(): Promise<unknown[]> {
     }]
   }
 
-  // Try JQL search first (more precise)
-  if (searchTool) {
+  // Try JQL search first (more precise) — requires cloudId (site URL)
+  if (searchTool && siteUrl) {
     try {
+      // Build JQL: prefer currentUser(), fallback to name-based assignee search
+      const assigneeClause = userName
+        ? `assignee = currentUser() OR assignee = "${userName}"`
+        : 'assignee = currentUser()'
+      const jql = `(${assigneeClause}) AND statusCategory != Done ORDER BY updated DESC`
+
+      console.log(`[DailyPulse] Jira JQL search — cloudId: "${siteUrl}", jql: "${jql}"`)
+
       const result = await registry.callTool(searchTool.key, {
-        jql: 'assignee = currentUser() AND status != Done ORDER BY updated DESC',
-        maxResults: 10,
+        cloudId: siteUrl,
+        jql,
+        maxResults: 15,
+        fields: ['summary', 'status', 'priority', 'issuetype', 'assignee', 'updated'],
       })
-      if (result.success) {
-        return parseJiraResults(result.content)
+
+      console.log(`[DailyPulse] Jira JQL result — success: ${result.success}, content length: ${result.content?.length ?? 0}`)
+      if (!result.success) {
+        console.warn('[DailyPulse] Jira JQL returned error:', result.content?.slice(0, 300))
+      }
+
+      if (result.success && result.content?.trim()) {
+        const parsed = parseJiraResults(result.content)
+        if (parsed.length > 0) return parsed
+        console.warn('[DailyPulse] Jira JQL returned success but parsed 0 items. Raw:', result.content.slice(0, 500))
       }
     } catch (err) {
       console.warn('[DailyPulse] Jira JQL search failed:', err)
     }
+  } else if (searchTool && !siteUrl) {
+    console.warn('[DailyPulse] JQL search skipped — no Atlassian Site URL configured in Settings → Daily Pulse')
   }
 
-  // Fallback to Rovo search
+  // Fallback to Rovo search (does NOT require cloudId)
   if (rovoSearch) {
     try {
-      const result = await registry.callTool(rovoSearch.key, {
-        query: 'my open issues assigned to me',
-      })
-      if (result.success) {
-        return parseJiraResults(result.content)
+      const queryParts = ['open Jira issues']
+      if (userName) queryParts.push(`assigned to ${userName}`)
+      else queryParts.push('assigned to me')
+      const query = queryParts.join(' ')
+
+      console.log(`[DailyPulse] Rovo search fallback — query: "${query}"`)
+      const result = await registry.callTool(rovoSearch.key, { query })
+
+      console.log(`[DailyPulse] Rovo search result — success: ${result.success}, content length: ${result.content?.length ?? 0}`)
+      if (result.success && result.content?.trim()) {
+        const parsed = parseJiraResults(result.content)
+        if (parsed.length > 0) return parsed
+        console.warn('[DailyPulse] Rovo search returned success but parsed 0 items. Raw:', result.content.slice(0, 500))
       }
-    } catch {
-      console.warn('[DailyPulse] Rovo search failed for Jira')
+    } catch (err) {
+      console.warn('[DailyPulse] Rovo search failed for Jira:', err)
     }
+  }
+
+  // Helpful message if no results
+  if (!siteUrl) {
+    return [{
+      key: 'SETUP',
+      summary: 'Set your Atlassian Site URL in Settings → Daily Pulse (e.g. myteam.atlassian.net)',
+      status: 'Info',
+      priority: 'medium',
+      type: 'jira',
+    }]
   }
 
   return []
@@ -230,15 +276,29 @@ function parseJiraResults(content: string): Array<Record<string, string>> {
   // Try to parse as JSON first
   try {
     const parsed = JSON.parse(content)
-    if (Array.isArray(parsed)) {
-      return parsed.map(issue => ({
-        key: issue.key || issue.id || 'N/A',
-        summary: issue.summary || issue.title || 'No summary',
-        status: issue.status || issue.state || 'Unknown',
-        priority: issue.priority || 'medium',
-        type: 'jira',
-        url: issue.url || issue.self || '',
-      }))
+
+    // Handle Atlassian MCP response shape: { issues: [...] } or direct array
+    const issues = Array.isArray(parsed)
+      ? parsed
+      : parsed?.issues ?? parsed?.results ?? parsed?.values ?? (parsed?.key ? [parsed] : [])
+
+    if (Array.isArray(issues) && issues.length > 0) {
+      return issues.map(issue => {
+        // Handle nested status/priority objects from Atlassian API
+        const status = typeof issue.status === 'object' ? (issue.status?.name || issue.status?.statusCategory?.name) : issue.status
+        const priority = typeof issue.priority === 'object' ? issue.priority?.name : issue.priority
+        const issueType = typeof issue.issuetype === 'object' ? issue.issuetype?.name : (issue.issuetype || issue.issueType)
+
+        return {
+          key: issue.key || issue.id || 'N/A',
+          summary: issue.summary || issue.title || issue.fields?.summary || 'No summary',
+          status: status || issue.fields?.status?.name || 'Unknown',
+          priority: priority || issue.fields?.priority?.name || 'medium',
+          type: issueType || 'jira',
+          url: issue.url || issue.self || '',
+          assignee: typeof issue.assignee === 'object' ? issue.assignee?.displayName : (issue.assignee || ''),
+        }
+      })
     }
   } catch {
     // Not JSON — try text parsing
