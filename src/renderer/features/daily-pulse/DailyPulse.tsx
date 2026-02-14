@@ -36,12 +36,16 @@ interface PulseCard {
 
 interface WeatherData {
   temp: string
+  feelsLike?: string
   condition: string
+  icon?: string
   high: string
   low: string
   city: string
   humidity?: string
   wind?: string
+  uv?: string
+  chanceOfRain?: string
 }
 
 interface EmailItem {
@@ -185,7 +189,7 @@ export function DailyPulse() {
   const statsLine = buildStatsLine(weather, emails, jira, confluence, reminders)
 
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="w-full">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
@@ -200,10 +204,10 @@ export function DailyPulse() {
         <button
           onClick={refreshAll}
           disabled={refreshing}
-          className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg
-            bg-white/[0.06] hover:bg-white/[0.10] text-gray-300 hover:text-white
-            border border-white/[0.06] transition-all duration-200
-            disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-xl
+            bg-white/[0.04] hover:bg-white/[0.08] text-gray-300 hover:text-white
+            border border-white/[0.06] hover:border-white/[0.12] transition-all duration-300
+            disabled:opacity-50 disabled:cursor-not-allowed backdrop-blur-sm"
         >
           <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
           Refresh
@@ -212,7 +216,7 @@ export function DailyPulse() {
 
       {/* Quick Stats Banner */}
       {statsLine && (
-        <div className="glass-card px-5 py-3 mb-6 flex items-center gap-3">
+        <div className="glass-card px-5 py-3.5 mb-6 flex items-center gap-3">
           <Activity className="w-4 h-4 text-accent flex-shrink-0" />
           <span className="text-sm text-gray-300">{statsLine}</span>
           {lastRefreshed && (
@@ -224,7 +228,7 @@ export function DailyPulse() {
       )}
 
       {/* Card Grid — 2 columns on large, 1 on small */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Weather — full width top */}
         <div className="lg:col-span-2">
           <WeatherCard state={weather} onRetry={() => fetchSection('weather')} />
@@ -384,7 +388,7 @@ function WeatherCard({ state, onRetry }: {
 }) {
   if (state.status === 'loading') {
     return (
-      <div className="glass-card p-6 flex items-center justify-center gap-3 text-gray-400">
+      <div className="glass-elevated p-8 flex items-center justify-center gap-3 text-gray-400">
         <Loader2 className="w-5 h-5 animate-spin" />
         <span className="text-sm">Loading weather...</span>
       </div>
@@ -393,12 +397,12 @@ function WeatherCard({ state, onRetry }: {
 
   if (state.status === 'error') {
     return (
-      <div className="glass-card p-6 flex items-center justify-between">
+      <div className="glass-elevated p-8 flex items-center justify-between">
         <div className="flex items-center gap-3 text-red-400">
           <AlertCircle className="w-5 h-5" />
           <span className="text-sm">{state.error || 'Failed to load weather'}</span>
         </div>
-        <button onClick={onRetry} className="text-xs text-accent hover:text-accent/80">Retry</button>
+        <button onClick={onRetry} className="text-xs text-accent hover:text-accent/80 px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition-all">Retry</button>
       </div>
     )
   }
@@ -406,19 +410,30 @@ function WeatherCard({ state, onRetry }: {
   if (state.status === 'loaded' && state.data) {
     const w = state.data
     return (
-      <div className="glass-card p-6 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <CloudSun className="w-10 h-10 text-amber-400" />
-          <div>
-            <div className="flex items-baseline gap-2">
-              <span className="text-3xl font-bold text-white">{w.temp}</span>
-              <span className="text-lg text-gray-400">{w.condition}</span>
+      <div className="glass-elevated p-8">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-5">
+            {w.icon ? (
+              <img src={w.icon} alt={w.condition} className="w-16 h-16 drop-shadow-lg" />
+            ) : (
+              <CloudSun className="w-12 h-12 text-amber-400" />
+            )}
+            <div>
+              <div className="flex items-baseline gap-3">
+                <span className="text-4xl font-bold text-white tracking-tight">{w.temp}</span>
+                <span className="text-lg text-gray-400 font-medium">{w.condition}</span>
+              </div>
+              <p className="text-sm text-gray-500 mt-1">
+                {w.city} • H: {w.high} L: {w.low}
+                {w.feelsLike ? ` • Feels like ${w.feelsLike}` : ''}
+              </p>
             </div>
-            <p className="text-sm text-gray-400 mt-0.5">
-              {w.city} • H: {w.high} L: {w.low}
-              {w.humidity ? ` • Humidity: ${w.humidity}` : ''}
-              {w.wind ? ` • Wind: ${w.wind}` : ''}
-            </p>
+          </div>
+          <div className="flex flex-col items-end gap-1.5 text-sm text-gray-500">
+            {w.humidity && <span className="flex items-center gap-1.5">💧 {w.humidity}</span>}
+            {w.wind && <span className="flex items-center gap-1.5">💨 {w.wind}</span>}
+            {w.chanceOfRain && <span className="flex items-center gap-1.5">🌧️ {w.chanceOfRain}</span>}
+            {w.uv && <span className="flex items-center gap-1.5">☀️ UV {w.uv}</span>}
           </div>
         </div>
       </div>
@@ -439,19 +454,21 @@ function SectionCard({ title, icon: Icon, colorClass, status, error, onRetry, ch
   count?: number
 }) {
   return (
-    <div className="glass-card p-5">
+    <div className="glass-card p-6 transition-all duration-300">
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-2">
-          <Icon className={`w-4 h-4 ${colorClass}`} />
+        <div className="flex items-center gap-2.5">
+          <div className={`p-1.5 rounded-lg bg-white/[0.04]`}>
+            <Icon className={`w-4 h-4 ${colorClass}`} />
+          </div>
           <h3 className="text-sm font-semibold text-white">{title}</h3>
           {status === 'loaded' && count !== undefined && count > 0 && (
-            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-white/[0.06] text-gray-400">
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-white/[0.06] text-gray-400 border border-white/[0.04]">
               {count}
             </span>
           )}
         </div>
         {status === 'error' && (
-          <button onClick={onRetry} className="text-xs text-accent hover:text-accent/80">Retry</button>
+          <button onClick={onRetry} className="text-xs text-accent hover:text-accent/80 px-3 py-1 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition-all">Retry</button>
         )}
       </div>
 
@@ -476,7 +493,7 @@ function SectionCard({ title, icon: Icon, colorClass, status, error, onRetry, ch
 
 function EmptyState({ text }: { text: string }) {
   return (
-    <div className="py-6 text-center text-gray-500 text-sm">{text}</div>
+    <div className="py-8 text-center text-gray-600 text-sm">{text}</div>
   )
 }
 

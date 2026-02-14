@@ -2,12 +2,13 @@
  * Daily Pulse Service — Backend data fetching for the morning briefing
  *
  * Each section fetches data from:
- * - Weather: brave_web_search MCP
+ * - Weather: WeatherAPI.com (direct HTTP)
  * - Emails: Gmail API (placeholder — requires OAuth setup)
  * - News: brave_web_search MCP with user interests
  * - Jira: Jira MCP (already connected)
  * - Reminders: Internal memory/prospective database
  */
+import { net } from 'electron'
 import { getMcpRegistry } from '../mcp'
 import { getDatabase } from '../db/database'
 
@@ -32,50 +33,48 @@ export async function fetchDailyPulseSection(section: PulseSection): Promise<unk
   }
 }
 
-// ─── Weather ────────────────────────────────────────────────
+// ─── Weather (WeatherAPI.com) ───────────────────────────────
+
+const WEATHER_API_KEY = 'aa3be1c721a441bca30180104240812'
 
 async function fetchWeather(): Promise<unknown> {
-  const db = getDatabase()
-  const city = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'daily_pulse_city')
-  const cityName = city?.value || 'Algiers'
+  const cityName = getSettingValue('daily_pulse_city') || 'Algiers'
 
-  const registry = getMcpRegistry()
-  const braveSearch = registry.getAllTools().find(t => t.name === 'brave_web_search')
+  const url = `https://api.weatherapi.com/v1/forecast.json?key=${WEATHER_API_KEY}&q=${encodeURIComponent(cityName)}&days=1&aqi=no&alerts=no`
 
-  if (!braveSearch) {
-    throw new Error('Brave Search MCP not connected — cannot fetch weather')
-  }
+  console.log(`[DailyPulse] Weather — fetching for city: "${cityName}"`)
 
-  const result = await registry.callTool(braveSearch.key, {
-    query: `weather today ${cityName} temperature forecast`,
-    count: 3,
+  const json = await new Promise<string>((resolve, reject) => {
+    const request = net.request(url)
+    let body = ''
+    request.on('response', (response) => {
+      response.on('data', (chunk) => { body += chunk.toString() })
+      response.on('end', () => {
+        if (response.statusCode === 200) resolve(body)
+        else reject(new Error(`WeatherAPI responded ${response.statusCode}: ${body.slice(0, 200)}`))
+      })
+    })
+    request.on('error', reject)
+    request.end()
   })
 
-  if (!result.success) {
-    throw new Error('Failed to fetch weather data')
-  }
-
-  // Parse the search results to extract weather info
-  return parseWeatherFromSearch(result.content, cityName)
-}
-
-function parseWeatherFromSearch(content: string, city: string): Record<string, string> {
-  // Extract temperature patterns from search results
-  const tempMatch = content.match(/(\d{1,2})\s*°\s*[CF]/) || content.match(/(\d{1,2})\s*degrees/)
-  const conditionMatch = content.match(/(sunny|cloudy|rainy|partly cloudy|overcast|clear|fog|snow|storm|windy|humid|thunderstorm)/i)
-  const highMatch = content.match(/high[:\s]+(\d{1,2})\s*°/i) || content.match(/max[:\s]+(\d{1,2})/i)
-  const lowMatch = content.match(/low[:\s]+(\d{1,2})\s*°/i) || content.match(/min[:\s]+(\d{1,2})/i)
-  const humidityMatch = content.match(/humidity[:\s]+(\d{1,3})\s*%/i)
-  const windMatch = content.match(/wind[:\s]+(\d{1,3})\s*(km\/h|mph|m\/s)/i)
+  const data = JSON.parse(json)
+  const current = data.current
+  const forecast = data.forecast?.forecastday?.[0]?.day
+  const location = data.location
 
   return {
-    temp: tempMatch ? `${tempMatch[1]}°C` : 'N/A',
-    condition: conditionMatch?.[1] ?? 'Unknown',
-    high: highMatch ? `${highMatch[1]}°` : '--',
-    low: lowMatch ? `${lowMatch[1]}°` : '--',
-    city,
-    humidity: humidityMatch ? `${humidityMatch[1]}%` : undefined,
-    wind: windMatch ? `${windMatch[1]} ${windMatch[2]}` : undefined,
+    temp: `${Math.round(current.temp_c)}°C`,
+    feelsLike: `${Math.round(current.feelslike_c)}°C`,
+    condition: current.condition?.text || 'Unknown',
+    icon: current.condition?.icon ? `https:${current.condition.icon}` : '',
+    high: forecast ? `${Math.round(forecast.maxtemp_c)}°` : '--',
+    low: forecast ? `${Math.round(forecast.mintemp_c)}°` : '--',
+    city: location?.name || cityName,
+    humidity: `${current.humidity}%`,
+    wind: `${Math.round(current.wind_kph)} km/h`,
+    uv: current.uv != null ? String(current.uv) : undefined,
+    chanceOfRain: forecast?.daily_chance_of_rain != null ? `${forecast.daily_chance_of_rain}%` : undefined,
   }
 }
 
@@ -167,187 +166,143 @@ function parseNewsFromSearch(content: string, _topic: string): Array<Record<stri
 
 // ─── Jira / Confluence ──────────────────────────────────────
 
+/**
+ * Reads the Atlassian Cloud ID (UUID) from settings.
+ * The Atlassian MCP tools require the cloudId — e.g. 2632a86a-c338-4605-ada6-784c713c7d85
+ */
+function getSettingValue(key: string): string {
+  const db = getDatabase()
+  const row = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, key)
+  if (!row?.value) return ''
+  try { return String(JSON.parse(row.value)).trim() } catch { return row.value.trim() }
+}
+
+function getAtlassianCloudId(): string {
+  return getSettingValue('daily_pulse_atlassian_site')
+}
+
 async function fetchJira(): Promise<unknown[]> {
   const registry = getMcpRegistry()
-  const db = getDatabase()
 
-  // Read user settings
-  const siteRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'daily_pulse_atlassian_site')
-  const nameRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'user_name')
-  const siteUrl = siteRow?.value?.trim() || ''
-  const userName = nameRow?.value?.trim() || ''
+  const cloudId = getAtlassianCloudId()
+  const userName = getSettingValue('user_name')
 
-  // Look for Atlassian MCP tools (from atlassian/atlassian-mcp-server)
-  // Tool names: searchJiraIssuesUsingJql, getJiraIssue, search (Rovo)
+  // Find JQL search tool
   const jqlSearch = registry.getAllTools().find(t =>
     t.name === 'searchJiraIssuesUsingJql' || t.name === 'mcp_com_atlassian_searchJiraIssuesUsingJql'
   )
-  const rovoSearch = registry.getAllTools().find(t =>
-    t.name === 'search' || t.name === 'mcp_com_atlassian_search'
-  )
 
-  // Also check for generic Jira tools from other MCP providers
-  const genericJiraSearch = !jqlSearch ? registry.getAllTools().find(t =>
-    t.name.includes('search_issues') || t.name.includes('jira_search')
-  ) : null
-
-  const searchTool = jqlSearch || genericJiraSearch
-
-  if (!searchTool && !rovoSearch) {
+  if (!jqlSearch) {
     return [{
       key: 'INFO',
       summary: 'Atlassian not connected — go to Settings → Daily Pulse to connect',
       status: 'Info',
-      priority: 'medium',
+      priority: 'Medium',
       type: 'jira',
     }]
   }
 
-  // Try JQL search first (more precise) — requires cloudId (site URL)
-  if (searchTool && siteUrl) {
-    try {
-      // Build JQL: prefer currentUser(), fallback to name-based assignee search
-      const assigneeClause = userName
-        ? `assignee = currentUser() OR assignee = "${userName}"`
-        : 'assignee = currentUser()'
-      const jql = `(${assigneeClause}) AND statusCategory != Done ORDER BY updated DESC`
-
-      console.log(`[DailyPulse] Jira JQL search — cloudId: "${siteUrl}", jql: "${jql}"`)
-
-      const result = await registry.callTool(searchTool.key, {
-        cloudId: siteUrl,
-        jql,
-        maxResults: 15,
-        fields: ['summary', 'status', 'priority', 'issuetype', 'assignee', 'updated'],
-      })
-
-      console.log(`[DailyPulse] Jira JQL result — success: ${result.success}, content length: ${result.content?.length ?? 0}`)
-      if (!result.success) {
-        console.warn('[DailyPulse] Jira JQL returned error:', result.content?.slice(0, 300))
-      }
-
-      if (result.success && result.content?.trim()) {
-        const parsed = parseJiraResults(result.content)
-        if (parsed.length > 0) return parsed
-        console.warn('[DailyPulse] Jira JQL returned success but parsed 0 items. Raw:', result.content.slice(0, 500))
-      }
-    } catch (err) {
-      console.warn('[DailyPulse] Jira JQL search failed:', err)
-    }
-  } else if (searchTool && !siteUrl) {
-    console.warn('[DailyPulse] JQL search skipped — no Atlassian Site URL configured in Settings → Daily Pulse')
-  }
-
-  // Fallback to Rovo search (does NOT require cloudId)
-  if (rovoSearch) {
-    try {
-      const queryParts = ['open Jira issues']
-      if (userName) queryParts.push(`assigned to ${userName}`)
-      else queryParts.push('assigned to me')
-      const query = queryParts.join(' ')
-
-      console.log(`[DailyPulse] Rovo search fallback — query: "${query}"`)
-      const result = await registry.callTool(rovoSearch.key, { query })
-
-      console.log(`[DailyPulse] Rovo search result — success: ${result.success}, content length: ${result.content?.length ?? 0}`)
-      if (result.success && result.content?.trim()) {
-        const parsed = parseJiraResults(result.content)
-        if (parsed.length > 0) return parsed
-        console.warn('[DailyPulse] Rovo search returned success but parsed 0 items. Raw:', result.content.slice(0, 500))
-      }
-    } catch (err) {
-      console.warn('[DailyPulse] Rovo search failed for Jira:', err)
-    }
-  }
-
-  // Helpful message if no results
-  if (!siteUrl) {
+  if (!cloudId) {
     return [{
       key: 'SETUP',
-      summary: 'Set your Atlassian Site URL in Settings → Daily Pulse (e.g. myteam.atlassian.net)',
+      summary: 'Set your Atlassian Cloud ID in Settings → Daily Pulse to see Jira tickets',
       status: 'Info',
-      priority: 'medium',
+      priority: 'Medium',
       type: 'jira',
     }]
+  }
+
+  try {
+    const assigneeClause = userName
+      ? `assignee = currentUser() OR assignee = "${userName}"`
+      : 'assignee = currentUser()'
+    const jql = `(${assigneeClause}) AND statusCategory != Done ORDER BY updated DESC`
+
+    console.log(`[DailyPulse] Jira JQL — cloudId: "${cloudId}", jql: "${jql}"`)
+
+    const result = await registry.callTool(jqlSearch.key, {
+      cloudId,
+      jql,
+      maxResults: 15,
+      fields: ['summary', 'status', 'priority', 'issuetype', 'assignee', 'updated'],
+    })
+
+    console.log(`[DailyPulse] Jira JQL result — success: ${result.success}, content length: ${result.content?.length ?? 0}`)
+
+    if (result.success && result.content?.trim()) {
+      const parsed = parseJiraResults(result.content)
+      if (parsed.length > 0) return parsed
+      console.warn('[DailyPulse] Jira parsed 0 items. Raw (first 800):', result.content.slice(0, 800))
+    } else if (!result.success) {
+      console.warn('[DailyPulse] Jira JQL error:', result.content?.slice(0, 400))
+    }
+  } catch (err) {
+    console.warn('[DailyPulse] Jira JQL search failed:', err)
   }
 
   return []
 }
 
-function isConfluenceAri(id: string): boolean {
-  return typeof id === 'string' && id.includes('confluence')
-}
-
-function isJiraAri(id: string): boolean {
-  return typeof id === 'string' && id.includes('jira')
-}
-
+/**
+ * Parse Jira JQL response from Atlassian MCP.
+ * Actual shape: { issues: { totalCount, nodes: [ { key, fields: { summary, status, ... }, webUrl } ] } }
+ */
 function parseJiraResults(content: string): Array<Record<string, string>> {
-  // Try to parse as JSON first
   try {
     const parsed = JSON.parse(content)
 
-    // Handle Atlassian MCP response shape: { issues: [...] } or direct array
-    const issues = Array.isArray(parsed)
-      ? parsed
-      : parsed?.issues ?? parsed?.results ?? parsed?.values ?? (parsed?.key ? [parsed] : [])
+    // The Atlassian MCP returns { issues: { totalCount, nodes: [...] } }
+    const nodes = parsed?.issues?.nodes
+      ?? (Array.isArray(parsed?.issues) ? parsed.issues : null)
+      ?? (Array.isArray(parsed) ? parsed : null)
+      ?? []
 
-    if (Array.isArray(issues) && issues.length > 0) {
-      return issues
-        // Filter out Confluence items from Rovo mixed results
-        .filter(issue => {
-          const id = issue.id || issue.key || ''
-          // Exclude if it's a Confluence ARI
-          if (isConfluenceAri(id)) return false
-          // Exclude if it has page-like properties but no Jira key (e.g. PROJ-123)
-          if (id.startsWith('ari:') && !isJiraAri(id)) return false
-          return true
-        })
-        .map(issue => {
-          // Handle nested status/priority objects from Atlassian API
-          const status = typeof issue.status === 'object' ? (issue.status?.name || issue.status?.statusCategory?.name) : issue.status
-          const priority = typeof issue.priority === 'object' ? issue.priority?.name : issue.priority
-          const issueType = typeof issue.issuetype === 'object' ? issue.issuetype?.name : (issue.issuetype || issue.issueType)
+    if (Array.isArray(nodes) && nodes.length > 0) {
+      return nodes.map((issue: Record<string, any>) => {
+        const f = issue.fields || {}
 
-          // Extract a clean key — prefer PROJ-123 format, strip ARIs
-          let key = issue.key || ''
-          if (!key || key.startsWith('ari:')) {
-            // Try to extract from id or other fields
-            const ariId = issue.id || ''
-            const jiraKeyMatch = ariId.match(/([A-Z]+-\d+)/)
-            key = jiraKeyMatch?.[1] || issue.key || issue.id || 'N/A'
-          }
+        const statusName = typeof f.status === 'object'
+          ? (f.status?.statusCategory?.name || f.status?.name)
+          : (f.status || issue.status || 'Unknown')
 
-          return {
-            key,
-            summary: issue.summary || issue.title || issue.fields?.summary || 'No summary',
-            status: status || issue.fields?.status?.name || 'Unknown',
-            priority: priority || issue.fields?.priority?.name || 'medium',
-            type: issueType || 'jira',
-            url: issue.url || issue.self || '',
-            assignee: typeof issue.assignee === 'object' ? issue.assignee?.displayName : (issue.assignee || ''),
-          }
-        })
+        const priorityName = typeof f.priority === 'object'
+          ? f.priority?.name
+          : (f.priority || issue.priority || 'Medium')
+
+        const issueTypeName = typeof f.issuetype === 'object'
+          ? f.issuetype?.name
+          : (f.issuetype || issue.issuetype || '')
+
+        const assigneeName = typeof f.assignee === 'object'
+          ? f.assignee?.displayName
+          : (f.assignee || issue.assignee || '')
+
+        return {
+          key: issue.key || 'N/A',
+          summary: f.summary || issue.summary || issue.title || 'No summary',
+          status: statusName,
+          priority: priorityName,
+          type: issueTypeName || 'jira',
+          url: issue.webUrl || issue.url || issue.self || '',
+          assignee: assigneeName,
+        }
+      })
     }
-  } catch {
-    // Not JSON — try text parsing
+  } catch (err) {
+    console.warn('[DailyPulse] Failed to parse Jira JSON:', err)
   }
 
   // Text-based parsing fallback
   const items: Array<Record<string, string>> = []
   const lines = content.split('\n').filter(l => l.trim())
-
-  for (const line of lines.slice(0, 10)) {
-    // Skip Confluence ARI lines
-    if (line.includes('ari:cloud:confluence:')) continue
-
+  for (const line of lines.slice(0, 15)) {
     const keyMatch = line.match(/([A-Z]+-\d+)/)
     if (keyMatch) {
       items.push({
         key: keyMatch[1],
         summary: line.replace(keyMatch[0], '').replace(/[-:]\s*/, '').trim().slice(0, 100) || 'No summary',
         status: 'To Do',
-        priority: 'medium',
+        priority: 'Medium',
         type: 'jira',
       })
     }
@@ -360,11 +315,8 @@ function parseJiraResults(content: string): Array<Record<string, string>> {
 
 async function fetchConfluence(): Promise<unknown[]> {
   const registry = getMcpRegistry()
-  const db = getDatabase()
 
   const cloudId = getAtlassianCloudId()
-  const nameRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'user_name')
-  const userName = nameRow?.value?.trim() || ''
 
   // Find Confluence CQL search tool
   const cqlSearch = registry.getAllTools().find(t =>
@@ -394,10 +346,7 @@ async function fetchConfluence(): Promise<unknown[]> {
   }
 
   try {
-    const contributorClause = userName
-      ? ` AND contributor = "${userName}"`
-      : ''
-    const cql = `type = page${contributorClause} ORDER BY lastModified DESC`
+    const cql = `type = page ORDER BY lastModified DESC`
 
     console.log(`[DailyPulse] Confluence CQL — cloudId: "${cloudId}", cql: "${cql}"`)
 
