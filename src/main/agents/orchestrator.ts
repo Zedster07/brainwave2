@@ -637,6 +637,7 @@ CRITICAL RULES:
 - Be warm, concise, and genuine — like a thoughtful friend
 - Reference the conversation history naturally to maintain context
 - Keep responses focused and helpful
+- NEVER output tool calls, XML tags, JSON blocks, or code markers like <tool_call>, [TOOL_CALL], {"tool":...} etc. Just reply in plain natural language.
 ${task.images?.length ? '- The user has attached image(s). Describe and reference them naturally in your response.' : ''}
 
 ${memoryContext}${peopleContext}${historyContext}`,
@@ -651,6 +652,9 @@ ${memoryContext}${peopleContext}${historyContext}`,
       }
     }
 
+    // Strip any tool call artifacts the LLM may have emitted
+    reply = this.sanitizeConversationalReply(reply)
+
     task.status = 'completed'
     task.result = reply
     task.completedAt = Date.now()
@@ -662,6 +666,23 @@ ${memoryContext}${peopleContext}${historyContext}`,
     )
 
     this.bus.emitEvent('task:completed', { taskId: task.id, result: reply })
+  }
+
+  /**
+   * Strip tool call artifacts that the LLM may emit in conversational replies.
+   * The conversational lane doesn't execute tools — triage handles memory/facts separately.
+   */
+  private sanitizeConversationalReply(text: string): string {
+    let cleaned = text
+    // Remove <tool_call>...</tool_call> and <tool-call>...</tool-call> blocks (with any whitespace)
+    cleaned = cleaned.replace(/<\/?tool[-_]?call>\s*/gi, '')
+    // Remove [TOOL_CALL]...JSON...[/TOOL_CALL] or standalone [TOOL_CALL]
+    cleaned = cleaned.replace(/\[\/?\s*TOOL[-_]?CALL\s*\]\s*/gi, '')
+    // Remove standalone JSON tool objects: { "tool": "...", ... }
+    cleaned = cleaned.replace(/\{\s*"tool"\s*:\s*"[^"]*"[\s\S]*?\}\s*/g, '')
+    // Collapse multiple newlines left by removals
+    cleaned = cleaned.replace(/\n{3,}/g, '\n\n')
+    return cleaned.trim()
   }
 
   /**
