@@ -1,13 +1,14 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2, Globe, ArrowRightLeft, FilePlus2, FolderTree, RotateCcw } from 'lucide-react'
+import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2, Globe, ArrowRightLeft, FilePlus2, FolderTree, RotateCcw, Sun } from 'lucide-react'
 import { ModelSelector } from '../../components/ModelSelector'
 import type { PluginInfoData, McpServerConfigInfo, McpServerStatusInfo } from '@shared/types'
 
-type SettingsTab = 'general' | 'models' | 'rules' | 'storage' | 'plugins' | 'tools'
+type SettingsTab = 'general' | 'models' | 'rules' | 'storage' | 'plugins' | 'tools' | 'daily-pulse'
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Key }[] = [
   { id: 'general', label: 'General', icon: SettingsIcon },
   { id: 'models', label: 'AI Models', icon: Cpu },
+  { id: 'daily-pulse', label: 'Daily Pulse', icon: Sun },
   { id: 'rules', label: 'Rules Engine', icon: Shield },
   { id: 'storage', label: 'Storage', icon: Database },
   { id: 'plugins', label: 'Plugins', icon: Plug },
@@ -51,6 +52,7 @@ export function Settings() {
       <div className="glass-card p-6">
         {activeTab === 'general' && <GeneralSettings />}
         {activeTab === 'models' && <ModelSettings />}
+        {activeTab === 'daily-pulse' && <DailyPulseSettings />}
         {activeTab === 'rules' && <RulesSettings />}
         {activeTab === 'storage' && <StorageSettings />}
         {activeTab === 'plugins' && <PluginSettings />}
@@ -949,6 +951,73 @@ function StorageSettings() {
           {exportStatus && <span className="text-[10px] text-accent">{exportStatus}</span>}
           {importStatus && <span className="text-[10px] text-accent">{importStatus}</span>}
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Daily Pulse Settings ───
+
+function DailyPulseSettings() {
+  const [userName, setUserName] = useSetting<string>('user_name', '')
+  const [city, setCity] = useSetting<string>('daily_pulse_city', 'Algiers')
+  const [interests, setInterests] = useSetting<string>('daily_pulse_interests', 'technology, AI, software development')
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h3 className="text-sm font-semibold text-white mb-1">Daily Pulse Configuration</h3>
+        <p className="text-xs text-gray-500">Customize your morning briefing dashboard.</p>
+      </div>
+
+      <SettingRow
+        label="Your Name"
+        description="Used in the greeting — e.g. 'Good morning, Dada'"
+      >
+        <input
+          type="text"
+          value={userName ?? ''}
+          onChange={(e) => setUserName(e.target.value)}
+          placeholder="Enter your name"
+          className="w-48 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-accent/40"
+        />
+      </SettingRow>
+
+      <SettingRow
+        label="Weather City"
+        description="City shown in the weather card"
+      >
+        <input
+          type="text"
+          value={city ?? 'Algiers'}
+          onChange={(e) => setCity(e.target.value)}
+          placeholder="e.g. Algiers"
+          className="w-48 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-accent/40"
+        />
+      </SettingRow>
+
+      <SettingRow
+        label="News Interests"
+        description="Comma-separated topics for the news section"
+      >
+        <input
+          type="text"
+          value={interests ?? ''}
+          onChange={(e) => setInterests(e.target.value)}
+          placeholder="e.g. AI, gaming, finance"
+          className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-accent/40"
+        />
+      </SettingRow>
+
+      <div className="border-t border-white/[0.04] pt-4">
+        <p className="text-xs text-gray-500">
+          <strong className="text-gray-400">Brave Search MCP</strong> is required for Weather and News sections.
+          Connect it in the <span className="text-accent">Tools</span> tab.
+        </p>
+        <p className="text-xs text-gray-500 mt-2">
+          <strong className="text-gray-400">Jira MCP</strong> is needed for the Jira card.
+          Gmail integration is planned for a future update.
+        </p>
       </div>
     </div>
   )
