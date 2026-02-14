@@ -1336,49 +1336,86 @@ Rules:
     // ── Guard 2: Direct-lane tool redirect ──
     if (triage.lane !== 'direct') return
 
-    // ── Primary Defense: Capability-based routing via toolingNeeds ──
-    // The triage LLM understands intent perfectly — it flags what the task NEEDS.
-    // We just enforce that only executor has tools.
+    // ── Capability-based routing via toolingNeeds ──
+    // Multiple agents now have tool access (executor=full, researcher=read,
+    // coder=readWrite, reviewer=read). Only override if the assigned agent
+    // genuinely can't handle the required tools.
     const needs = triage.toolingNeeds
     if (needs) {
-      const needsTools = needs.webSearch || needs.fileSystem || needs.shellCommand || needs.httpRequest
-      if (needsTools && triage.agent !== 'executor') {
-        const flags = Object.entries(needs).filter(([, v]) => v).map(([k]) => k).join(', ')
-        console.log(`[Orchestrator] \u{1F6E1} Tooling guard: task needs [${flags}] — redirecting ${triage.agent} → executor`)
+      const needsShell = needs.shellCommand
+      const needsFileWrite = needs.fileSystem && /\b(write|create|delete|move|rename)\b/i.test(prompt)
+      const needsWebSearch = needs.webSearch
+      const needsFileRead = needs.fileSystem && !needsFileWrite
+      const needsHttp = needs.httpRequest
+
+      // Shell commands → only executor has shell_execute
+      if (needsShell && triage.agent !== 'executor') {
+        console.log(`[Orchestrator] \u{1F6E1} Tooling guard: task needs shell — redirecting ${triage.agent} → executor`)
         triage.agent = 'executor'
-        triage.reasoning += ` [GUARD: task requires tooling (${flags}) — only executor has tools]`
-        return // primary defense handled it, skip fallback
+        triage.reasoning += ` [GUARD: task requires shell access — only executor has shell_execute]`
+        return
+      }
+
+      // File write/create/delete + not coder or executor → redirect
+      if (needsFileWrite && triage.agent && !['executor', 'coder'].includes(triage.agent)) {
+        console.log(`[Orchestrator] \u{1F6E1} Tooling guard: task needs file write — redirecting ${triage.agent} → coder`)
+        triage.agent = 'coder'
+        triage.reasoning += ` [GUARD: task requires file write — redirected to coder]`
+        return
+      }
+
+      // Web search — researcher, executor, coder, reviewer, analyst, critic can all do this
+      // Only redirect agents with tier=none (writer, planner, reflection)
+      if (needsWebSearch && triage.agent && ['writer', 'planner', 'reflection'].includes(triage.agent)) {
+        console.log(`[Orchestrator] \u{1F6E1} Tooling guard: task needs web search — redirecting ${triage.agent} → researcher`)
+        triage.agent = 'researcher'
+        triage.reasoning += ` [GUARD: task requires web search — redirected to researcher]`
+        return
+      }
+
+      // File read with a no-tools agent → redirect to researcher or coder
+      if (needsFileRead && triage.agent && ['writer', 'planner', 'reflection'].includes(triage.agent)) {
+        console.log(`[Orchestrator] \u{1F6E1} Tooling guard: task needs file read — redirecting ${triage.agent} → researcher`)
+        triage.agent = 'researcher'
+        triage.reasoning += ` [GUARD: task requires file read — redirected to researcher]`
+        return
       }
     }
 
-    // ── Fallback: Regex safety net (belt + suspenders) ──
+    // ── Fallback: Regex safety net ──
     // Catches cases where the LLM forgot to set toolingNeeds correctly.
     const WEB_FALLBACK = [
       /search\s+(the\s+)?(web|internet|online)/i,
       /\bgoogle\b/i,
       /\bweb\s*search\b/i,
     ]
-    const FILE_FALLBACK = [
-      /\b(read|write|create|delete|move|rename|copy)\s+(a\s+|the\s+)?(file|directory|folder)\b/i,
+    const SHELL_FALLBACK = [
       /\b(run|execute)\s+(a\s+|the\s+)?(command|script|shell)\b/i,
       /\b(git|npm|pip|python|node|curl|wget|powershell|bash)\s/i,
     ]
 
     const needsWebFallback = WEB_FALLBACK.some(p => p.test(prompt))
-    const needsFileFallback = FILE_FALLBACK.some(p => p.test(prompt))
+    const needsShellFallback = SHELL_FALLBACK.some(p => p.test(prompt))
 
-    if ((needsWebFallback || needsFileFallback) && triage.agent !== 'executor') {
-      const reason = needsWebFallback ? 'web search (regex fallback)' : 'file/shell (regex fallback)'
-      console.log(`[Orchestrator] \u{1F6E1} Fallback guard: ${reason} — redirecting ${triage.agent} → executor`)
+    // Shell → executor only
+    if (needsShellFallback && triage.agent !== 'executor') {
+      console.log(`[Orchestrator] \u{1F6E1} Fallback guard: shell (regex fallback) — redirecting ${triage.agent} → executor`)
       triage.agent = 'executor'
-      triage.reasoning += ` [GUARD FALLBACK: ${reason}]`
+      triage.reasoning += ` [GUARD FALLBACK: shell command detected]`
+    }
+
+    // Web search → researcher can handle it now (no need to redirect to executor)
+    if (needsWebFallback && triage.agent && ['writer', 'planner', 'reflection'].includes(triage.agent)) {
+      console.log(`[Orchestrator] \u{1F6E1} Fallback guard: web search (regex fallback) — redirecting ${triage.agent} → researcher`)
+      triage.agent = 'researcher'
+      triage.reasoning += ` [GUARD FALLBACK: web search — redirected to researcher]`
     }
   }
 
   /**
    * Post-process planner output — fix misrouted subtasks in the DAG.
-   * The planner LLM might assign web search tasks to researcher,
-   * but researcher has no tools. This catches and fixes it.
+   * Now that multiple agents have tools, only redirect when the assigned
+   * agent genuinely can't handle the required capability.
    */
   private applyPlanGuards(plan: TaskPlan): void {
     let modified = false
@@ -1386,31 +1423,52 @@ Rules:
     for (const st of plan.subTasks) {
       const lower = st.description.toLowerCase()
 
-      // Web search / live data subtasks → executor (researcher has no tools)
+      // Web search / live data subtasks — researcher NOW has web_search tools,
+      // so only redirect from agents with NO tool access (writer, planner, reflection)
       const needsWebSearch =
         /\b(search\s+(the\s+)?(web|internet|online)|web.?search|find\s+online|browse|scrape)\b/.test(lower)
       const needsLiveData =
         /\b(latest|newest|current|recent|up-to-date|real-time|live)\b/.test(lower) &&
         /\b(data|info|news|release|model|update|version|price|result)\b/.test(lower)
 
-      if ((needsWebSearch || needsLiveData) && st.assignedAgent === 'researcher') {
-        console.log(`[Orchestrator] \u{1F6E1} Plan guard: subtask "${st.id}" needs web access — researcher → executor`)
-        st.assignedAgent = 'executor'
+      if ((needsWebSearch || needsLiveData) && ['writer', 'planner', 'reflection'].includes(st.assignedAgent)) {
+        console.log(`[Orchestrator] \u{1F6E1} Plan guard: subtask "${st.id}" needs web access — ${st.assignedAgent} → researcher`)
+        st.assignedAgent = 'researcher'
         if (!lower.includes('web_search')) {
           st.description += '\n\nUse the web_search tool to find this information online. If you need more detail from a specific page, use the webpage_fetch tool.'
         }
         modified = true
       }
 
-      // File/shell subtasks → executor
-      const needsFileOps =
-        /\b(read|write|create|delete|move|rename)\s+(the\s+)?(file|dir|folder)/.test(lower) ||
-        /\blist\s+(files|dir)/.test(lower) ||
-        /\b(shell|command|terminal|git\s|npm\s|pip\s|run\s|execute)\b/.test(lower)
+      // Shell/command subtasks → executor only (it has shell_execute)
+      const needsShell =
+        /\b(shell|command|terminal|run\s|execute)\b/.test(lower) &&
+        /\b(git\s|npm\s|pip\s|python\s|node\s|curl\s|powershell|bash)\b/.test(lower)
 
-      if (needsFileOps && !['executor', 'coder'].includes(st.assignedAgent)) {
-        console.log(`[Orchestrator] \u{1F6E1} Plan guard: subtask "${st.id}" needs file/shell — ${st.assignedAgent} → executor`)
+      if (needsShell && st.assignedAgent !== 'executor') {
+        console.log(`[Orchestrator] \u{1F6E1} Plan guard: subtask "${st.id}" needs shell — ${st.assignedAgent} → executor`)
         st.assignedAgent = 'executor'
+        modified = true
+      }
+
+      // File write/create/delete subtasks → executor or coder
+      const needsFileWrite =
+        /\b(write|create|delete|move|rename)\s+(the\s+)?(file|dir|folder)/.test(lower)
+
+      if (needsFileWrite && !['executor', 'coder'].includes(st.assignedAgent)) {
+        console.log(`[Orchestrator] \u{1F6E1} Plan guard: subtask "${st.id}" needs file write — ${st.assignedAgent} → coder`)
+        st.assignedAgent = 'coder'
+        modified = true
+      }
+
+      // File read / list subtasks → redirect no-tools agents to researcher
+      const needsFileRead =
+        /\b(read|list)\s+(the\s+)?(file|dir|folder)/.test(lower) ||
+        /\blist\s+(files|dir)/.test(lower)
+
+      if (needsFileRead && ['writer', 'planner', 'reflection'].includes(st.assignedAgent)) {
+        console.log(`[Orchestrator] \u{1F6E1} Plan guard: subtask "${st.id}" needs file read — ${st.assignedAgent} → researcher`)
+        st.assignedAgent = 'researcher'
         modified = true
       }
     }
@@ -1421,13 +1479,14 @@ Rules:
   }
 
   /**
-   * Augment task description with tool hints when routing to executor.
-   * Helps the executor LLM know which tool to use without guessing.
+   * Augment task description with tool hints when routing to tool-capable agents.
+   * Helps the agent LLM know which tool to use without guessing.
    */
   private augmentTaskForAgent(description: string, agent: AgentType, toolingNeeds?: TriageResult['toolingNeeds']): string {
-    if (agent !== 'executor') return description
+    // Only augment for agents with tool access
+    if (!['executor', 'researcher', 'coder', 'reviewer', 'analyst', 'critic'].includes(agent)) return description
 
-    // Use toolingNeeds (from triage LLM) to add precise tool hints
+    // Use toolingNeeds to add precise tool hints
     if (toolingNeeds?.webSearch && !description.toLowerCase().includes('web_search')) {
       return description + '\n\nUse the web_search tool to find this information online. If you need to read a specific page in detail, use the webpage_fetch tool.'
     }

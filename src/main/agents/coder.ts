@@ -2,9 +2,11 @@
  * Coder Agent — Code generation, modification, and explanation
  *
  * Writes clean, well-structured code following project conventions.
- * Handles generation, refactoring, debugging, and code explanation.
+ * When tools are available, can read/write actual files and search docs.
+ * Falls back to structured JSON output when tools aren't available.
  */
 import { BaseAgent, type AgentContext, type AgentResult, type SubTask, type Artifact, type SuggestedMemory } from './base-agent'
+import { hasToolAccess } from '../tools/permissions'
 import type { LLMResponse } from '../llm'
 
 // ─── Coder Output Schema ───────────────────────────────────
@@ -47,6 +49,20 @@ export class CoderAgent extends BaseAgent {
   protected getSystemPrompt(context: AgentContext): string {
     const parentContext = context.parentTask
       ? `\n\nPARENT TASK: "${context.parentTask}"`
+      : ''
+
+    const toolsAvailable = hasToolAccess(this.type)
+    const toolSection = toolsAvailable ? this.buildToolSection() : ''
+
+    const toolGuidance = toolsAvailable
+      ? `\n\nTOOL USAGE:
+You HAVE tools available — use them to work with real files.
+- Use file_read to examine existing code before modifying
+- Use directory_list to understand project structure
+- Use file_write / file_create to write code to actual files
+- Use web_search / webpage_fetch to look up documentation
+- ALWAYS read existing code before proposing changes
+- When you are done, provide your final summary with { "done": true, "summary": "..." }`
       : ''
 
     return `You are the Coder Agent in the Brainwave system.
@@ -95,11 +111,19 @@ OUTPUT FORMAT (JSON):
       "tags": ["pattern"]
     }
   ]
-}${parentContext}`
+}${toolGuidance}${parentContext}${toolSection}`
   }
 
-  /** Execute coding task with structured output and artifacts */
+  /** Execute coding task — uses tools when available, structured JSON fallback otherwise */
   async execute(task: SubTask, context: AgentContext): Promise<AgentResult> {
+    if (hasToolAccess(this.type)) {
+      return this.executeWithTools(task, context)
+    }
+    return this.executeStructured(task, context)
+  }
+
+  /** Original structured coding execution (no tools) */
+  private async executeStructured(task: SubTask, context: AgentContext): Promise<AgentResult> {
     const startTime = Date.now()
 
     try {
@@ -238,31 +262,5 @@ OUTPUT FORMAT (JSON):
     }
 
     return Math.min(1, conf)
-  }
-
-  private logRun(task: SubTask, context: AgentContext, result: AgentResult): void {
-    try {
-      const { randomUUID } = require('crypto')
-      this.db.run(
-        `INSERT INTO agent_runs (id, agent_type, task_id, status, input, output, llm_model, tokens_in, tokens_out, cost_usd, confidence, prompt_version, started_at, completed_at, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), CURRENT_TIMESTAMP, ?)`,
-        randomUUID(),
-        this.type,
-        context.taskId,
-        result.status === 'success' ? 'completed' : 'failed',
-        JSON.stringify({ description: task.description }),
-        JSON.stringify(result.output),
-        result.model,
-        result.tokensIn,
-        result.tokensOut,
-        0,
-        result.confidence,
-        result.promptVersion ?? null,
-        `-${result.duration / 1000} seconds`,
-        result.error ?? null
-      )
-    } catch (err) {
-      console.error(`[${this.type}] Failed to log run:`, err)
-    }
   }
 }

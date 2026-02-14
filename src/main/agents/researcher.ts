@@ -1,10 +1,12 @@
 /**
  * Researcher Agent — Information gatherer and synthesizer
  *
- * Searches the web, reads docs, queries knowledge bases,
- * and produces structured research summaries with citations.
+ * When tools are available: uses web_search, webpage_fetch, file_read,
+ * and MCP tools to find real information via the agentic tool loop.
+ * When no tools: falls back to LLM-only structured reasoning.
  */
 import { BaseAgent, type AgentContext, type AgentResult, type SubTask, type SuggestedMemory, type Artifact } from './base-agent'
+import { hasToolAccess } from '../tools/permissions'
 import type { LLMResponse } from '../llm'
 
 // ─── Research Output Schema ────────────────────────────────
@@ -43,14 +45,28 @@ export class ResearcherAgent extends BaseAgent {
       ? `\n\nPARENT TASK: "${context.parentTask}"`
       : ''
 
+    const toolsAvailable = hasToolAccess(this.type)
+    const toolSection = toolsAvailable ? this.buildToolSection() : ''
+
+    const toolGuidance = toolsAvailable
+      ? `You HAVE tools available — use them to find REAL information.
+- Use web_search to find current facts, data, and information
+- Use webpage_fetch to read specific pages for detailed content
+- Use file_read / directory_list to check local files when relevant
+- Use http_request for API calls when appropriate
+- Use MCP tools (context7, tavily, etc.) for specialized searches
+- ALWAYS prefer tool-based research over guessing from training data
+- Call tools as needed, then provide your final summary when done`
+      : `You do NOT have access to the internet or web search tools.
+You can only use your training knowledge. If the user's question requires
+live/current web data, state that clearly in your summary and suggest
+the Executor agent be used with the web_search tool instead.`
+
     return `You are the Researcher Agent in the Brainwave system.
 
 Your role: Find accurate, relevant information and synthesize it clearly.
 
-IMPORTANT: You do NOT have access to the internet or web search tools.
-You can only use your training knowledge. If the user's question requires
-live/current web data, state that clearly in your summary and suggest
-the Executor agent be used with the web_search tool instead.
+${toolGuidance}
 
 PRINCIPLES:
 1. Always strive for accuracy — prefer being uncertain over being wrong
@@ -60,7 +76,7 @@ PRINCIPLES:
 5. Summarize findings in a structured, easy-to-consume format
 6. Suggest follow-up questions when the topic warrants deeper exploration
 7. When you find facts worth remembering, suggest them as memories
-
+${toolsAvailable ? '' : `
 OUTPUT FORMAT (JSON):
 {
   "summary": "Clear, concise summary of findings",
@@ -81,12 +97,23 @@ OUTPUT FORMAT (JSON):
     }
   ]
 }
-
-Be thorough but concise. Quality over quantity.${parentContext}`
+`}
+Be thorough but concise. Quality over quantity.${parentContext}${toolSection}`
   }
 
-  /** Execute research task with structured output */
+  /** Execute research task — uses tools when available, structured JSON fallback otherwise */
   async execute(task: SubTask, context: AgentContext): Promise<AgentResult> {
+    // If tools are available, use the agentic tool loop for real research
+    if (hasToolAccess(this.type)) {
+      return this.executeWithTools(task, context)
+    }
+
+    // Fallback: structured JSON output from training knowledge only
+    return this.executeStructured(task, context)
+  }
+
+  /** Original structured research execution (no tools) */
+  private async executeStructured(task: SubTask, context: AgentContext): Promise<AgentResult> {
     const startTime = Date.now()
 
     try {
@@ -215,32 +242,5 @@ Be thorough but concise. Quality over quantity.${parentContext}`
     const hasSources = output.findings.some((f) => f.sources && f.sources.length > 0)
 
     return Math.min(1, baseConf + avgFindingConf * 0.3 + (hasSources ? 0.1 : 0))
-  }
-
-  /** Log the agent run to DB */
-  private logRun(task: SubTask, context: AgentContext, result: AgentResult): void {
-    try {
-      const { randomUUID } = require('crypto')
-      this.db.run(
-        `INSERT INTO agent_runs (id, agent_type, task_id, status, input, output, llm_model, tokens_in, tokens_out, cost_usd, confidence, prompt_version, started_at, completed_at, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), CURRENT_TIMESTAMP, ?)`,
-        randomUUID(),
-        this.type,
-        context.taskId,
-        result.status === 'success' ? 'completed' : 'failed',
-        JSON.stringify({ description: task.description }),
-        JSON.stringify(result.output),
-        result.model,
-        result.tokensIn,
-        result.tokensOut,
-        0,
-        result.confidence,
-        result.promptVersion ?? null,
-        `-${result.duration / 1000} seconds`,
-        result.error ?? null
-      )
-    } catch (err) {
-      console.error(`[${this.type}] Failed to log run:`, err)
-    }
   }
 }

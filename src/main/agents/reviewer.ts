@@ -2,10 +2,11 @@
  * Reviewer Agent — Quality assurance and verification
  *
  * Reviews code, research output, and plans for accuracy,
- * completeness, and adherence to standards. Provides structured
- * feedback with severity levels and actionable suggestions.
+ * completeness, and adherence to standards. When tools are available,
+ * can read actual files and search the web for verification.
  */
 import { BaseAgent, type AgentContext, type AgentResult, type SubTask, type SuggestedMemory } from './base-agent'
+import { hasToolAccess } from '../tools/permissions'
 import type { LLMResponse } from '../llm'
 
 // ─── Review Output Schema ──────────────────────────────────
@@ -46,6 +47,19 @@ export class ReviewerAgent extends BaseAgent {
   protected getSystemPrompt(context: AgentContext): string {
     const parentContext = context.parentTask
       ? `\n\nORIGINAL TASK: "${context.parentTask}"`
+      : ''
+
+    const toolsAvailable = hasToolAccess(this.type)
+    const toolSection = toolsAvailable ? this.buildToolSection() : ''
+
+    const toolGuidance = toolsAvailable
+      ? `\n\nTOOL USAGE:
+You HAVE tools available — use them to verify claims and check actual code.
+- Use file_read to examine the actual source code being reviewed
+- Use directory_list to understand project structure
+- Use web_search to verify technical claims or best practices
+- ALWAYS check the real code instead of relying on descriptions alone
+- When review is complete, provide your assessment with { "done": true, "summary": "..." }`
       : ''
 
     return `You are the Reviewer Agent in the Brainwave system.
@@ -90,11 +104,19 @@ OUTPUT FORMAT (JSON):
       "tags": ["review-lesson"]
     }
   ]
-}${parentContext}`
+}${toolGuidance}${parentContext}${toolSection}`
   }
 
-  /** Execute review with structured output */
+  /** Execute review — uses tools when available, structured JSON fallback otherwise */
   async execute(task: SubTask, context: AgentContext): Promise<AgentResult> {
+    if (hasToolAccess(this.type)) {
+      return this.executeWithTools(task, context)
+    }
+    return this.executeStructured(task, context)
+  }
+
+  /** Original structured review execution (no tools) */
+  private async executeStructured(task: SubTask, context: AgentContext): Promise<AgentResult> {
     const startTime = Date.now()
 
     try {
@@ -209,31 +231,5 @@ OUTPUT FORMAT (JSON):
     }
 
     return Math.min(1, conf)
-  }
-
-  private logRun(task: SubTask, context: AgentContext, result: AgentResult): void {
-    try {
-      const { randomUUID } = require('crypto')
-      this.db.run(
-        `INSERT INTO agent_runs (id, agent_type, task_id, status, input, output, llm_model, tokens_in, tokens_out, cost_usd, confidence, prompt_version, started_at, completed_at, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), CURRENT_TIMESTAMP, ?)`,
-        randomUUID(),
-        this.type,
-        context.taskId,
-        result.status === 'success' ? 'completed' : 'failed',
-        JSON.stringify({ description: task.description }),
-        JSON.stringify(result.output),
-        result.model,
-        result.tokensIn,
-        result.tokensOut,
-        0,
-        result.confidence,
-        result.promptVersion ?? null,
-        `-${result.duration / 1000} seconds`,
-        result.error ?? null
-      )
-    } catch (err) {
-      console.error(`[${this.type}] Failed to log run:`, err)
-    }
   }
 }
