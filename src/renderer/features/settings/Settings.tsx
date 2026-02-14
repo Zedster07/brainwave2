@@ -1138,15 +1138,15 @@ function DailyPulseSettings() {
         </p>
 
         <SettingRow
-          label="Atlassian Site URL"
-          description="Your Atlassian Cloud site (e.g. myteam.atlassian.net) — required for Jira queries"
+          label="Atlassian Cloud ID"
+          description="Your Atlassian Cloud UUID — find it in any Atlassian API URL or Rovo search results"
         >
           <input
             type="text"
             value={atlassianSite ?? ''}
             onChange={(e) => setAtlassianSite(e.target.value)}
-            placeholder="e.g. myteam.atlassian.net"
-            className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-accent/40"
+            placeholder="e.g. 2632a86a-c338-4605-ada6-784c713c7d85"
+            className="w-80 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-accent/40 font-mono text-xs"
           />
         </SettingRow>
 

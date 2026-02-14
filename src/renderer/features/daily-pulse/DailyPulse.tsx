@@ -12,11 +12,14 @@ import {
   Newspaper,
   CloudSun,
   CheckSquare,
+  FileText,
   Bell,
   Activity,
   Loader2,
   AlertCircle,
   ExternalLink,
+  ArrowUpRight,
+  Clock,
 } from 'lucide-react'
 
 // ─── Types ──────────────────────────────────────────────────
@@ -62,8 +65,18 @@ interface JiraItem {
   summary: string
   status: string
   priority: string
-  type: 'jira' | 'confluence'
+  type: string
   url?: string
+  assignee?: string
+}
+
+interface ConfluenceItem {
+  id: string
+  title: string
+  space: string
+  url: string
+  lastUpdated: string
+  type: string
 }
 
 interface ReminderItem {
@@ -88,6 +101,7 @@ const PULSE_SECTIONS = [
   'emails',
   'news',
   'jira',
+  'confluence',
   'reminders',
 ] as const
 type PulseSection = (typeof PULSE_SECTIONS)[number]
@@ -122,6 +136,7 @@ export function DailyPulse() {
   const [emails, setEmails] = useState<{ status: 'idle' | 'loading' | 'loaded' | 'error'; data?: EmailItem[]; error?: string }>({ status: 'idle' })
   const [news, setNews] = useState<{ status: 'idle' | 'loading' | 'loaded' | 'error'; data?: NewsItem[]; error?: string }>({ status: 'idle' })
   const [jira, setJira] = useState<{ status: 'idle' | 'loading' | 'loaded' | 'error'; data?: JiraItem[]; error?: string }>({ status: 'idle' })
+  const [confluence, setConfluence] = useState<{ status: 'idle' | 'loading' | 'loaded' | 'error'; data?: ConfluenceItem[]; error?: string }>({ status: 'idle' })
   const [reminders, setReminders] = useState<{ status: 'idle' | 'loading' | 'loaded' | 'error'; data?: ReminderItem[]; error?: string }>({ status: 'idle' })
 
   // ── Fetch a single section ──
@@ -131,6 +146,7 @@ export function DailyPulse() {
       emails: setEmails,
       news: setNews,
       jira: setJira,
+      confluence: setConfluence,
       reminders: setReminders,
     }
 
@@ -166,7 +182,7 @@ export function DailyPulse() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Quick Stats Banner ──
-  const statsLine = buildStatsLine(weather, emails, jira, reminders)
+  const statsLine = buildStatsLine(weather, emails, jira, confluence, reminders)
 
   return (
     <div className="max-w-6xl mx-auto">
@@ -286,32 +302,45 @@ export function DailyPulse() {
           ) : null}
         </SectionCard>
 
-        {/* Jira / Confluence */}
+        {/* Jira Tickets */}
         <SectionCard
-          title="Jira & Confluence"
+          title="Jira Tickets"
           icon={CheckSquare}
-          colorClass="text-blue-300"
+          colorClass="text-blue-400"
           status={jira.status}
           error={jira.error}
           onRetry={() => fetchSection('jira')}
+          count={jira.data?.length}
         >
           {jira.data && jira.data.length > 0 ? (
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               {jira.data.map((item, i) => (
-                <div key={i} className="flex items-center gap-3 p-3 rounded-lg bg-white/[0.02]">
-                  <PriorityDot priority={item.priority} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono text-accent/70">{item.key}</span>
-                      <StatusBadge status={item.status} />
-                    </div>
-                    <p className="text-sm text-gray-300 truncate">{item.summary}</p>
-                  </div>
-                </div>
+                <JiraTicketRow key={i} item={item} />
               ))}
             </div>
           ) : jira.status === 'loaded' ? (
             <EmptyState text="No open tickets" />
+          ) : null}
+        </SectionCard>
+
+        {/* Confluence Pages */}
+        <SectionCard
+          title="Confluence"
+          icon={FileText}
+          colorClass="text-indigo-400"
+          status={confluence.status}
+          error={confluence.error}
+          onRetry={() => fetchSection('confluence')}
+          count={confluence.data?.length}
+        >
+          {confluence.data && confluence.data.length > 0 ? (
+            <div className="space-y-1.5">
+              {confluence.data.map((item, i) => (
+                <ConfluencePageRow key={i} item={item} />
+              ))}
+            </div>
+          ) : confluence.status === 'loaded' ? (
+            <EmptyState text="No recent pages" />
           ) : null}
         </SectionCard>
 
@@ -399,7 +428,7 @@ function WeatherCard({ state, onRetry }: {
   return null
 }
 
-function SectionCard({ title, icon: Icon, colorClass, status, error, onRetry, children }: {
+function SectionCard({ title, icon: Icon, colorClass, status, error, onRetry, children, count }: {
   title: string
   icon: React.ElementType
   colorClass: string
@@ -407,6 +436,7 @@ function SectionCard({ title, icon: Icon, colorClass, status, error, onRetry, ch
   error?: string
   onRetry: () => void
   children: React.ReactNode
+  count?: number
 }) {
   return (
     <div className="glass-card p-5">
@@ -414,6 +444,11 @@ function SectionCard({ title, icon: Icon, colorClass, status, error, onRetry, ch
         <div className="flex items-center gap-2">
           <Icon className={`w-4 h-4 ${colorClass}`} />
           <h3 className="text-sm font-semibold text-white">{title}</h3>
+          {status === 'loaded' && count !== undefined && count > 0 && (
+            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-white/[0.06] text-gray-400">
+              {count}
+            </span>
+          )}
         </div>
         {status === 'error' && (
           <button onClick={onRetry} className="text-xs text-accent hover:text-accent/80">Retry</button>
@@ -446,6 +481,7 @@ function EmptyState({ text }: { text: string }) {
 }
 
 function PriorityDot({ priority }: { priority: string }) {
+  const p = priority.toLowerCase()
   const colors: Record<string, string> = {
     highest: 'bg-red-500',
     high: 'bg-orange-400',
@@ -454,22 +490,115 @@ function PriorityDot({ priority }: { priority: string }) {
     lowest: 'bg-gray-400',
   }
   return (
-    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${colors[priority.toLowerCase()] ?? 'bg-gray-400'}`} />
+    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${colors[p] ?? 'bg-gray-400'}`}
+      title={priority} />
   )
 }
 
 function StatusBadge({ status }: { status: string }) {
+  const s = status.toLowerCase()
   const colors: Record<string, string> = {
-    'to do': 'bg-gray-500/20 text-gray-400',
-    'in progress': 'bg-blue-500/20 text-blue-400',
-    'done': 'bg-green-500/20 text-green-400',
-    'in review': 'bg-purple-500/20 text-purple-400',
+    'to do': 'bg-gray-500/20 text-gray-400 border-gray-500/20',
+    'open': 'bg-gray-500/20 text-gray-400 border-gray-500/20',
+    'in progress': 'bg-blue-500/15 text-blue-400 border-blue-500/20',
+    'done': 'bg-green-500/15 text-green-400 border-green-500/20',
+    'closed': 'bg-green-500/15 text-green-400 border-green-500/20',
+    'in review': 'bg-purple-500/15 text-purple-400 border-purple-500/20',
+    'review': 'bg-purple-500/15 text-purple-400 border-purple-500/20',
+    'blocked': 'bg-red-500/15 text-red-400 border-red-500/20',
   }
   return (
-    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${colors[status.toLowerCase()] ?? 'bg-gray-500/20 text-gray-400'}`}>
+    <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium border ${colors[s] ?? 'bg-gray-500/20 text-gray-400 border-gray-500/20'}`}>
       {status}
     </span>
   )
+}
+
+function JiraTicketRow({ item }: { item: JiraItem }) {
+  return (
+    <div className="group flex items-start gap-3 p-3 rounded-lg bg-white/[0.02] hover:bg-white/[0.05] border border-transparent hover:border-white/[0.06] transition-all duration-150">
+      <div className="pt-1.5">
+        <PriorityDot priority={item.priority} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[11px] font-mono font-semibold text-blue-400/80 tracking-wide">{item.key}</span>
+          <StatusBadge status={item.status} />
+        </div>
+        <p className="text-sm text-gray-200 leading-snug line-clamp-2">{item.summary}</p>
+        {item.assignee && (
+          <span className="text-[10px] text-gray-500 mt-1 block">Assignee: {item.assignee}</span>
+        )}
+      </div>
+      {item.url && (
+        <a
+          href={item.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-accent transition-all mt-1 flex-shrink-0"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <ArrowUpRight className="w-3.5 h-3.5" />
+        </a>
+      )}
+    </div>
+  )
+}
+
+function ConfluencePageRow({ item }: { item: ConfluenceItem }) {
+  const timeAgo = item.lastUpdated ? formatRelativeTime(item.lastUpdated) : null
+
+  return (
+    <div className="group flex items-start gap-3 p-3 rounded-lg bg-white/[0.02] hover:bg-white/[0.05] border border-transparent hover:border-white/[0.06] transition-all duration-150">
+      <div className="w-7 h-7 rounded bg-indigo-500/10 flex items-center justify-center flex-shrink-0 mt-0.5">
+        <FileText className="w-3.5 h-3.5 text-indigo-400/70" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="text-sm text-gray-200 leading-snug line-clamp-2 font-medium">{item.title}</p>
+        <div className="flex items-center gap-2 mt-1">
+          {item.space && (
+            <span className="text-[10px] text-indigo-400/60 bg-indigo-500/10 px-1.5 py-0.5 rounded font-medium">
+              {item.space}
+            </span>
+          )}
+          {timeAgo && (
+            <span className="flex items-center gap-1 text-[10px] text-gray-500">
+              <Clock className="w-2.5 h-2.5" /> {timeAgo}
+            </span>
+          )}
+        </div>
+      </div>
+      {item.url && (
+        <a
+          href={item.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-accent transition-all mt-1 flex-shrink-0"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <ArrowUpRight className="w-3.5 h-3.5" />
+        </a>
+      )}
+    </div>
+  )
+}
+
+function formatRelativeTime(dateStr: string): string {
+  try {
+    const date = new Date(dateStr)
+    const now = new Date()
+    const diffMs = now.getTime() - date.getTime()
+    const diffMins = Math.floor(diffMs / 60000)
+    if (diffMins < 1) return 'just now'
+    if (diffMins < 60) return `${diffMins}m ago`
+    const diffHours = Math.floor(diffMins / 60)
+    if (diffHours < 24) return `${diffHours}h ago`
+    const diffDays = Math.floor(diffHours / 24)
+    if (diffDays < 7) return `${diffDays}d ago`
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  } catch {
+    return dateStr
+  }
 }
 
 // ─── Helpers ────────────────────────────────────────────────
@@ -478,6 +607,7 @@ function buildStatsLine(
   weather: { status: string; data?: WeatherData },
   emails: { status: string; data?: EmailItem[] },
   jira: { status: string; data?: JiraItem[] },
+  confluence: { status: string; data?: ConfluenceItem[] },
   reminders: { status: string; data?: ReminderItem[] },
 ): string | null {
   const parts: string[] = []
@@ -492,7 +622,11 @@ function buildStatsLine(
   }
 
   if (jira.status === 'loaded' && jira.data) {
-    parts.push(`${jira.data.length} Jira ticket${jira.data.length !== 1 ? 's' : ''}`)
+    parts.push(`${jira.data.length} ticket${jira.data.length !== 1 ? 's' : ''}`)
+  }
+
+  if (confluence.status === 'loaded' && confluence.data) {
+    parts.push(`${confluence.data.length} page${confluence.data.length !== 1 ? 's' : ''}`)
   }
 
   if (reminders.status === 'loaded' && reminders.data) {

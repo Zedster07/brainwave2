@@ -11,7 +11,7 @@
 import { getMcpRegistry } from '../mcp'
 import { getDatabase } from '../db/database'
 
-type PulseSection = 'weather' | 'emails' | 'news' | 'jira' | 'reminders'
+type PulseSection = 'weather' | 'emails' | 'news' | 'jira' | 'confluence' | 'reminders'
 
 export async function fetchDailyPulseSection(section: PulseSection): Promise<unknown> {
   switch (section) {
@@ -23,6 +23,8 @@ export async function fetchDailyPulseSection(section: PulseSection): Promise<unk
       return fetchNews()
     case 'jira':
       return fetchJira()
+    case 'confluence':
+      return fetchConfluence()
     case 'reminders':
       return fetchReminders()
     default:
@@ -272,6 +274,14 @@ async function fetchJira(): Promise<unknown[]> {
   return []
 }
 
+function isConfluenceAri(id: string): boolean {
+  return typeof id === 'string' && id.includes('confluence')
+}
+
+function isJiraAri(id: string): boolean {
+  return typeof id === 'string' && id.includes('jira')
+}
+
 function parseJiraResults(content: string): Array<Record<string, string>> {
   // Try to parse as JSON first
   try {
@@ -283,22 +293,41 @@ function parseJiraResults(content: string): Array<Record<string, string>> {
       : parsed?.issues ?? parsed?.results ?? parsed?.values ?? (parsed?.key ? [parsed] : [])
 
     if (Array.isArray(issues) && issues.length > 0) {
-      return issues.map(issue => {
-        // Handle nested status/priority objects from Atlassian API
-        const status = typeof issue.status === 'object' ? (issue.status?.name || issue.status?.statusCategory?.name) : issue.status
-        const priority = typeof issue.priority === 'object' ? issue.priority?.name : issue.priority
-        const issueType = typeof issue.issuetype === 'object' ? issue.issuetype?.name : (issue.issuetype || issue.issueType)
+      return issues
+        // Filter out Confluence items from Rovo mixed results
+        .filter(issue => {
+          const id = issue.id || issue.key || ''
+          // Exclude if it's a Confluence ARI
+          if (isConfluenceAri(id)) return false
+          // Exclude if it has page-like properties but no Jira key (e.g. PROJ-123)
+          if (id.startsWith('ari:') && !isJiraAri(id)) return false
+          return true
+        })
+        .map(issue => {
+          // Handle nested status/priority objects from Atlassian API
+          const status = typeof issue.status === 'object' ? (issue.status?.name || issue.status?.statusCategory?.name) : issue.status
+          const priority = typeof issue.priority === 'object' ? issue.priority?.name : issue.priority
+          const issueType = typeof issue.issuetype === 'object' ? issue.issuetype?.name : (issue.issuetype || issue.issueType)
 
-        return {
-          key: issue.key || issue.id || 'N/A',
-          summary: issue.summary || issue.title || issue.fields?.summary || 'No summary',
-          status: status || issue.fields?.status?.name || 'Unknown',
-          priority: priority || issue.fields?.priority?.name || 'medium',
-          type: issueType || 'jira',
-          url: issue.url || issue.self || '',
-          assignee: typeof issue.assignee === 'object' ? issue.assignee?.displayName : (issue.assignee || ''),
-        }
-      })
+          // Extract a clean key — prefer PROJ-123 format, strip ARIs
+          let key = issue.key || ''
+          if (!key || key.startsWith('ari:')) {
+            // Try to extract from id or other fields
+            const ariId = issue.id || ''
+            const jiraKeyMatch = ariId.match(/([A-Z]+-\d+)/)
+            key = jiraKeyMatch?.[1] || issue.key || issue.id || 'N/A'
+          }
+
+          return {
+            key,
+            summary: issue.summary || issue.title || issue.fields?.summary || 'No summary',
+            status: status || issue.fields?.status?.name || 'Unknown',
+            priority: priority || issue.fields?.priority?.name || 'medium',
+            type: issueType || 'jira',
+            url: issue.url || issue.self || '',
+            assignee: typeof issue.assignee === 'object' ? issue.assignee?.displayName : (issue.assignee || ''),
+          }
+        })
     }
   } catch {
     // Not JSON — try text parsing
@@ -309,6 +338,9 @@ function parseJiraResults(content: string): Array<Record<string, string>> {
   const lines = content.split('\n').filter(l => l.trim())
 
   for (const line of lines.slice(0, 10)) {
+    // Skip Confluence ARI lines
+    if (line.includes('ari:cloud:confluence:')) continue
+
     const keyMatch = line.match(/([A-Z]+-\d+)/)
     if (keyMatch) {
       items.push({
@@ -322,6 +354,105 @@ function parseJiraResults(content: string): Array<Record<string, string>> {
   }
 
   return items
+}
+
+// ─── Confluence ─────────────────────────────────────────────
+
+async function fetchConfluence(): Promise<unknown[]> {
+  const registry = getMcpRegistry()
+  const db = getDatabase()
+
+  const cloudId = getAtlassianCloudId()
+  const nameRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'user_name')
+  const userName = nameRow?.value?.trim() || ''
+
+  // Find Confluence CQL search tool
+  const cqlSearch = registry.getAllTools().find(t =>
+    t.name === 'searchConfluenceUsingCql' || t.name === 'mcp_com_atlassian_searchConfluenceUsingCql'
+  )
+
+  if (!cqlSearch) {
+    return [{
+      id: 'INFO',
+      title: 'Atlassian not connected — go to Settings → Daily Pulse to connect',
+      space: '',
+      url: '',
+      lastUpdated: '',
+      type: 'info',
+    }]
+  }
+
+  if (!cloudId) {
+    return [{
+      id: 'SETUP',
+      title: 'Set your Atlassian Cloud ID in Settings → Daily Pulse',
+      space: '',
+      url: '',
+      lastUpdated: '',
+      type: 'info',
+    }]
+  }
+
+  try {
+    const contributorClause = userName
+      ? ` AND contributor = "${userName}"`
+      : ''
+    const cql = `type = page${contributorClause} ORDER BY lastModified DESC`
+
+    console.log(`[DailyPulse] Confluence CQL — cloudId: "${cloudId}", cql: "${cql}"`)
+
+    const result = await registry.callTool(cqlSearch.key, {
+      cloudId,
+      cql,
+      limit: 10,
+    })
+
+    console.log(`[DailyPulse] Confluence CQL result — success: ${result.success}, content length: ${result.content?.length ?? 0}`)
+
+    if (result.success && result.content?.trim()) {
+      const parsed = parseConfluenceResults(result.content)
+      if (parsed.length > 0) return parsed
+      console.warn('[DailyPulse] Confluence parsed 0 items. Raw (first 800):', result.content.slice(0, 800))
+    } else if (!result.success) {
+      console.warn('[DailyPulse] Confluence CQL error:', result.content?.slice(0, 400))
+    }
+  } catch (err) {
+    console.warn('[DailyPulse] Confluence CQL search failed:', err)
+  }
+
+  return []
+}
+
+/**
+ * Parse Confluence CQL response from Atlassian MCP.
+ * Actual shape: { content: { totalCount, nodes: [ { id, title, space: { key, name }, webUrl, lastModified } ] } }
+ */
+function parseConfluenceResults(content: string): Array<Record<string, string>> {
+  try {
+    const parsed = JSON.parse(content)
+
+    // The Atlassian MCP returns { content: { totalCount, nodes: [...] } }
+    const nodes = parsed?.content?.nodes
+      ?? (Array.isArray(parsed?.content) ? parsed.content : null) // fallback
+      ?? parsed?.results
+      ?? (Array.isArray(parsed) ? parsed : null)
+      ?? []
+
+    if (Array.isArray(nodes) && nodes.length > 0) {
+      return nodes.map((page: Record<string, any>) => ({
+        id: page.id || 'N/A',
+        title: page.title || page.name || 'Untitled',
+        space: typeof page.space === 'object' ? (page.space?.name || page.space?.key || '') : (page.space || ''),
+        url: page.webUrl || page.url || page._links?.webui || '',
+        lastUpdated: page.lastModified || page.version?.when || page.updated || '',
+        type: 'confluence',
+      }))
+    }
+  } catch (err) {
+    console.warn('[DailyPulse] Failed to parse Confluence JSON:', err)
+  }
+
+  return []
 }
 
 // ─── Reminders ──────────────────────────────────────────────
