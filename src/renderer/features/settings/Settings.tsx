@@ -963,6 +963,122 @@ function DailyPulseSettings() {
   const [city, setCity] = useSetting<string>('daily_pulse_city', 'Algiers')
   const [interests, setInterests] = useSetting<string>('daily_pulse_interests', 'technology, AI, software development')
 
+  // ── Atlassian MCP integration state ──
+  const [atlassianStatus, setAtlassianStatus] = useState<'loading' | 'not-configured' | 'disconnected' | 'connecting' | 'connected' | 'error'>('loading')
+  const [atlassianServerId, setAtlassianServerId] = useState<string | null>(null)
+  const [atlassianToolCount, setAtlassianToolCount] = useState(0)
+  const [atlassianError, setAtlassianError] = useState<string | null>(null)
+  const [atlassianBusy, setAtlassianBusy] = useState(false)
+
+  // Check if Atlassian MCP server is already configured
+  const refreshAtlassianStatus = useCallback(async () => {
+    try {
+      const [servers, statuses] = await Promise.all([
+        window.brainwave.mcpGetServers(),
+        window.brainwave.mcpGetStatuses(),
+      ])
+      const atlSrv = servers.find(
+        (s: McpServerConfigInfo) => s.name === 'Atlassian' || s.name === 'atlassian' ||
+        (s.args?.some((a: string) => a.includes('mcp.atlassian.com')))
+      )
+      if (atlSrv) {
+        setAtlassianServerId(atlSrv.id)
+        const st = statuses.find((s: McpServerStatusInfo) => s.id === atlSrv.id)
+        if (st?.state === 'connected') {
+          setAtlassianStatus('connected')
+          setAtlassianToolCount(st.toolCount ?? 0)
+          setAtlassianError(null)
+        } else if (st?.state === 'error') {
+          setAtlassianStatus('error')
+          setAtlassianError(st.error ?? 'Connection failed')
+        } else if (st?.state === 'connecting') {
+          setAtlassianStatus('connecting')
+        } else {
+          setAtlassianStatus('disconnected')
+        }
+      } else {
+        setAtlassianServerId(null)
+        setAtlassianStatus('not-configured')
+      }
+    } catch {
+      setAtlassianStatus('not-configured')
+    }
+  }, [])
+
+  useEffect(() => { refreshAtlassianStatus() }, [refreshAtlassianStatus])
+
+  // Poll status every 3s when connecting
+  useEffect(() => {
+    if (atlassianStatus !== 'connecting') return
+    const interval = setInterval(refreshAtlassianStatus, 3000)
+    return () => clearInterval(interval)
+  }, [atlassianStatus, refreshAtlassianStatus])
+
+  const handleConnectAtlassian = async () => {
+    setAtlassianBusy(true)
+    setAtlassianError(null)
+    try {
+      if (atlassianServerId) {
+        // Server exists but disconnected — just connect
+        await window.brainwave.mcpConnect(atlassianServerId)
+        setAtlassianStatus('connecting')
+      } else {
+        // Register new Atlassian MCP server config
+        await window.brainwave.mcpAddServer({
+          name: 'Atlassian',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['-y', 'mcp-remote', 'https://mcp.atlassian.com/v1/mcp'],
+          autoConnect: true,
+          enabled: true,
+        })
+        // Refresh to get the new server ID, then connect
+        const servers = await window.brainwave.mcpGetServers()
+        const atlSrv = servers.find((s: McpServerConfigInfo) => s.name === 'Atlassian')
+        if (atlSrv) {
+          setAtlassianServerId(atlSrv.id)
+          await window.brainwave.mcpConnect(atlSrv.id)
+          setAtlassianStatus('connecting')
+        }
+      }
+    } catch (err) {
+      setAtlassianError(err instanceof Error ? err.message : 'Failed to connect')
+      setAtlassianStatus('error')
+    } finally {
+      setAtlassianBusy(false)
+      setTimeout(refreshAtlassianStatus, 2000)
+    }
+  }
+
+  const handleDisconnectAtlassian = async () => {
+    if (!atlassianServerId) return
+    setAtlassianBusy(true)
+    try {
+      await window.brainwave.mcpDisconnect(atlassianServerId)
+      setAtlassianStatus('disconnected')
+    } catch {
+      // ignore
+    } finally {
+      setAtlassianBusy(false)
+      refreshAtlassianStatus()
+    }
+  }
+
+  const handleRemoveAtlassian = async () => {
+    if (!atlassianServerId) return
+    setAtlassianBusy(true)
+    try {
+      await window.brainwave.mcpDisconnect(atlassianServerId).catch(() => {})
+      await window.brainwave.mcpRemoveServer(atlassianServerId)
+      setAtlassianServerId(null)
+      setAtlassianStatus('not-configured')
+    } catch {
+      // ignore
+    } finally {
+      setAtlassianBusy(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -1009,14 +1125,84 @@ function DailyPulseSettings() {
         />
       </SettingRow>
 
+      {/* ── Atlassian Integration ── */}
+      <div className="border-t border-white/[0.04] pt-4">
+        <div className="flex items-center gap-2 mb-3">
+          <Globe className="w-4 h-4 text-blue-400" />
+          <h4 className="text-sm font-semibold text-white">Atlassian Integration</h4>
+        </div>
+        <p className="text-xs text-gray-500 mb-4">
+          Connect your Atlassian Cloud account to enable Jira &amp; Confluence in the Daily Pulse.
+          Uses OAuth 2.1 — a browser window will open for authorization.
+        </p>
+
+        <div className="p-3 bg-white/[0.02] rounded-lg border border-white/[0.06]">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {/* Status indicator */}
+              <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                atlassianStatus === 'connected' ? 'bg-green-400' :
+                atlassianStatus === 'connecting' ? 'bg-yellow-400 animate-pulse' :
+                atlassianStatus === 'error' ? 'bg-red-400' :
+                'bg-gray-600'
+              }`} />
+              <div>
+                <p className="text-sm font-medium text-white">Atlassian Cloud</p>
+                <p className="text-[10px] text-gray-500 mt-0.5">
+                  {atlassianStatus === 'loading' && 'Checking status…'}
+                  {atlassianStatus === 'not-configured' && 'Not connected — click Connect to set up'}
+                  {atlassianStatus === 'disconnected' && 'Server configured but disconnected'}
+                  {atlassianStatus === 'connecting' && 'Connecting… check your browser for OAuth prompt'}
+                  {atlassianStatus === 'connected' && `Connected — ${atlassianToolCount} tools available (Jira, Confluence, Compass)`}
+                  {atlassianStatus === 'error' && (atlassianError || 'Connection failed')}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              {atlassianBusy ? (
+                <Loader2 className="w-4 h-4 text-accent animate-spin" />
+              ) : atlassianStatus === 'connected' ? (
+                <button
+                  onClick={handleDisconnectAtlassian}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-green-400 hover:text-red-400 bg-white/[0.04] rounded-md hover:bg-white/[0.08] transition-all"
+                  title="Disconnect"
+                >
+                  <Unlink2 className="w-3.5 h-3.5" /> Disconnect
+                </button>
+              ) : atlassianStatus === 'connecting' ? (
+                <Loader2 className="w-4 h-4 text-yellow-400 animate-spin" />
+              ) : (
+                <button
+                  onClick={handleConnectAtlassian}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-white bg-blue-600 hover:bg-blue-500 rounded-md transition-all font-medium"
+                >
+                  <Link2 className="w-3.5 h-3.5" /> Connect Atlassian
+                </button>
+              )}
+              {atlassianServerId && atlassianStatus !== 'connecting' && (
+                <button
+                  onClick={handleRemoveAtlassian}
+                  className="p-1.5 text-gray-600 hover:text-red-400 transition-colors"
+                  title="Remove Atlassian server"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <p className="text-[10px] text-gray-600 mt-2">
+          Powered by <span className="text-gray-400">mcp-remote</span> → <span className="text-gray-400">mcp.atlassian.com</span> (Atlassian Rovo MCP Server). Requires Node.js 18+.
+        </p>
+      </div>
+
+      {/* ── Info notes ── */}
       <div className="border-t border-white/[0.04] pt-4">
         <p className="text-xs text-gray-500">
           <strong className="text-gray-400">Brave Search MCP</strong> is required for Weather and News sections.
           Connect it in the <span className="text-accent">Tools</span> tab.
-        </p>
-        <p className="text-xs text-gray-500 mt-2">
-          <strong className="text-gray-400">Jira MCP</strong> is needed for the Jira card.
-          Gmail integration is planned for a future update.
         </p>
       </div>
     </div>

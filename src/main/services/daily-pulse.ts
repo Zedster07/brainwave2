@@ -168,47 +168,59 @@ function parseNewsFromSearch(content: string, _topic: string): Array<Record<stri
 async function fetchJira(): Promise<unknown[]> {
   const registry = getMcpRegistry()
 
-  // Look for Jira search tools
-  const jiraSearch = registry.getAllTools().find(t =>
-    t.name.includes('search_issues') || t.name.includes('jira_search') || t.name.includes('search_jira')
+  // Look for Atlassian MCP tools (from atlassian/atlassian-mcp-server)
+  // Tool names: searchJiraIssuesUsingJql, getJiraIssue, search (Rovo)
+  const jqlSearch = registry.getAllTools().find(t =>
+    t.name === 'searchJiraIssuesUsingJql' || t.name === 'mcp_com_atlassian_searchJiraIssuesUsingJql'
+  )
+  const rovoSearch = registry.getAllTools().find(t =>
+    t.name === 'search' || t.name === 'mcp_com_atlassian_search'
   )
 
-  if (!jiraSearch) {
-    // Try Rovo search as fallback
-    const rovoSearch = registry.getAllTools().find(t => t.name.includes('rovo_search'))
-    if (rovoSearch) {
-      try {
-        const result = await registry.callTool(rovoSearch.key, {
-          query: 'my open issues assigned to me',
-          product: 'jira',
-        })
-        if (result.success) {
-          return parseJiraResults(result.content)
-        }
-      } catch {
-        console.warn('[DailyPulse] Rovo search failed for Jira')
-      }
-    }
+  // Also check for generic Jira tools from other MCP providers
+  const genericJiraSearch = !jqlSearch ? registry.getAllTools().find(t =>
+    t.name.includes('search_issues') || t.name.includes('jira_search')
+  ) : null
 
+  const searchTool = jqlSearch || genericJiraSearch
+
+  if (!searchTool && !rovoSearch) {
     return [{
       key: 'INFO',
-      summary: 'Jira MCP not connected — go to Settings → Tools to add Jira',
+      summary: 'Atlassian not connected — go to Settings → Daily Pulse to connect',
       status: 'Info',
       priority: 'medium',
       type: 'jira',
     }]
   }
 
-  try {
-    const result = await registry.callTool(jiraSearch.key, {
-      jql: 'assignee = currentUser() AND status != Done ORDER BY updated DESC',
-      maxResults: 10,
-    })
-    if (result.success) {
-      return parseJiraResults(result.content)
+  // Try JQL search first (more precise)
+  if (searchTool) {
+    try {
+      const result = await registry.callTool(searchTool.key, {
+        jql: 'assignee = currentUser() AND status != Done ORDER BY updated DESC',
+        maxResults: 10,
+      })
+      if (result.success) {
+        return parseJiraResults(result.content)
+      }
+    } catch (err) {
+      console.warn('[DailyPulse] Jira JQL search failed:', err)
     }
-  } catch (err) {
-    console.warn('[DailyPulse] Jira search failed:', err)
+  }
+
+  // Fallback to Rovo search
+  if (rovoSearch) {
+    try {
+      const result = await registry.callTool(rovoSearch.key, {
+        query: 'my open issues assigned to me',
+      })
+      if (result.success) {
+        return parseJiraResults(result.content)
+      }
+    } catch {
+      console.warn('[DailyPulse] Rovo search failed for Jira')
+    }
   }
 
   return []
