@@ -845,6 +845,9 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     }
     enrichedDescription = this.augmentTaskForAgent(enrichedDescription, agentType, triage.toolingNeeds)
 
+    // Stash toolingNeeds on the task record so executePlan can pass it to agent context
+    ;(task as any)._toolingNeeds = triage.toolingNeeds
+
     // Build a single-step plan inline (no planner LLM call)
     const plan: TaskPlan = {
       id: `plan_${randomUUID().slice(0, 8)}`,
@@ -1137,6 +1140,7 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
           siblingResults: results,
           images: task.images,
           blackboard: blackboardHandle,
+          toolingNeeds: (task as any)._toolingNeeds,
         })
 
         results.set(subTask.id, result)
@@ -1535,8 +1539,18 @@ Rules:
     if (!['executor', 'researcher', 'coder', 'reviewer', 'analyst', 'critic'].includes(agent)) return description
 
     // Use toolingNeeds to add precise tool hints
-    if (toolingNeeds?.webSearch && !description.toLowerCase().includes('web_search')) {
-      return description + '\n\nUse the web_search tool to find this information online. If you need to read a specific page in detail, use the webpage_fetch tool.'
+    if (toolingNeeds?.webSearch || toolingNeeds?.httpRequest) {
+      return description + '\n\n== SEARCH & RESEARCH STRATEGY ==\n' +
+        'This task requires web searching and/or data extraction. Follow this coordinated approach:\n' +
+        '1. DISCOVER: Use brave_web_search (Brave Search MCP) to find relevant URLs and get an overview\n' +
+        '2. EXTRACT: Use Bright Data MCP tools (scrape_as_markdown, scrape_batch) to extract detailed content from the best URLs found\n' +
+        '3. SYNTHESIZE: Combine results from both sources into a comprehensive answer\n\n' +
+        'KEY RULES:\n' +
+        '- Do NOT use the same search tool more than 3-4 times — vary your approach\n' +
+        '- After discovering URLs with brave_web_search, switch to Bright Data to scrape the actual content\n' +
+        '- If scraping fails on a URL, try a different URL — do NOT retry the same one\n' +
+        '- If both tools fail to get useful data, signal completion with what you have\n' +
+        '- NEVER call brave_web_search more than 5 times total in one task'
     }
 
     return description

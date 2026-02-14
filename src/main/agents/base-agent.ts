@@ -44,6 +44,13 @@ export interface TaskPlan {
   requiredAgents: AgentType[]
 }
 
+export interface ToolingNeeds {
+  webSearch?: boolean
+  fileSystem?: boolean
+  shellCommand?: boolean
+  httpRequest?: boolean
+}
+
 export interface AgentContext {
   taskId: string
   planId?: string
@@ -57,6 +64,8 @@ export interface AgentContext {
   delegateFn?: (agentType: AgentType, task: string) => Promise<AgentResult>
   /** Current delegation depth (0 = top-level, incremented per delegation) */
   delegationDepth?: number
+  /** Tooling needs from triage — tells agents what capabilities to use */
+  toolingNeeds?: ToolingNeeds
 }
 
 export interface AgentResult {
@@ -588,6 +597,13 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
             `Analyze this task and create a step-by-step plan before taking action.\n\n` +
             `Task: ${task.description}\n\n` +
             (parentContext ? `Original user request context: ${context.parentTask}\n\n` : '') +
+            (context.toolingNeeds?.webSearch || context.toolingNeeds?.httpRequest
+              ? `This is a SEARCH/RESEARCH task. You MUST coordinate two tool sources:\n` +
+                `- brave_web_search: Use for DISCOVERY (finding URLs, getting search result summaries)\n` +
+                `- Bright Data MCP (scrape_as_markdown, scrape_batch): Use for EXTRACTION (getting full page content from URLs)\n` +
+                `Plan a workflow that uses brave_web_search first to find the best URLs, then Bright Data to extract detailed content.\n` +
+                `NEVER call the same search tool more than 4-5 times. If results are poor, STOP and report what you found.\n\n`
+              : '') +
             `Consider:\n` +
             `1. What is the user actually asking for?\n` +
             `2. What tools would be most effective?\n` +
