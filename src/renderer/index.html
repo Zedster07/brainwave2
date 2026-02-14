@@ -10,6 +10,52 @@
     <title>Brainwave 2</title>
   </head>
   <body class="bg-primary text-gray-200 font-sans antialiased">
+    <!-- Splash screen — visible instantly, removed when React mounts -->
+    <div id="splash" style="
+      position: fixed; inset: 0; z-index: 9999;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #0A0B0F;
+      font-family: 'Inter', system-ui, sans-serif;
+      transition: opacity 0.4s ease, visibility 0.4s ease;
+    ">
+      <!-- Animated rings -->
+      <div style="position: relative; width: 72px; height: 72px; margin-bottom: 28px;">
+        <div style="
+          position: absolute; inset: 0;
+          border: 2px solid transparent;
+          border-top-color: #6C63FF;
+          border-radius: 50%;
+          animation: splash-spin 1s linear infinite;
+        "></div>
+        <div style="
+          position: absolute; inset: 8px;
+          border: 2px solid transparent;
+          border-top-color: #a78bfa;
+          border-radius: 50%;
+          animation: splash-spin 1.6s linear infinite reverse;
+        "></div>
+        <div style="
+          position: absolute; inset: 18px;
+          border: 2px solid transparent;
+          border-top-color: #c4b5fd;
+          border-radius: 50%;
+          animation: splash-spin 2s linear infinite;
+        "></div>
+        <!-- Center dot -->
+        <div style="
+          position: absolute; inset: 28px;
+          background: #6C63FF;
+          border-radius: 50%;
+          animation: splash-pulse 1.5s ease-in-out infinite;
+        "></div>
+      </div>
+      <div style="font-size: 18px; font-weight: 600; color: #e2e0ff; letter-spacing: 0.05em;">Brainwave</div>
+      <div style="font-size: 11px; color: #555; margin-top: 6px; letter-spacing: 0.08em;">INITIALIZING SYSTEMS</div>
+      <style>
+        @keyframes splash-spin { to { transform: rotate(360deg); } }
+        @keyframes splash-pulse { 0%, 100% { opacity: .4; transform: scale(.9); } 50% { opacity: 1; transform: scale(1.1); } }
+      </style>
+    </div>
     <div id="root"></div>
     <script type="module" src="./main.tsx"></script>
   </body>
