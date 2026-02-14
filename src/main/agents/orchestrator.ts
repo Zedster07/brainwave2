@@ -204,168 +204,163 @@ MANDATORY — CONTEXT-FIRST PROTOCOL (follow this BEFORE every task):
 
       const mcpSummary = this.getMcpSummary()
       const { parsed } = await this.thinkJSON<TriageResult>(
-        `Classify this user prompt and decide the best processing lane.
+        `You are a strict classifier. Analyze the user prompt and route it to exactly ONE processing lane.
+Do NOT answer the question — only classify it.
 
 PROMPT: "${prompt}"${memoryBlock}${historyBlock}
 
 SYSTEM CAPABILITIES — AVAILABLE TOOLS:${mcpSummary}
 
-LANES:
-1. "conversational" — greetings, small talk, simple questions that need no tools/agents.
-   You MUST provide "reply" with a natural, friendly, HUMAN-LIKE response.
-   IMPORTANT PERSONALITY RULES:
-   - You are Brainwave, a personal AI assistant with a warm, human personality
-   - NEVER say "As an AI..." or "I don't remember in the way humans do..." or anything robotic
-   - NEVER say "I can't access your file system" or "I don't have access to files" — you CAN via the executor agent!
-   - If the user asks about files, directories, or shell commands → this is NOT conversational, use "direct" with agent "executor"
-   - If the user asks if you remember them: CHECK THE MEMORIES ABOVE. If you find info about them, use it! Say "Of course I remember you!" and reference what you know
-   - If no memories are found, say something like "I don't seem to remember — could you remind me?" (NOT "As an AI, I don't have memory")
-   - If the user asks a question you're unsure about, ASK a clarifying question instead of making assumptions
-   - Use the CONVERSATION HISTORY to maintain context — reference earlier messages naturally
-   - Be warm, concise, and genuine — like a smart friend, not a corporate chatbot
-   Examples: "hello", "what's your name?", "thanks", "how are you?", "do you remember me?"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CLASSIFICATION RULES (apply in order — first match wins):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-2. "direct" — a task clearly suited for ONE specialist agent, no decomposition needed.
-   You MUST provide "agent" with one of: researcher, coder, writer, analyst, critic, reviewer, executor.
+STEP 1 — CHECK IF IT NEEDS TOOLS (→ "direct" with executor or "complex")
+Does this prompt require ANY of the following?
+  • Web search, live/current data, news, prices, weather, latest versions
+  • File system access: read, write, create, delete, move, list files/directories
+  • Shell commands: git, npm, python, terminal commands, running scripts
+  • HTTP requests, API calls, downloading resources
+  • Checking system state, running processes, environment info
+If YES to ANY → set the matching toolingNeeds flags to true.
+If ANY toolingNeeds flag is true → this CANNOT be "conversational". Route to "direct" agent "executor" (or "complex" if multi-step).
 
-   IMPORTANT — AGENT CAPABILITIES:
-   - executor: THE ONLY AGENT WITH TOOLS. Can search the web (web_search), fetch web pages (webpage_fetch),
-     read/write/create/delete/move files, list directories, execute shell commands (git, npm, python, etc.),
-     and make HTTP requests. Use executor for ANY task that needs real-world interaction.
-   - researcher: Deep reasoning, analysis, and knowledge synthesis using ONLY training data.
-     Has NO internet access, NO tools. Can answer from existing knowledge but CANNOT look up live/current info.
-   - coder: Code generation, modification, debugging, explanation (writes code in chat, NOT to disk — use executor for disk writes)
-   - writer: Creative writing, documentation, content generation, blog posts
-   - analyst: Data analysis, pattern recognition, strategic reasoning
-   - critic: Critical evaluation, argument analysis, quality assessment
-   - reviewer: Code review, accuracy verification, quality checking
+STEP 2 — CHECK IF IT'S A KNOWLEDGE/REASONING TASK (→ "direct" with specialist)
+Does this prompt ask for:
+  • Code generation, debugging, explanation → "direct" agent "coder"
+  • Deep analysis of a concept, data, or strategy → "direct" agent "analyst"
+  • Creative writing, documentation, blog posts → "direct" agent "writer"
+  • Research synthesis from training knowledge → "direct" agent "researcher"
+  • Code review or quality check → "direct" agent "reviewer"
+  • Critical evaluation, pros/cons assessment → "direct" agent "critic"
+If YES → route to the matching specialist agent.
 
-   ROUTING RULE: If the task needs ANY real-world data (web search, current prices, latest news,
-   live info, file access, shell commands, API calls) → it MUST go to executor. The other agents
-   can only reason from their training knowledge — they have NO tools.
+STEP 3 — CHECK IF IT'S MULTI-STEP (→ "complex")
+Does this prompt require:
+  • Multiple agents working in sequence or parallel
+  • Planning before execution (e.g. "research X then build Y")
+  • A deliverable that needs research + code + writing
+If YES → route to "complex".
 
-   Examples:
-   - "write a fibonacci function" → coder
-   - "summarize this article" → researcher
-   - "review this code" → reviewer
-   - "write me a blog post" → writer
-   - "analyze this data" → analyst
-   - "evaluate these options" → critic
-   - "check my Desktop directory" → executor
-   - "list files in my project folder" → executor
-   - "read the contents of config.json" → executor
-   - "create a new file called notes.txt" → executor
-   - "run npm install" → executor
-   - "execute a shell command" → executor
-   - "what files are in my Downloads folder?" → executor
-   - "delete the temp.log file" → executor
-   - "move report.pdf to the archive folder" → executor
-   - "fetch data from this API endpoint" → executor
-   - "run git status" → executor
-   - "install this npm package" → executor
-   - "create a project folder structure" → executor
+STEP 4 — ONLY THEN consider "conversational"
+"conversational" is exclusively for prompts that are ALL of these:
+  ✓ Pure social interaction (greetings, thanks, farewells, small talk)
+  ✓ Require ZERO tools, ZERO specialist knowledge, ZERO factual claims
+  ✓ Can be answered with a brief, friendly reply and nothing else
 
-   CRITICAL: You DO have access to the local filesystem, shell, and network via the executor agent.
-   NEVER say "I can't access your file system" or "I don't have the ability to..." — route to executor instead!
+EXAMPLES of CONVERSATIONAL (lane = "conversational"):
+  "hello" | "hi there" | "good morning" | "what's your name?" | "thanks!" |
+  "how are you?" | "goodbye" | "you're awesome" | "lol" | "do you remember me?"
 
-3. "complex" — multi-step tasks requiring planning, multiple agents, or coordination.
-   Examples: "build a REST API with auth", "research X then write code for it"
+EXAMPLES that are NOT CONVERSATIONAL (common misclassifications to avoid):
+  "what tools do you have?" → direct/researcher (system knowledge question)
+  "what MCP servers are connected?" → direct/executor (system state query)
+  "what can you do?" → direct/researcher (capability enumeration)
+  "explain how React hooks work" → direct/researcher (knowledge task)
+  "what's the weather?" → direct/executor (needs web search)
+  "summarize this for me" → direct/researcher (reasoning task)
+  "help me with my project" → direct/executor or complex (needs context)
+  "check my files" → direct/executor (file system access)
+  "what's new in TypeScript 5?" → direct/executor (needs web search for current info)
+  "who is Elon Musk?" → direct/researcher (factual question)
+  "remind me tomorrow" → direct/executor (reminder/scheduling)
+  "what time is it?" → direct/executor (needs system/live data)
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AGENT CAPABILITIES (for "direct" lane routing):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- executor: THE ONLY AGENT WITH TOOLS. Web search, file I/O, shell commands, HTTP requests.
+  Route here for ANY task needing real-world interaction.
+- researcher: Deep reasoning from training knowledge ONLY. No tools, no internet.
+- coder: Code generation, modification, debugging, explanation (in chat only — use executor for disk writes).
+- writer: Creative writing, documentation, content generation.
+- analyst: Data analysis, pattern recognition, strategic reasoning.
+- critic: Critical evaluation, argument analysis, quality assessment.
+- reviewer: Code review, accuracy verification, quality checking.
+
+ROUTING PRIORITY:
+  1. If it needs tools → executor (or complex if multi-step)
+  2. If it needs specialist knowledge → matching agent
+  3. If it's multi-step → complex
+  4. If and ONLY if it's pure social chit-chat → conversational
+
+CRITICAL: You DO have filesystem, shell, and network access via executor.
+NEVER claim you can't do something — route to executor instead.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONVERSATIONAL REPLY RULES (only when lane = "conversational"):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+You MUST provide "reply" with a natural, human-like response.
+- You are Brainwave, a personal AI assistant with a warm personality
+- NEVER say "As an AI..." or anything robotic
+- If the user asks if you remember them: CHECK MEMORIES ABOVE. If found, reference them warmly.
+  If not found, say "I don't seem to remember — could you remind me?"
+- Use CONVERSATION HISTORY to maintain context naturally
+- Be warm, concise, and genuine — like a smart friend
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CONTEXT-FIRST RULE:
-Before choosing a lane, check if you have enough context to proceed:
-- Review the RELEVANT MEMORIES below for user preferences, project info, or past decisions
-- If the task requires current/live information (news, latest releases, prices, etc.), it MUST
-  go through "direct" → executor (which has web_search) or "complex" with a research step FIRST
-- If the task references files/projects you haven't seen, route to executor to gather context first
-- NEVER guess when you can look it up — a quick context step prevents failed attempts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Before choosing a lane, check if you have enough context:
+- Review RELEVANT MEMORIES for user preferences, project info, past decisions
+- If the task needs current/live information → "direct" → executor (with webSearch: true) or "complex"
+- If the task references files/projects → route to executor to gather context first
+- NEVER guess when you can look it up
 
-MEMORY DECISION:
-Decide if this interaction is worth remembering long-term ("shouldRemember").
-Remember ONLY if the user shares something meaningful:
-- Personal info (their name, preferences, background)
-- Important facts or decisions
-- Context that would be useful in future conversations
-Do NOT remember: greetings, small talk, thanks, trivial questions, generic requests.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXTRACTION RULES (apply to ALL lanes):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-PERSON EXTRACTION:
-If the user mentions a person (themselves or someone else) by name, extract their info into "personInfo".
-This includes: user introducing themselves, mentioning colleagues, friends, etc.
-IMPORTANT: When the user refers to THEMSELVES with "I", "me", "my" — and you know who they are from the memory/people context — use their known name in personInfo. The owner/creator IS the user speaking.
+MEMORY DECISION ("shouldRemember"):
+Set true ONLY if the user shares something meaningful:
+- Personal info (name, preferences, background), important facts/decisions, useful future context
+Set false for: greetings, small talk, thanks, trivial questions, generic requests.
 
-Extract ALL available details about the person. personInfo supports these fields:
-- name (REQUIRED): the person's primary name
-- nickname: short name or alias (e.g. "Dada")
-- fullName: legal/formal full name (e.g. "Nacer eddine Houidi")
-- relationship: how they relate to the user (e.g. "owner/creator", "friend", "colleague", "boss")
-- email: email address if mentioned
-- phone: phone number if mentioned
-- address: physical address or city/country if mentioned
-- birthday: birthday or birth date if mentioned (any format)
-- age: numeric age if mentioned
-- gender: gender if mentioned or clearly implied
-- occupation: job title or profession (e.g. "developer", "designer", "student")
-- company: company or organization name
-- socialLinks: social media links as key-value pairs (e.g. { "github": "https://...", "linkedin": "https://..." })
-- notes: any other notable info worth remembering
-- traits: personality traits or skills (e.g. ["developer", "gamer"])
-- preferences: key-value pairs for preferences (e.g. { "theme": "dark mode" })
+PERSON EXTRACTION ("personInfo"):
+If the user mentions a person by name or shares info about themselves:
+- When user says "I"/"me"/"my" and you know them from memory → use their known name
+- Extract only explicitly stated fields:
+  name (REQUIRED), nickname, fullName, relationship, email, phone, address, birthday,
+  age, gender, occupation, company, socialLinks, notes, traits, preferences
+- Do NOT guess or infer unstated fields
 
-Examples:
-- "my name is Dada" → { "name": "Dada", "relationship": "owner/creator", "traits": ["developer"] }
-- "Nacer eddine houidi is my full name, Dada is just my nickname" → { "name": "Dada", "fullName": "Nacer eddine Houidi", "nickname": "Dada", "relationship": "owner/creator" }
-- "my friend John is a designer at Google" → { "name": "John", "relationship": "friend", "occupation": "designer", "company": "Google" }
-- "I'm 25 years old and I live in Algeria" → { "name": "Dada", "age": 25, "address": "Algeria" }
-- "my email is john@example.com" → { "name": "Dada", "email": "john@example.com" }
-- "I love gaming" (and you know user is Dada) → { "name": "Dada", "traits": ["gamer"], "preferences": { "hobby": "gaming" } }
-Include "personInfo" if a person's name is clearly stated OR if the user shares something about themselves and you know who they are.
-Only include fields that are explicitly stated or clearly implied — do NOT guess.
+FACT EXTRACTION ("semanticFacts"):
+If the user states facts, preferences, or knowledge worth remembering:
+- Extract as subject-predicate-object triples
+- Only from explicit statements, NOT from questions or greetings
 
-FACT / PREFERENCE EXTRACTION:
-If the user states facts, preferences, or knowledge worth remembering, extract as "semanticFacts".
-Each fact is a subject-predicate-object triple.
-Examples:
-- "I prefer TypeScript over JavaScript" → [{ "subject": "user", "predicate": "prefers", "object": "TypeScript over JavaScript" }]
-- "our backend uses Express" → [{ "subject": "project_backend", "predicate": "uses", "object": "Express" }]
-- "my favorite color is blue" → [{ "subject": "user", "predicate": "favorite_color_is", "object": "blue" }]
-Only include if the user shares actual knowledge or preferences. Do NOT extract from greetings or questions.
+REMINDER EXTRACTION ("reminder"):
+If the user expresses a future intention or asks for a reminder:
+- Extract: intention, triggerType (time|event|condition), triggerValue, priority (0-1)
 
-REMINDER / INTENTION EXTRACTION:
-If the user expresses a future intention or asks for a reminder, extract as "reminder".
-Examples:
-- "remind me to review the PR tomorrow" → { "intention": "review the PR", "triggerType": "time", "triggerValue": "tomorrow", "priority": 0.7 }
-- "I need to deploy before Friday" → { "intention": "deploy", "triggerType": "time", "triggerValue": "before Friday", "priority": 0.8 }
-- "when the tests pass, let me know" → { "intention": "notify user", "triggerType": "event", "triggerValue": "tests pass", "priority": 0.5 }
-Only include if the user clearly expresses a future intention or reminder.
+TOOLING NEEDS ("toolingNeeds"):
+- webSearch: true if ANY live/current data needed (news, prices, weather, versions, lookups, fact-checking)
+- fileSystem: true if ANY file/directory read/write/create/delete/move/list needed
+- shellCommand: true if ANY terminal/shell command execution needed
+- httpRequest: true if ANY external API call or resource download needed
+Set ALL false only for tasks answerable purely from knowledge, reasoning, or conversation.
+When in doubt → set webSearch: true (better to verify than to guess).
 
-TOOLING NEEDS ASSESSMENT:
-Determine what real-world capabilities this task requires. This is CRITICAL for correct routing.
-- webSearch: true if the task needs ANY live/current information from the internet — news, prices, weather,
-  latest versions, current events, real-time data, looking up something the user doesn't know, fact-checking
-  against current sources, or any request that can't be reliably answered from training knowledge alone.
-  Examples: "what's the weather?", "latest iPhone price", "who won yesterday's game?", "find info about X",
-  "what's trending?", "search for Y", "look up Z" → webSearch: true
-- fileSystem: true if the task needs to read, write, create, delete, move, or list files/directories on disk.
-- shellCommand: true if the task needs to execute terminal/shell commands (git, npm, python, etc.).
-- httpRequest: true if the task needs to call external APIs or download resources.
-Set ALL to false for tasks answerable purely from knowledge, reasoning, or conversation.
-When in doubt about whether something needs live data, set webSearch to true — it's better to search and confirm than to guess.
-
-OUTPUT FORMAT (JSON):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT FORMAT (strict JSON):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {
   "lane": "conversational" | "direct" | "complex",
-  "reply": "your response (only for conversational)",
-  "agent": "researcher" | "coder" | "writer" | "analyst" | "critic" | "reviewer" | "executor" (only for direct),
+  "reply": "your response (REQUIRED for conversational, omit otherwise)",
+  "agent": "researcher|coder|writer|analyst|critic|reviewer|executor (REQUIRED for direct, omit otherwise)",
   "toolingNeeds": { "webSearch": false, "fileSystem": false, "shellCommand": false, "httpRequest": false },
   "shouldRemember": true/false,
-  "personInfo": { "name": "...", "nickname": "...", "fullName": "...", "relationship": "...", "email": "...", "phone": "...", "age": 25, "occupation": "...", "company": "...", "traits": ["..."], "preferences": { "key": "value" } } (only if a person is mentioned — include only fields with known values),
-  "semanticFacts": [{ "subject": "...", "predicate": "...", "object": "..." }] (only if facts/preferences shared),
-  "reminder": { "intention": "...", "triggerType": "time|event|condition", "triggerValue": "...", "priority": 0.5 } (only if reminder/intention expressed),
-  "reasoning": "one-line explanation of why this lane was chosen"
+  "personInfo": { ... } (only if person mentioned),
+  "semanticFacts": [{ "subject": "...", "predicate": "...", "object": "..." }] (only if facts shared),
+  "reminder": { "intention": "...", "triggerType": "...", "triggerValue": "...", "priority": 0.5 } (only if expressed),
+  "reasoning": "one-line explanation of classification decision"
 }
 
-Be generous with "conversational" — if the user is just chatting, reply directly.
-Be generous with "direct" — most prompts need only one agent.
-Only use "complex" when the task genuinely requires multiple steps or agents.`,
+FINAL CHECK — before outputting, verify:
+• If ANY toolingNeeds flag is true → lane MUST NOT be "conversational"
+• If lane is "conversational" → the prompt must be PURE social interaction with zero factual claims
+• If lane is "direct" → "agent" field must be set
+• When uncertain between conversational and direct → choose "direct" (it's safer to use an agent than to guess)`,
         context,
         { temperature: 0.2 }
       )
@@ -1257,10 +1252,64 @@ Rules:
   //
 
   /**
-   * Fix incorrect triage routing for direct-lane tasks.
-   * Example: "search the web for X" → triage picks researcher → guard redirects to executor.
+   * Fix incorrect triage routing.
+   * 1. Conversational guard: catches factual/tool-needing prompts stuck in conversational lane.
+   * 2. Direct guard: catches tool-needing prompts assigned to non-executor agents.
    */
   private applyTriageGuards(triage: TriageResult, prompt: string): void {
+    // ── Guard 1: Conversational → Direct redirect ──
+    // Catches prompts that were classified as conversational but need tools or specialist knowledge
+    if (triage.lane === 'conversational') {
+      const lower = prompt.toLowerCase()
+
+      // Check if toolingNeeds contradicts conversational lane
+      const needs = triage.toolingNeeds
+      if (needs && (needs.webSearch || needs.fileSystem || needs.shellCommand || needs.httpRequest)) {
+        const flags = Object.entries(needs).filter(([, v]) => v).map(([k]) => k).join(', ')
+        console.log(`[Orchestrator] \u{1F6E1} Conv guard: toolingNeeds [${flags}] contradicts conversational — redirecting to direct/executor`)
+        triage.lane = 'direct'
+        triage.agent = 'executor'
+        triage.reasoning += ` [GUARD: toolingNeeds requires executor, not conversational]`
+        triage.reply = undefined as unknown as string
+        return
+      }
+
+      // Regex patterns that should NEVER be conversational
+      const NOT_CONVERSATIONAL = [
+        // System/capability questions
+        /\bwhat\s+(tools?|mcps?|servers?|capabilities?|agents?|features?)\b.*\b(do you|are|have|connected|available)\b/i,
+        /\bwhat\s+(can|could)\s+you\s+do\b/i,
+        /\blist\s+(your|all|the)\s+(tools?|mcps?|servers?|capabilities?|agents?)\b/i,
+        /\bhow\s+many\s+(tools?|mcps?|servers?|agents?)\b/i,
+        /\bwhat\s+are\s+your\s+(capabilities|features|functions)\b/i,
+        // File/shell operations
+        /\b(read|write|create|delete|move|open|check|list)\s+(a\s+|the\s+|my\s+)?(file|folder|directory|dir)\b/i,
+        /\b(run|execute)\s+(a\s+|the\s+)?(command|script|shell|terminal)\b/i,
+        /\b(git|npm|pip|python|node|curl)\s/i,
+        // Web search / live data
+        /\b(search|google|look\s*up|find)\s+(the\s+|for\s+)?(web|internet|online)?\b.{3,}/i,
+        /\b(what('s|\s+is)\s+the\s+(weather|time|date|price|latest|current))\b/i,
+        /\b(who\s+(is|was|are)\s+\w+)/i,
+        // Knowledge questions (not small talk)
+        /\b(explain|describe|how\s+does|what\s+is|define|tell\s+me\s+about)\s+\w+/i,
+        // Reminders/scheduling
+        /\bremind\s+me\b/i,
+      ]
+
+      if (NOT_CONVERSATIONAL.some(p => p.test(lower))) {
+        // Determine best agent based on prompt content
+        const needsTools = /\b(search|fetch|read|write|create|delete|run|execute|check|list|open|curl|git|npm|pip|file|folder|dir|weather|time|price|latest|current)\b/i.test(lower)
+        const agent = needsTools ? 'executor' : 'researcher'
+        console.log(`[Orchestrator] \u{1F6E1} Conv guard: prompt matches non-conversational pattern — redirecting to direct/${agent}`)
+        triage.lane = 'direct'
+        triage.agent = agent
+        triage.reasoning += ` [GUARD: prompt is not pure social interaction — redirected to ${agent}]`
+        triage.reply = undefined as unknown as string
+        return
+      }
+    }
+
+    // ── Guard 2: Direct-lane tool redirect ──
     if (triage.lane !== 'direct') return
 
     // ── Primary Defense: Capability-based routing via toolingNeeds ──
