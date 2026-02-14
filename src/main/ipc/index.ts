@@ -163,7 +163,7 @@ function importMcpServersFromJson(
           command,
           args: args.length > 0 ? args : undefined,
           env: Object.keys(env).length > 0 ? env : undefined,
-          autoConnect: false,
+          autoConnect: true,
           enabled: true,
         })
       } else {
@@ -178,7 +178,7 @@ function importMcpServersFromJson(
           transport: 'sse',
           url,
           env: Object.keys(env).length > 0 ? env : undefined,
-          autoConnect: false,
+          autoConnect: true,
           enabled: true,
         })
       }

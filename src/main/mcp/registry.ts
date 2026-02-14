@@ -20,20 +20,29 @@ const SETTINGS_KEY = 'mcp_servers'
 class McpRegistry {
   private clients = new Map<string, McpClient>()
 
-  /** Load saved configs and auto-connect enabled servers */
+  /** Load saved configs and auto-connect all enabled servers */
   async initialize(): Promise<void> {
     const configs = this.loadConfigs()
+    const toConnect = configs.filter((c) => c.enabled)
 
-    for (const config of configs) {
-      if (config.enabled && config.autoConnect) {
+    if (toConnect.length > 0) {
+      console.log(`[MCP] Auto-connecting ${toConnect.length} enabled server(s)...`)
+    }
+
+    // Connect in parallel for faster startup
+    const results = await Promise.allSettled(
+      toConnect.map(async (config) => {
         try {
           await this.connect(config.id)
-        } catch {
-          // Non-fatal — server might not be running
-          console.warn(`[MCP] Auto-connect failed for "${config.name}"`)
+          console.log(`[MCP] ✓ Connected: "${config.name}"`)
+        } catch (err) {
+          console.warn(`[MCP] ✗ Auto-connect failed for "${config.name}":`, err instanceof Error ? err.message : err)
         }
-      }
-    }
+      })
+    )
+
+    const connected = results.filter((r) => r.status === 'fulfilled').length
+    console.log(`[MCP] Startup complete: ${connected}/${toConnect.length} servers connected`)
   }
 
   // ─── Config Management ────────────────────────────────────
