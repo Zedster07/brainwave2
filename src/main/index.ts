@@ -28,6 +28,7 @@ function createWindow(): void {
     backgroundColor: '#0A0B0F',
     show: false,
     title: 'Brainwave 2',
+    maximizable: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -38,6 +39,7 @@ function createWindow(): void {
 
   // Graceful show when ready
   mainWindow.on('ready-to-show', () => {
+    mainWindow?.maximize()
     mainWindow?.show()
   })
 
