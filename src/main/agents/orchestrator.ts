@@ -832,13 +832,26 @@ ${memoryContext}${peopleContext}${historyContext}`,
     const results = await this.executePlan(task, plan, relevantMemories, conversationHistory)
     if (task.status === 'cancelled') return
 
+    // Check if all subtasks failed — provide a clear error instead of null
+    const allFailed = plan.subTasks.every((st) => st.status === 'failed')
+    if (allFailed) {
+      const errors = plan.subTasks
+        .map((st) => st.error || results.get(st.id)?.error)
+        .filter(Boolean)
+      const errorSummary = errors.length > 0
+        ? `I wasn't able to complete this task. Here's what went wrong:\n\n${errors.map((e) => `- ${e}`).join('\n')}`
+        : 'I wasn\'t able to complete this task — all attempts failed. Please try again or rephrase your request.'
+      await this.completeTask(task, errorSummary, plan, memoryManager)
+      return
+    }
+
     // For single-step plans, use raw output ONLY if it's already a clean string.
     // Structured JSON from agents (researcher, analyst, etc.) must be synthesized
     // into a human-readable response — never show raw JSON to the user.
     let finalResult: unknown
     if (plan.subTasks.length === 1) {
       const rawOutput = results.get(plan.subTasks[0].id)?.output ?? null
-      if (typeof rawOutput === 'string') {
+      if (typeof rawOutput === 'string' && rawOutput.trim()) {
         finalResult = rawOutput
       } else {
         // Structured output (e.g. ResearchOutput, AnalystOutput) → synthesize
@@ -1182,13 +1195,25 @@ Rules:
     } catch (err) {
       console.warn('[Orchestrator] Synthesis failed, falling back to raw compilation:', err)
       // Fallback: concatenate agent outputs as plain text
-      return plan.subTasks
+      const parts = plan.subTasks
         .map((st) => {
           const result = results.get(st.id)
-          return typeof result?.output === 'string' ? result.output : JSON.stringify(result?.output)
+          if (!result?.output) return null
+          return typeof result.output === 'string' ? result.output : JSON.stringify(result.output)
         })
-        .filter(Boolean)
-        .join('\n\n---\n\n')
+        .filter((p): p is string => p !== null && p !== 'null' && p.trim() !== '')
+
+      if (parts.length === 0) {
+        // All agents failed and synthesis failed — give a human-readable error
+        const errors = plan.subTasks
+          .map((st) => st.error || results.get(st.id)?.error)
+          .filter(Boolean)
+        return errors.length > 0
+          ? `I wasn't able to complete this task. Here's what went wrong:\n\n${errors.map((e) => `- ${e}`).join('\n')}`
+          : 'I wasn\'t able to complete this task — all attempts failed. Please try again or rephrase your request.'
+      }
+
+      return parts.join('\n\n---\n\n')
     }
   }
 

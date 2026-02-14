@@ -1266,6 +1266,7 @@ interface McpFormState {
   command: string
   args: string
   url: string
+  env: string
   autoConnect: boolean
 }
 
@@ -1275,6 +1276,7 @@ const emptyMcpForm: McpFormState = {
   command: '',
   args: '',
   url: '',
+  env: '',
   autoConnect: true,
 }
 
@@ -1328,6 +1330,21 @@ function ToolsSettings() {
     setError(null)
     setSaving(true)
     try {
+      // Parse env vars from "KEY=VALUE" lines
+      let env: Record<string, string> | undefined
+      if (form.env.trim()) {
+        env = {}
+        for (const line of form.env.split('\n')) {
+          const trimmed = line.trim()
+          if (!trimmed || trimmed.startsWith('#')) continue
+          const eqIdx = trimmed.indexOf('=')
+          if (eqIdx > 0) {
+            env[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim()
+          }
+        }
+        if (Object.keys(env).length === 0) env = undefined
+      }
+
       const config: Omit<McpServerConfigInfo, 'id'> = {
         name: form.name.trim(),
         transport: form.transport,
@@ -1336,6 +1353,7 @@ function ToolsSettings() {
           ? form.args.split(',').map((a) => a.trim()).filter(Boolean)
           : undefined,
         url: form.transport === 'sse' ? form.url.trim() : undefined,
+        env,
         autoConnect: form.autoConnect,
         enabled: true,
       }
@@ -1645,6 +1663,18 @@ function ToolsSettings() {
                   className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-accent/40" placeholder="http://localhost:3001/sse" />
               </div>
             )}
+
+            <div>
+              <label className="text-[11px] text-gray-500 mb-1 block">Environment Variables</label>
+              <textarea
+                value={form.env}
+                onChange={(e) => setForm({ ...form, env: e.target.value })}
+                rows={3}
+                className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-accent/40 resize-y"
+                placeholder={"TAVILY_API_KEY=tvly-xxx\nGITHUB_TOKEN=ghp-xxx\n# One KEY=VALUE per line"}
+              />
+              <p className="text-[10px] text-gray-600 mt-0.5">Passed to the server process. Lines starting with # are ignored.</p>
+            </div>
 
             <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
               <input type="checkbox" checked={form.autoConnect} onChange={(e) => setForm({ ...form, autoConnect: e.target.checked })}
