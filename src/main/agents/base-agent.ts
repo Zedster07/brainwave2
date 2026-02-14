@@ -570,6 +570,67 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         `Respond with a JSON tool call to begin working on this task. ` +
         `Do NOT respond with text. You MUST output a JSON object.`
 
+      // ── Step 0: Forced sequential-thinking planning phase ──
+      // Find the sequential_thinking MCP tool and call it automatically
+      // so every agent "thinks before acting"
+      let planningContext = ''
+      const seqThinkTool = registry.getAllTools().find(t => t.name === 'sequential_thinking')
+      if (seqThinkTool) {
+        try {
+          console.log(`[${this.type}] Step 0: Auto-calling sequential_thinking for task planning`)
+          this.bus.emitEvent('agent:acting', {
+            agentType: this.type,
+            taskId: context.taskId,
+            action: 'Planning with sequential thinking...',
+          })
+
+          const planThought =
+            `Analyze this task and create a step-by-step plan before taking action.\n\n` +
+            `Task: ${task.description}\n\n` +
+            (parentContext ? `Original user request context: ${context.parentTask}\n\n` : '') +
+            `Consider:\n` +
+            `1. What is the user actually asking for?\n` +
+            `2. What tools would be most effective?\n` +
+            `3. What is the most efficient sequence of tool calls?\n` +
+            `4. What could go wrong and how to handle it?\n` +
+            `5. When should I stop and report results?`
+
+          const thinkResult = await registry.callTool(seqThinkTool.key, {
+            thought: planThought,
+            nextThoughtNeeded: false,
+            thoughtNumber: 1,
+            totalThoughts: 1,
+          })
+
+          if (thinkResult.success && thinkResult.content) {
+            planningContext = `\n\n== PLANNING ANALYSIS (from sequential thinking) ==\n${thinkResult.content.slice(0, 2000)}\n`
+            console.log(`[${this.type}] Step 0: sequential_thinking completed (${thinkResult.duration}ms)`)
+          }
+
+          this.bus.emitEvent('agent:tool-result', {
+            agentType: this.type,
+            taskId: context.taskId,
+            tool: seqThinkTool.key,
+            success: thinkResult.success,
+            summary: 'Task planning completed',
+            step: 0,
+          })
+        } catch (err) {
+          console.warn(`[${this.type}] Step 0: sequential_thinking failed, continuing without planning:`, err)
+        }
+      } else {
+        console.warn(`[${this.type}] sequential_thinking MCP tool not found — skipping planning phase`)
+      }
+
+      // Inject planning context into the initial prompt
+      if (planningContext) {
+        currentPrompt =
+          `TASK: ${task.description}\n${parentContext}${historyContext}${priorContext}${blackboardContext}${planningContext}\n` +
+          `Use the planning analysis above to guide your approach. ` +
+          `Respond with a JSON tool call to begin working on this task. ` +
+          `Do NOT respond with text. You MUST output a JSON object.`
+      }
+
       let step = 0
       let loopDetected = false
       while (step < ABSOLUTE_MAX_STEPS) {
