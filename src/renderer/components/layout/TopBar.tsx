@@ -82,7 +82,7 @@ export function TopBar() {
   const { label, color, icon: StateIcon, animate } = stateConfig[systemState]
 
   return (
-    <header className="flex items-center justify-between h-14 px-6 border-b border-white/[0.06] bg-surface-dark/50 backdrop-blur-sm">
+    <header className="flex items-center justify-between h-14 px-6 border-b border-white/[0.06] bg-surface-dark/60 backdrop-blur-xl">
       {/* Page title */}
       <h1 className="text-lg font-semibold text-white">{title}</h1>
 

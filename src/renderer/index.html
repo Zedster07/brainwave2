@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:;" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob: https://cdn.weatherapi.com;" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -17,44 +17,162 @@
       background: #0A0B0F;
       font-family: 'Inter', system-ui, sans-serif;
       transition: opacity 0.4s ease, visibility 0.4s ease;
+      overflow: hidden;
     ">
+      <!-- Animated neural-network canvas background -->
+      <canvas id="splash-canvas" style="position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0.5;"></canvas>
+
+      <!-- Radial gradient overlay -->
+      <div style="
+        position: absolute; inset: 0;
+        background: radial-gradient(ellipse 60% 50% at 50% 50%, transparent 0%, #0A0B0F 100%);
+      "></div>
+
+      <!-- Accent glow -->
+      <div style="
+        position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%);
+        width: 400px; height: 400px;
+        background: radial-gradient(circle, rgba(99, 102, 241, 0.12) 0%, transparent 70%);
+        animation: splash-glow 3s ease-in-out infinite;
+        pointer-events: none;
+      "></div>
+
       <!-- Animated rings -->
-      <div style="position: relative; width: 72px; height: 72px; margin-bottom: 28px;">
+      <div style="position: relative; width: 80px; height: 80px; margin-bottom: 32px; z-index: 1;">
         <div style="
           position: absolute; inset: 0;
           border: 2px solid transparent;
-          border-top-color: #6C63FF;
+          border-top-color: #6366F1;
+          border-right-color: rgba(99, 102, 241, 0.3);
           border-radius: 50%;
           animation: splash-spin 1s linear infinite;
+          filter: drop-shadow(0 0 8px rgba(99, 102, 241, 0.4));
         "></div>
         <div style="
-          position: absolute; inset: 8px;
-          border: 2px solid transparent;
-          border-top-color: #a78bfa;
+          position: absolute; inset: 10px;
+          border: 1.5px solid transparent;
+          border-top-color: #818CF8;
+          border-left-color: rgba(129, 140, 248, 0.2);
           border-radius: 50%;
-          animation: splash-spin 1.6s linear infinite reverse;
+          animation: splash-spin 1.8s linear infinite reverse;
+          filter: drop-shadow(0 0 6px rgba(129, 140, 248, 0.3));
         "></div>
         <div style="
-          position: absolute; inset: 18px;
-          border: 2px solid transparent;
-          border-top-color: #c4b5fd;
+          position: absolute; inset: 22px;
+          border: 1px solid transparent;
+          border-top-color: #A5B4FC;
           border-radius: 50%;
-          animation: splash-spin 2s linear infinite;
+          animation: splash-spin 2.4s linear infinite;
         "></div>
         <!-- Center dot -->
         <div style="
-          position: absolute; inset: 28px;
-          background: #6C63FF;
+          position: absolute; inset: 30px;
+          background: linear-gradient(135deg, #6366F1, #818CF8);
           border-radius: 50%;
-          animation: splash-pulse 1.5s ease-in-out infinite;
+          animation: splash-pulse 2s ease-in-out infinite;
+          box-shadow: 0 0 20px rgba(99, 102, 241, 0.5);
         "></div>
       </div>
-      <div style="font-size: 18px; font-weight: 600; color: #e2e0ff; letter-spacing: 0.05em;">Brainwave</div>
-      <div style="font-size: 11px; color: #555; margin-top: 6px; letter-spacing: 0.08em;">INITIALIZING SYSTEMS</div>
+      <div style="font-size: 20px; font-weight: 600; color: #e2e0ff; letter-spacing: 0.06em; z-index: 1;
+        background: linear-gradient(135deg, #e2e0ff, #A5B4FC);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      ">Brainwave</div>
+      <div style="font-size: 10px; color: #444; margin-top: 8px; letter-spacing: 0.12em; text-transform: uppercase; z-index: 1;
+        animation: splash-text-pulse 2s ease-in-out infinite;
+      ">Initializing Systems</div>
+
       <style>
         @keyframes splash-spin { to { transform: rotate(360deg); } }
-        @keyframes splash-pulse { 0%, 100% { opacity: .4; transform: scale(.9); } 50% { opacity: 1; transform: scale(1.1); } }
+        @keyframes splash-pulse { 0%, 100% { opacity: .4; transform: scale(.85); } 50% { opacity: 1; transform: scale(1.15); } }
+        @keyframes splash-glow { 0%, 100% { opacity: .5; transform: translate(-50%, -50%) scale(0.9); } 50% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); } }
+        @keyframes splash-text-pulse { 0%, 100% { opacity: .4; } 50% { opacity: .8; } }
       </style>
+
+      <script>
+        // Neural network particle animation
+        (function() {
+          const canvas = document.getElementById('splash-canvas');
+          if (!canvas) return;
+          const ctx = canvas.getContext('2d');
+          let w, h, particles = [], animId;
+
+          function resize() {
+            w = canvas.width = canvas.offsetWidth * (window.devicePixelRatio || 1);
+            h = canvas.height = canvas.offsetHeight * (window.devicePixelRatio || 1);
+            ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+          }
+          resize();
+          window.addEventListener('resize', resize);
+
+          const COUNT = 60;
+          const CONNECT_DIST = 140;
+          const COLORS = ['99,102,241', '129,140,248', '165,180,252', '139,92,246'];
+
+          for (let i = 0; i < COUNT; i++) {
+            const cw = canvas.offsetWidth, ch = canvas.offsetHeight;
+            particles.push({
+              x: Math.random() * cw,
+              y: Math.random() * ch,
+              vx: (Math.random() - 0.5) * 0.4,
+              vy: (Math.random() - 0.5) * 0.4,
+              r: Math.random() * 2 + 1,
+              color: COLORS[Math.floor(Math.random() * COLORS.length)],
+              pulse: Math.random() * Math.PI * 2,
+            });
+          }
+
+          function draw() {
+            const cw = canvas.offsetWidth, ch = canvas.offsetHeight;
+            ctx.clearRect(0, 0, cw, ch);
+
+            // Draw connections
+            for (let i = 0; i < particles.length; i++) {
+              for (let j = i + 1; j < particles.length; j++) {
+                const dx = particles[i].x - particles[j].x;
+                const dy = particles[i].y - particles[j].y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < CONNECT_DIST) {
+                  const alpha = (1 - dist / CONNECT_DIST) * 0.15;
+                  ctx.strokeStyle = 'rgba(99,102,241,' + alpha + ')';
+                  ctx.lineWidth = 0.5;
+                  ctx.beginPath();
+                  ctx.moveTo(particles[i].x, particles[i].y);
+                  ctx.lineTo(particles[j].x, particles[j].y);
+                  ctx.stroke();
+                }
+              }
+            }
+
+            // Draw particles
+            for (const p of particles) {
+              p.pulse += 0.02;
+              const glow = 0.3 + Math.sin(p.pulse) * 0.3;
+              ctx.beginPath();
+              ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+              ctx.fillStyle = 'rgba(' + p.color + ',' + glow + ')';
+              ctx.fill();
+
+              // Move
+              p.x += p.vx;
+              p.y += p.vy;
+              if (p.x < 0 || p.x > cw) p.vx *= -1;
+              if (p.y < 0 || p.y > ch) p.vy *= -1;
+            }
+
+            animId = requestAnimationFrame(draw);
+          }
+          draw();
+
+          // Cleanup when splash is removed
+          const observer = new MutationObserver(function() {
+            if (!document.getElementById('splash')) {
+              cancelAnimationFrame(animId);
+              observer.disconnect();
+            }
+          });
+          observer.observe(document.body, { childList: true });
+        })();
+      </script>
     </div>
     <div id="root"></div>
     <script type="module" src="./main.tsx"></script>

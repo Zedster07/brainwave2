@@ -19,14 +19,14 @@ export function Settings() {
   const [activeTab, setActiveTab] = useState<SettingsTab>('general')
 
   return (
-    <div className="max-w-3xl mx-auto">
+    <div className="w-full">
       <div className="flex items-center gap-3 mb-6">
         <SettingsIcon className="w-5 h-5 text-gray-400" />
         <h2 className="text-lg font-semibold text-white">Settings</h2>
       </div>
 
       {/* Tabs */}
-      <div className="flex gap-1 mb-6 p-1 bg-white/[0.02] rounded-lg w-fit">
+      <div className="flex gap-1 mb-6 p-1.5 glass-card w-fit">
         {TABS.map((tab) => {
           const Icon = tab.icon
           return (
@@ -34,10 +34,10 @@ export function Settings() {
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               className={`
-                flex items-center gap-2 px-4 py-2 rounded-md text-sm transition-all
+                flex items-center gap-2 px-4 py-2 rounded-xl text-sm transition-all duration-300
                 ${activeTab === tab.id
-                  ? 'bg-accent/10 text-accent'
-                  : 'text-gray-500 hover:text-gray-300'
+                  ? 'bg-accent/10 text-accent border border-accent/20'
+                  : 'text-gray-500 hover:text-gray-300 hover:bg-white/[0.04] border border-transparent'
                 }
               `}
             >
@@ -49,7 +49,7 @@ export function Settings() {
       </div>
 
       {/* Content */}
-      <div className="glass-card p-6">
+      <div className="glass-card p-8">
         {activeTab === 'general' && <GeneralSettings />}
         {activeTab === 'models' && <ModelSettings />}
         {activeTab === 'daily-pulse' && <DailyPulseSettings />}

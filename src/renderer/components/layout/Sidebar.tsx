@@ -38,8 +38,8 @@ export function Sidebar() {
   return (
     <aside
       className={`
-        flex flex-col h-full bg-surface-dark border-r border-white/[0.06]
-        transition-all duration-200 ease-out
+        flex flex-col h-full glass-surface bg-surface-dark/80 border-r
+        transition-all duration-300 ease-out
         ${sidebarCollapsed ? 'w-16' : 'w-56'}
       `}
     >
