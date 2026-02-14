@@ -34,8 +34,9 @@ export class ExecutorAgent extends BaseAgent {
         `{ "tool": "<tool_key>", "args": { ... } }\n\n` +
         `- tool_key format is "serverId::toolName" (e.g. "local::file_read", "local::directory_list", "local::http_request", or "abc123::search")\n` +
         `- args must match the tool's input schema\n` +
-        `- You can call ONE tool per response\n` +
-        `- After seeing the tool result, provide your final answer\n` +
+        `- You can call ONE tool per response — NEVER output multiple tool calls\n` +
+        `- Your entire response MUST be a single JSON object — NO text before or after it\n` +
+        `- After seeing the tool result, decide: call another tool OR provide your final answer\n` +
         `- For file paths, always use absolute paths\n` +
         `- On Windows, use backslashes (e.g. "C:\\Users\\...") or forward slashes`
       : '\n\nNo tools are currently available. Answer using your knowledge only.'
@@ -446,30 +447,68 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
       return null
     }
 
+    // 1. Try full content as JSON
     try {
       const result = extractTool(JSON.parse(content))
       if (result) return result
-    } catch {
-      // Try to extract JSON from markdown code blocks
-      const jsonMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/)
-      if (jsonMatch) {
-        try {
-          const result = extractTool(JSON.parse(jsonMatch[1]))
-          if (result) return result
-        } catch { /* Not valid JSON in code block */ }
-      }
+    } catch { /* not pure JSON */ }
 
-      // Try to find a JSON object with "tool" key in the response
-      const objMatch = content.match(/\{[\s\S]*"tool"\s*:\s*"[^"]+[\s\S]*\}/)
-      if (objMatch) {
+    // 2. Try markdown code block
+    const jsonMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/)
+    if (jsonMatch) {
+      try {
+        const result = extractTool(JSON.parse(jsonMatch[1]))
+        if (result) return result
+      } catch { /* Not valid JSON in code block */ }
+    }
+
+    // 3. Handle mixed prose + tool calls, and multiple tool calls separated by [TOOL_CALL]
+    //    Split on [TOOL_CALL] markers, then extract the first valid JSON tool call from any chunk.
+    const chunks = content.split(/\[TOOL_CALL\]/i)
+    for (const chunk of chunks) {
+      const extracted = this.extractFirstJsonObject(chunk)
+      if (extracted) {
         try {
-          const result = extractTool(JSON.parse(objMatch[0]))
-          if (result) return result
-        } catch { /* Not valid JSON */ }
+          const result = extractTool(JSON.parse(extracted))
+          if (result) {
+            if (chunks.length > 1) {
+              console.log(`[Executor] Extracted first tool call from ${chunks.length} [TOOL_CALL] chunks`)
+            }
+            return result
+          }
+        } catch { /* keep trying next chunk */ }
       }
     }
 
     return null
+  }
+
+  /**
+   * Extract the first balanced JSON object from a string that may contain
+   * surrounding prose text. Uses bracket counting to find the matching '}'.
+   */
+  private extractFirstJsonObject(text: string): string | null {
+    const start = text.indexOf('{')
+    if (start === -1) return null
+
+    let depth = 0
+    let inString = false
+    let escape = false
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i]
+      if (escape) { escape = false; continue }
+      if (ch === '\\' && inString) { escape = true; continue }
+      if (ch === '"' && !escape) { inString = !inString; continue }
+      if (inString) continue
+      if (ch === '{') depth++
+      else if (ch === '}') {
+        depth--
+        if (depth === 0) {
+          return text.slice(start, i + 1)
+        }
+      }
+    }
+    return null // unbalanced
   }
 
   /** Parse a done signal { "done": true, "summary": "..." } from the LLM's response */
@@ -488,6 +527,10 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
       return null
     }
 
+    // Guard: if the response contains [TOOL_CALL] markers or multiple { "tool": ... } objects,
+    // it's NOT a done signal — it's multiple tool calls. Reject early.
+    if (/\[TOOL_CALL\]/i.test(content)) return null
+
     try {
       return extractDone(JSON.parse(content))
     } catch {
@@ -500,11 +543,11 @@ destructive commands like format/shutdown, protected file extensions like .exe/.
         } catch { /* ignore */ }
       }
 
-      // Try to find { "done": true } object anywhere in the response
-      const objMatch = content.match(/\{[\s\S]*"done"\s*:\s*true[\s\S]*\}/)
-      if (objMatch) {
+      // Try to find a { "done": true } object using balanced extraction
+      const extracted = this.extractFirstJsonObject(content)
+      if (extracted) {
         try {
-          const result = extractDone(JSON.parse(objMatch[0]))
+          const result = extractDone(JSON.parse(extracted))
           if (result) return result
         } catch { /* ignore */ }
       }
