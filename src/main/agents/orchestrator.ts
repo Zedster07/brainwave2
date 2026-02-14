@@ -1138,7 +1138,10 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
           relevantMemories,
           conversationHistory,
           siblingResults: results,
-          images: task.images,
+          // Only pass images to the FIRST step (the one that interprets the visual input).
+          // Subsequent steps (create-folder, save-files, verify, etc.) don't need vision
+          // and passing images to non-vision models causes "No endpoints found" errors.
+          images: stepIndex === 1 ? task.images : undefined,
           blackboard: blackboardHandle,
           toolingNeeds: (task as any)._toolingNeeds,
         })

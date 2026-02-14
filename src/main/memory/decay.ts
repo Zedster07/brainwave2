@@ -302,11 +302,15 @@ export class MemoryDecayService {
 
   /** Remove a memory and its index entries */
   private pruneMemory(db: ReturnType<typeof getDatabase>, entry: EpisodicEntry): void {
-    // Remove FTS index
-    db.run(`DELETE FROM fts_index WHERE memory_id = ? AND memory_type = 'episodic'`, entry.id)
+    // Remove FTS index (table may not exist if FTS was never initialized)
+    try {
+      db.run(`DELETE FROM fts_index WHERE memory_id = ? AND memory_type = 'episodic'`, entry.id)
+    } catch { /* fts_index table doesn't exist — skip */ }
 
-    // Remove embeddings
-    db.run(`DELETE FROM embeddings WHERE memory_id = ? AND memory_type = 'episodic'`, entry.id)
+    // Remove embeddings (table may not exist if embeddings were never created)
+    try {
+      db.run(`DELETE FROM embeddings WHERE memory_id = ? AND memory_type = 'episodic'`, entry.id)
+    } catch { /* embeddings table doesn't exist — skip */ }
 
     // Remove the memory itself
     db.run(`DELETE FROM episodic_memories WHERE id = ?`, entry.id)
