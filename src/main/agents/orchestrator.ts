@@ -106,12 +106,15 @@ export class Orchestrator extends BaseAgent {
     try {
       const registry = getMcpRegistry()
       const statuses = registry.getStatuses()
+      const allTools = registry.getAllTools()
       const connected = statuses.filter((s) => s.state === 'connected')
       const failed = statuses.filter((s) => s.state === 'error')
       if (connected.length === 0 && failed.length === 0) return '\nMCP Servers: None configured.'
       let summary = `\nMCP SERVERS (${connected.length} connected, ${failed.length} failed):`
       for (const s of connected) {
-        summary += `\n- ${s.name} — CONNECTED (${s.toolCount} tools)`
+        const serverTools = allTools.filter((t) => t.serverName === s.name || t.serverId === s.id)
+        const toolNames = serverTools.map((t) => t.name).join(', ')
+        summary += `\n- ${s.name} — CONNECTED (${s.toolCount} tools: ${toolNames || 'none listed'})`
       }
       for (const s of failed) {
         summary += `\n- ${s.name} — FAILED: ${s.error ?? 'unknown error'}`
@@ -225,6 +228,15 @@ Does this prompt require ANY of the following?
 If YES to ANY → set the matching toolingNeeds flags to true.
 If ANY toolingNeeds flag is true → this CANNOT be "conversational". Route to "direct" agent "executor" (or "complex" if multi-step).
 
+STEP 1.5 — CHECK IF IT'S A SELF-KNOWLEDGE QUESTION (→ "conversational" with factual reply)
+Is the user asking about YOUR capabilities, tools, MCP servers, or system configuration?
+Examples: "what tools do you have?", "list your MCP servers", "what can Puppeteer do?",
+"what tools are in the GitHub server?", "what are your capabilities?"
+If YES → the answer is in the SYSTEM CAPABILITIES section above. Use lane "conversational" and
+answer ONLY from the data listed above. Do NOT use training knowledge — ONLY report what is
+actually listed in the SYSTEM CAPABILITIES section. Include specific tool names from the listing.
+NEVER route these to "researcher" — the researcher has NO access to this system data!
+
 STEP 2 — CHECK IF IT'S A KNOWLEDGE/REASONING TASK (→ "direct" with specialist)
 Does this prompt ask for:
   • Code generation, debugging, explanation → "direct" agent "coder"
@@ -250,12 +262,13 @@ STEP 4 — ONLY THEN consider "conversational"
 
 EXAMPLES of CONVERSATIONAL (lane = "conversational"):
   "hello" | "hi there" | "good morning" | "what's your name?" | "thanks!" |
-  "how are you?" | "goodbye" | "you're awesome" | "lol" | "do you remember me?"
+  "how are you?" | "goodbye" | "you're awesome" | "lol" | "do you remember me?" |
+  "what tools do you have?" (self-knowledge — answer from SYSTEM CAPABILITIES above) |
+  "what MCP servers are connected?" (self-knowledge — answer from SYSTEM CAPABILITIES above) |
+  "what can you do?" (self-knowledge — answer from SYSTEM CAPABILITIES above) |
+  "what tools does the Puppeteer server have?" (self-knowledge — answer from SYSTEM CAPABILITIES above)
 
 EXAMPLES that are NOT CONVERSATIONAL (common misclassifications to avoid):
-  "what tools do you have?" → direct/researcher (system knowledge question)
-  "what MCP servers are connected?" → direct/executor (system state query)
-  "what can you do?" → direct/researcher (capability enumeration)
   "explain how React hooks work" → direct/researcher (knowledge task)
   "what's the weather?" → direct/executor (needs web search)
   "summarize this for me" → direct/researcher (reasoning task)
@@ -1275,13 +1288,24 @@ Rules:
       }
 
       // Regex patterns that should NEVER be conversational
-      const NOT_CONVERSATIONAL = [
-        // System/capability questions
-        /\bwhat\s+(tools?|mcps?|servers?|capabilities?|agents?|features?)\b.*\b(do you|are|have|connected|available)\b/i,
+      // EXCEPTION: Self-knowledge questions about MCP/tools/capabilities ARE allowed
+      // in conversational since the MCP summary with tool names is injected into the prompt
+      const SELF_KNOWLEDGE = [
+        /\b(what|which|list|show|tell)\b.*\b(tools?|mcps?|servers?|capabilities?|agents?|features?)\b.*\b(do you|are|have|connected|available|can you)\b/i,
         /\bwhat\s+(can|could)\s+you\s+do\b/i,
-        /\blist\s+(your|all|the)\s+(tools?|mcps?|servers?|capabilities?|agents?)\b/i,
+        /\blist\s+(your|all|the|my|me)\s+(tools?|mcps?|servers?|capabilities?|agents?)\b/i,
         /\bhow\s+many\s+(tools?|mcps?|servers?|agents?)\b/i,
         /\bwhat\s+are\s+your\s+(capabilities|features|functions)\b/i,
+        /\bwhat\s+(tools?|functions?)\s+(are|does)\s+(available|the)\b.*\b(mcp|server)\b/i,
+        /\bmcp\s+server\b.*\b(tools?|capabilities?)\b/i,
+      ]
+      const isSelfKnowledge = SELF_KNOWLEDGE.some(p => p.test(lower))
+      if (isSelfKnowledge) {
+        // Self-knowledge question — let it stay in conversational (MCP data is in the prompt)
+        return
+      }
+
+      const NOT_CONVERSATIONAL = [
         // File/shell operations
         /\b(read|write|create|delete|move|open|check|list)\s+(a\s+|the\s+|my\s+)?(file|folder|directory|dir)\b/i,
         /\b(run|execute)\s+(a\s+|the\s+)?(command|script|shell|terminal)\b/i,
