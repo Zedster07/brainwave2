@@ -45,10 +45,25 @@ export class OpenRouterProvider implements LLMAdapter {
       })
     }
 
-    messages.push({ role: 'user', content: request.user })
+    // Build user message — multimodal content array if images are present
+    if (request.images && request.images.length > 0) {
+      const contentParts: OpenAI.Chat.ChatCompletionContentPart[] = [
+        { type: 'text', text: request.user },
+        ...request.images.map((img) => ({
+          type: 'image_url' as const,
+          image_url: {
+            url: `data:${img.mimeType};base64,${img.data}`,
+            detail: 'auto' as const,
+          },
+        })),
+      ]
+      messages.push({ role: 'user', content: contentParts })
+    } else {
+      messages.push({ role: 'user', content: request.user })
+    }
 
     try {
-      console.log(`[OpenRouter] → ${model} | msgs=${messages.length} | format=${request.responseFormat ?? 'text'} | temp=${request.temperature ?? 0.7} | maxTokens=${request.maxTokens ?? 4096}`)
+      console.log(`[OpenRouter] → ${model} | msgs=${messages.length} | format=${request.responseFormat ?? 'text'} | temp=${request.temperature ?? 0.7} | maxTokens=${request.maxTokens ?? 4096}${request.images?.length ? ` | images=${request.images.length}` : ''}`)
 
       const response = await withRetry(
         () => this.client.chat.completions.create({
@@ -95,7 +110,22 @@ export class OpenRouterProvider implements LLMAdapter {
       })
     }
 
-    messages.push({ role: 'user', content: request.user })
+    // Build user message — multimodal content array if images are present
+    if (request.images && request.images.length > 0) {
+      const contentParts: OpenAI.Chat.ChatCompletionContentPart[] = [
+        { type: 'text', text: request.user },
+        ...request.images.map((img) => ({
+          type: 'image_url' as const,
+          image_url: {
+            url: `data:${img.mimeType};base64,${img.data}`,
+            detail: 'auto' as const,
+          },
+        })),
+      ]
+      messages.push({ role: 'user', content: contentParts })
+    } else {
+      messages.push({ role: 'user', content: request.user })
+    }
 
     const stream = await this.client.chat.completions.create({
       model,

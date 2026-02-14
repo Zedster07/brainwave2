@@ -246,7 +246,7 @@ export function registerIpcHandlers(): void {
   orchestrator.setExecutor((subTask, context) => agentPool.executeTask(subTask, context))
 
   ipcMain.handle(IPC_CHANNELS.AGENT_SUBMIT_TASK, async (_event, task: TaskSubmission) => {
-    const record = await orchestrator.submitTask(task.prompt, task.priority ?? 'normal', task.sessionId)
+    const record = await orchestrator.submitTask(task.prompt, task.priority ?? 'normal', task.sessionId, task.images)
     return { taskId: record.id }
   })
 

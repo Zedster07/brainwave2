@@ -159,6 +159,17 @@ export interface TaskSubmission {
   priority?: 'low' | 'normal' | 'high'
   sessionId?: string
   context?: Record<string, unknown>
+  images?: ImageAttachment[]
+}
+
+/** Base64-encoded image attachment for vision-capable LLMs */
+export interface ImageAttachment {
+  /** base64-encoded image data (no data: prefix) */
+  data: string
+  /** MIME type, e.g. 'image/png', 'image/jpeg', 'image/webp', 'image/gif' */
+  mimeType: string
+  /** Optional filename for display */
+  name?: string
 }
 
 export type TaskStatus = 'queued' | 'planning' | 'executing' | 'completed' | 'failed' | 'cancelled'

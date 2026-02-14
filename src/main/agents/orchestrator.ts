@@ -24,6 +24,7 @@ import { getProspectiveStore } from '../memory/prospective'
 import { ReflectionAgent } from './reflection'
 import { getSoftEngine } from '../rules'
 import { getPromptRegistry } from '../prompts'
+import type { ImageAttachment } from '@shared/types'
 
 // ─── Task Record (stored in DB) ────────────────────────────
 
@@ -37,6 +38,7 @@ export interface TaskRecord {
   error?: string
   createdAt: number
   completedAt?: number
+  images?: ImageAttachment[]
 }
 
 // ─── Triage Classification ─────────────────────────────────
@@ -358,7 +360,7 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
   }
 
   /** Main entry point — submit a user task */
-  async submitTask(prompt: string, priority: 'low' | 'normal' | 'high' = 'normal', sessionId?: string): Promise<TaskRecord> {
+  async submitTask(prompt: string, priority: 'low' | 'normal' | 'high' = 'normal', sessionId?: string, images?: ImageAttachment[]): Promise<TaskRecord> {
     const taskId = randomUUID()
     const task: TaskRecord = {
       id: taskId,
@@ -366,6 +368,7 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
       priority,
       status: 'pending',
       createdAt: Date.now(),
+      images,
     }
 
     this.activeTasks.set(taskId, task)
@@ -534,7 +537,7 @@ Only use "complex" when the task genuinely requires multiple steps or agents.`,
       this.db.run(`UPDATE tasks SET status = 'planning' WHERE id = ?`, task.id)
       this.bus.emitEvent('task:planning', { taskId: task.id })
 
-      const triageContext: AgentContext = { taskId: task.id, relevantMemories, conversationHistory }
+      const triageContext: AgentContext = { taskId: task.id, relevantMemories, conversationHistory, images: task.images }
       const triage = await this.triage(task.prompt, triageContext, relevantMemories, conversationHistory)
 
       // 1b. Apply code-level routing guards (prompts are suggestions; guards are law)
@@ -634,11 +637,13 @@ CRITICAL RULES:
 - Be warm, concise, and genuine — like a thoughtful friend
 - Reference the conversation history naturally to maintain context
 - Keep responses focused and helpful
+${task.images?.length ? '- The user has attached image(s). Describe and reference them naturally in your response.' : ''}
 
 ${memoryContext}${peopleContext}${historyContext}`,
           user: task.prompt,
           temperature: 0.7,
           maxTokens: 1024,
+          images: task.images?.map((img) => ({ data: img.data, mimeType: img.mimeType })),
         })
         reply = response.content
       } catch (err) {
@@ -1018,6 +1023,7 @@ ${memoryContext}${peopleContext}${historyContext}`,
           relevantMemories,
           conversationHistory,
           siblingResults: results,
+          images: task.images,
         })
 
         results.set(subTask.id, result)

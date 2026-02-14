@@ -16,6 +16,8 @@ export interface LLMRequest {
   temperature?: number  // default 0.7
   maxTokens?: number    // default 4096
   responseFormat?: 'text' | 'json'
+  /** Optional images for vision-capable models (base64-encoded) */
+  images?: Array<{ data: string; mimeType: string }>
 }
 
 export interface LLMResponse {

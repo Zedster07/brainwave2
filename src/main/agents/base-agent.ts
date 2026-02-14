@@ -11,6 +11,7 @@ import { getEventBus, type AgentType } from './event-bus'
 import { getDatabase } from '../db/database'
 import { getSoftEngine } from '../rules'
 import { getPromptRegistry } from '../prompts'
+import type { ImageAttachment } from '@shared/types'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -41,6 +42,7 @@ export interface AgentContext {
   parentTask?: string
   relevantMemories?: string[]
   siblingResults?: Map<string, AgentResult>
+  images?: ImageAttachment[]
 }
 
 export interface AgentResult {
@@ -268,6 +270,7 @@ export abstract class BaseAgent {
       temperature: overrides?.temperature ?? modelConfig?.temperature ?? 0.7,
       maxTokens: overrides?.maxTokens ?? modelConfig?.maxTokens ?? 4096,
       responseFormat: overrides?.responseFormat,
+      images: context.images?.map((img) => ({ data: img.data, mimeType: img.mimeType })),
     }
 
     console.log(`[${this.type}] think() → model=${request.model} | format=${request.responseFormat ?? 'text'} | prompt=${userMessage.slice(0, 120)}...`)

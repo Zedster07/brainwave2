@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Send, Sparkles, Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, Ban, Plus, MessageSquare, Trash2, Pencil, PanelLeftClose, PanelLeft, Mic, MicOff, Volume2, VolumeX } from 'lucide-react'
+import { Send, Sparkles, Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, Ban, Plus, MessageSquare, Trash2, Pencil, PanelLeftClose, PanelLeft, Mic, MicOff, Volume2, VolumeX, Paperclip, X, ImageIcon } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
 import { useVoice } from '../../hooks/useVoice'
-import type { TaskUpdate, TaskStatus, ChatSession, TaskLiveState } from '@shared/types'
+import type { TaskUpdate, TaskStatus, ChatSession, TaskLiveState, ImageAttachment } from '@shared/types'
 
 interface LiveTask {
   id: string
@@ -28,6 +28,47 @@ export function CommandCenter() {
   const voice = useVoice({
     onResult: (transcript) => setInput((prev) => (prev ? prev + ' ' : '') + transcript),
   })
+
+  // Image attachments
+  const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const MAX_IMAGES = 5
+  const MAX_IMAGE_SIZE = 4 * 1024 * 1024 // 4MB per image
+
+  const fileToImageAttachment = useCallback((file: File): Promise<ImageAttachment | null> => {
+    return new Promise((resolve) => {
+      if (!file.type.startsWith('image/')) { resolve(null); return }
+      if (file.size > MAX_IMAGE_SIZE) {
+        console.warn(`[CommandCenter] Image too large: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`)
+        resolve(null)
+        return
+      }
+      const reader = new FileReader()
+      reader.onload = () => {
+        const dataUrl = reader.result as string
+        const base64 = dataUrl.split(',')[1]
+        if (!base64) { resolve(null); return }
+        resolve({ data: base64, mimeType: file.type, name: file.name })
+      }
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(file)
+    })
+  }, [])
+
+  const addImages = useCallback(async (files: File[]) => {
+    const remaining = MAX_IMAGES - attachedImages.length
+    if (remaining <= 0) return
+    const toProcess = files.slice(0, remaining)
+    const results = await Promise.all(toProcess.map(fileToImageAttachment))
+    const valid = results.filter((r): r is ImageAttachment => r !== null)
+    if (valid.length > 0) {
+      setAttachedImages((prev) => [...prev, ...valid].slice(0, MAX_IMAGES))
+    }
+  }, [attachedImages.length, fileToImageAttachment])
+
+  const removeImage = useCallback((index: number) => {
+    setAttachedImages((prev) => prev.filter((_, i) => i !== index))
+  }, [])
 
   // Auto-scroll to bottom when tasks change
   const scrollToBottom = useCallback(() => {
@@ -151,10 +192,12 @@ export function CommandCenter() {
 
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!input.trim() || submitting) return
+    if ((!input.trim() && attachedImages.length === 0) || submitting) return
 
     const prompt = input.trim()
+    const images = attachedImages.length > 0 ? [...attachedImages] : undefined
     setInput('')
+    setAttachedImages([])
     // Reset textarea height
     if (inputRef.current) inputRef.current.style.height = 'auto'
     setSubmitting(true)
@@ -163,14 +206,14 @@ export function CommandCenter() {
       // Auto-create session if none active
       let sessionId = activeSessionId
       if (!sessionId) {
-        const session = await window.brainwave.createSession(prompt.slice(0, 60))
+        const session = await window.brainwave.createSession(prompt.slice(0, 60) || 'Image chat')
         setSessions((prev) => [session, ...prev])
         setActiveSessionId(session.id)
         sessionId = session.id
       } else {
         // Auto-title: if this is the first message in the session, update title
         if (tasks.length === 0) {
-          const title = prompt.slice(0, 60)
+          const title = (prompt || 'Image chat').slice(0, 60)
           const updated = await window.brainwave.renameSession(sessionId, title)
           if (updated) {
             setSessions((prev) => prev.map((s) => s.id === sessionId ? { ...s, title: updated.title } : s))
@@ -178,16 +221,21 @@ export function CommandCenter() {
         }
       }
 
+      const displayPrompt = images
+        ? `${prompt || 'Analyze image(s)'}${images.length > 0 ? ` [${images.length} image${images.length > 1 ? 's' : ''}]` : ''}`
+        : prompt
+
       const { taskId } = await window.brainwave.submitTask({
         id: crypto.randomUUID(),
-        prompt,
+        prompt: prompt || 'Analyze the attached image(s)',
         priority: 'normal',
         sessionId,
+        images,
       })
 
       setTasks((prev) => [
         ...prev,
-        { id: taskId, prompt, status: 'queued', activityLog: [], timestamp: Date.now() },
+        { id: taskId, prompt: displayPrompt, status: 'queued', activityLog: [], timestamp: Date.now() },
       ])
       scrollToBottom()
     } catch (err) {
@@ -201,7 +249,7 @@ export function CommandCenter() {
       setSubmitting(false)
       inputRef.current?.focus()
     }
-  }, [input, submitting, activeSessionId, tasks.length])
+  }, [input, submitting, activeSessionId, tasks.length, attachedImages])
 
   const handleCancel = useCallback(async (taskId: string) => {
     try {
@@ -407,13 +455,76 @@ export function CommandCenter() {
 
               {/* Task Input — pinned to bottom */}
               <div className="sticky bottom-0 z-10 pt-2 pb-4 px-4 bg-gradient-to-t from-primary via-primary to-transparent">
-                <form onSubmit={handleSubmit} className="glass-card p-4">
+                <form
+                  onSubmit={handleSubmit}
+                  className="glass-card p-4"
+                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation() }}
+                  onDrop={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'))
+                    if (files.length > 0) addImages(files)
+                  }}
+                >
                   {/* Interim transcript indicator */}
                   {voice.isListening && voice.interimTranscript && (
                     <div className="mb-2 px-3 py-1.5 text-xs text-gray-400 italic bg-white/[0.02] rounded-lg border border-white/[0.05] truncate">
                       {voice.interimTranscript}…
                     </div>
                   )}
+
+                  {/* Image preview thumbnails */}
+                  {attachedImages.length > 0 && (
+                    <div className="mb-3 flex flex-wrap gap-2">
+                      {attachedImages.map((img, i) => (
+                        <div key={i} className="relative group">
+                          <img
+                            src={`data:${img.mimeType};base64,${img.data}`}
+                            alt={img.name || `Image ${i + 1}`}
+                            className="w-16 h-16 rounded-lg object-cover border border-white/[0.1] bg-white/[0.03]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeImage(i)}
+                            className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500/90 text-white flex items-center justify-center
+                                       opacity-0 group-hover:opacity-100 transition-opacity shadow-lg"
+                            title="Remove image"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                          {img.name && (
+                            <p className="text-[9px] text-gray-500 mt-0.5 truncate max-w-[64px] text-center">{img.name}</p>
+                          )}
+                        </div>
+                      ))}
+                      {attachedImages.length < MAX_IMAGES && (
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="w-16 h-16 rounded-lg border border-dashed border-white/[0.1] bg-white/[0.02]
+                                     flex items-center justify-center text-gray-500 hover:text-gray-300 hover:border-white/[0.2] transition-colors"
+                          title="Add more images"
+                        >
+                          <Plus className="w-5 h-5" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Hidden file input */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      const files = Array.from(e.target.files || [])
+                      if (files.length > 0) addImages(files)
+                      e.target.value = '' // Reset so same file can be picked again
+                    }}
+                  />
+
                   <div className="flex gap-3">
                     <textarea
                       ref={inputRef}
@@ -422,12 +533,23 @@ export function CommandCenter() {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && !e.shiftKey) {
                           e.preventDefault()
-                          if (input.trim() && !submitting) {
+                          if ((input.trim() || attachedImages.length > 0) && !submitting) {
                             handleSubmit(e as unknown as React.FormEvent)
                           }
                         }
                       }}
-                      placeholder={voice.isListening ? 'Listening...' : 'e.g., Build a REST API for user authentication...'}
+                      onPaste={(e) => {
+                        const items = Array.from(e.clipboardData?.items || [])
+                        const imageFiles = items
+                          .filter((item) => item.type.startsWith('image/'))
+                          .map((item) => item.getAsFile())
+                          .filter((f): f is File => f !== null)
+                        if (imageFiles.length > 0) {
+                          e.preventDefault()
+                          addImages(imageFiles)
+                        }
+                      }}
+                      placeholder={voice.isListening ? 'Listening...' : attachedImages.length > 0 ? 'Add a message or just send the image(s)...' : 'e.g., Build a REST API for user authentication...'}
                       disabled={submitting}
                       rows={1}
                       className="flex-1 bg-white/[0.03] border border-white/[0.08] rounded-lg px-4 py-3 text-sm text-white
@@ -440,6 +562,18 @@ export function CommandCenter() {
                         target.style.height = `${Math.min(target.scrollHeight, 160)}px`
                       }}
                     />
+                    {/* Image attach button */}
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      disabled={submitting || attachedImages.length >= MAX_IMAGES}
+                      title={attachedImages.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : 'Attach image(s)'}
+                      className="flex items-center justify-center w-11 rounded-lg border transition-all
+                        bg-white/[0.03] border-white/[0.08] text-gray-400 hover:text-white hover:border-white/20
+                        disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      <Paperclip className="w-4 h-4" />
+                    </button>
                     {/* Mic toggle */}
                     {voice.canListen && (
                       <button
@@ -458,7 +592,7 @@ export function CommandCenter() {
                     )}
                     <button
                       type="submit"
-                      disabled={!input.trim() || submitting}
+                      disabled={(!input.trim() && attachedImages.length === 0) || submitting}
                       className="flex items-center gap-2 px-5 py-3 rounded-lg bg-accent text-white text-sm font-medium
                                  hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed
                                  transition-all active:scale-[0.98]"
@@ -467,6 +601,11 @@ export function CommandCenter() {
                       Submit
                     </button>
                   </div>
+
+                  {/* Drop zone hint */}
+                  <p className="text-[10px] text-gray-600 mt-2 text-center">
+                    Paste, drag & drop, or click <Paperclip className="w-3 h-3 inline" /> to attach images
+                  </p>
                 </form>
               </div>
             </>
