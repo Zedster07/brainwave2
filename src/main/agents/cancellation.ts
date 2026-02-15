@@ -24,8 +24,12 @@ export class CancellationToken {
     this.controller = new AbortController()
     // Prevent MaxListenersExceededWarning in long-running agent loops
     // Each think() call adds a listener when passing signal to the SDK
-    if (typeof (this.controller.signal as any).setMaxListeners === 'function') {
-      ;(this.controller.signal as any).setMaxListeners(100)
+    try {
+      // Node.js 19+ / Electron: use events.setMaxListeners(n, eventTarget)
+      const { setMaxListeners } = require('events')
+      setMaxListeners(100, this.controller.signal)
+    } catch {
+      // Fallback — ignore if not available
     }
   }
 

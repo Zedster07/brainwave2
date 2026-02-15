@@ -570,6 +570,8 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
     const MAX_CORRECTIONS = 2
     const toolCallHistory: Array<{ tool: string; argsHash: string }> = []
     const toolFrequency: Map<string, number> = new Map() // track per-tool call count
+    const fileWriteFrequency: Map<string, number> = new Map() // track per-file write count (across all write tools)
+    const MAX_FILE_WRITES = 4 // max writes (edit/write/create) to the same file before forced completion
     let stuckWarningGiven = false // soft-loop warning before hard break
     let compactionCount = 0 // how many times we've compacted this run
     let compactionNotice = '' // injected after compaction
@@ -1116,12 +1118,50 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
           }
         }
 
+        // ── Per-file write cap — prevents endless re-editing of the same file ──
+        const isWriteOp = ['file_edit', 'file_write', 'file_create'].includes(toolBaseName)
+        if (isWriteOp) {
+          const writePath = getReadPath(toolCall.args)
+          if (writePath) {
+            const normWritePath = normPath(writePath)
+            const fileWrites = (fileWriteFrequency.get(normWritePath) ?? 0) + 1
+            fileWriteFrequency.set(normWritePath, fileWrites)
+
+            if (fileWrites > MAX_FILE_WRITES) {
+              console.warn(`[${this.type}] Per-file write cap: "${writePath}" written ${fileWrites}× — forcing completion`)
+              toolResults.push({
+                tool: toolCall.tool,
+                success: false,
+                content: `BLOCKED: You have already written to "${writePath}" ${MAX_FILE_WRITES} times. The file is done. You MUST signal completion NOW with { "done": true, "summary": "..." }.`,
+              })
+              this.bus.emitEvent('agent:tool-result', {
+                agentType: this.type,
+                taskId: context.taskId,
+                tool: toolCall.tool,
+                success: false,
+                summary: `Blocked: ${writePath} already written ${MAX_FILE_WRITES}× — must complete`,
+                step,
+              })
+              currentPrompt =
+                `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
+                buildHistoryBlock() + '\n' +
+                `== \u26d4 FILE WRITE LIMIT REACHED ==\n` +
+                `You have written to "${writePath}" ${MAX_FILE_WRITES} times already. That is ENOUGH.\n` +
+                `The task is COMPLETE. Signal completion NOW:\n` +
+                `{ "done": true, "summary": "describe what you did" }\n\n` +
+                `DO NOT write to any more files. DO NOT edit any more files. JUST COMPLETE.`
+              continue
+            }
+          }
+        }
+
         // ── Loop detection (multi-strategy) ──
         toolCallHistory.push({ tool: toolCall.tool, argsHash })
 
-        // Update per-tool frequency
-        const freq = (toolFrequency.get(toolBaseName) ?? 0) + 1
-        toolFrequency.set(toolBaseName, freq)
+        // Update per-tool frequency (group all write tools together)
+        const freqKey = isWriteOp ? '_write_ops_' : toolBaseName
+        const freq = (toolFrequency.get(freqKey) ?? 0) + 1
+        toolFrequency.set(freqKey, freq)
 
         // Strategy 1: Exact match — same tool + identical args N times
         const exactRepeatCount = toolCallHistory.filter(h => `${h.tool}:${h.argsHash}` === callSig).length
@@ -1135,31 +1175,31 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         if (freq >= MAX_TOOL_FREQUENCY) {
           if (!stuckWarningGiven) {
             stuckWarningGiven = true
-            console.warn(`[${this.type}] Stuck warning: "${toolBaseName}" called ${freq} times total — injecting warning`)
+            const stuckLabel = isWriteOp ? 'write operations (file_edit/file_write/file_create)' : `"${toolBaseName}"`
+            console.warn(`[${this.type}] Stuck warning: ${stuckLabel} called ${freq} times total — injecting warning`)
             // Don't execute this call — instead warn the agent
             toolResults.push({
               tool: toolCall.tool,
               success: false,
-              content: `STUCK DETECTION: You have called "${toolBaseName}" ${freq} times now with different arguments but similar results. You are NOT making progress. You MUST either: (1) use a COMPLETELY DIFFERENT tool/approach, or (2) signal completion with { "done": true, "summary": "..." } summarizing what you found so far.`,
+              content: `STUCK DETECTION: You have made ${freq} write operations (file_edit/file_write/file_create) with different arguments but similar results. You are NOT making progress. The file is ALREADY UPDATED. You MUST signal completion with { "done": true, "summary": "..." } summarizing what you did.`,
             })
             this.bus.emitEvent('agent:tool-result', {
               agentType: this.type,
               taskId: context.taskId,
               tool: toolCall.tool,
               success: false,
-              summary: `Stuck warning: ${toolBaseName} called ${freq}× — agent must change approach`,
+              summary: `Stuck warning: ${stuckLabel} called ${freq}× — agent must change approach`,
               step,
             })
             currentPrompt =
               `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
               buildHistoryBlock() + '\n' +
               `== ⚠️ STUCK DETECTION ==\n` +
-              `You have called "${toolBaseName}" ${freq} times. You are looping.\n` +
-              `The results are NOT improving. STOP calling "${toolBaseName}".\n\n` +
-              `You MUST do ONE of these:\n` +
-              `1. Use a COMPLETELY DIFFERENT tool to accomplish the task\n` +
-              `2. Signal completion: { "done": true, "summary": "what you found so far" }\n\n` +
-              `Do NOT call "${toolBaseName}" again.`
+              `You have made ${freq} write operations. You are looping.\n` +
+              `The file is ALREADY UPDATED. STOP editing/writing files.\n\n` +
+              `You MUST signal completion NOW:\n` +
+              `{ "done": true, "summary": "describe what you did" }\n\n` +
+              `Do NOT make any more file edits or writes.`
             continue
           }
           // Already warned — hard break
