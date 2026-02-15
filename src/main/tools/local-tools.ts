@@ -1218,10 +1218,16 @@ class LocalToolProvider {
       ? `${oldLines} line(s) modified`
       : `${oldLines} line(s) → ${newLines} line(s)`
 
+    // Show a preview of the changed region so the model can verify its edit immediately
+    const previewLines = newString.split('\n')
+    const maxPreview = 15
+    const preview = previewLines.slice(0, maxPreview).join('\n')
+    const truncNote = previewLines.length > maxPreview ? `\n... (${previewLines.length - maxPreview} more lines)` : ''
+
     return {
       toolKey: 'local::file_edit',
       success: true,
-      content: `File edited: ${filePath} (${diffSummary}, match=${matchTier}, ${Buffer.byteLength(newContent)} bytes total)`,
+      content: `File edited successfully: ${filePath} (${diffSummary}, match=${matchTier}, ${Buffer.byteLength(newContent)} bytes total)\n\nChanged region now reads:\n${preview}${truncNote}`,
       isError: false,
       duration: Date.now() - start,
     }

@@ -570,8 +570,6 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
     const MAX_CORRECTIONS = 2
     const toolCallHistory: Array<{ tool: string; argsHash: string }> = []
     const toolFrequency: Map<string, number> = new Map() // track per-tool call count
-    const fileWriteFrequency: Map<string, number> = new Map() // track per-file write count (across all write tools)
-    const MAX_FILE_WRITES = 4 // max writes (edit/write/create) to the same file before forced completion
     let stuckWarningGiven = false // soft-loop warning before hard break
     let compactionCount = 0 // how many times we've compacted this run
     let compactionNotice = '' // injected after compaction
@@ -1040,7 +1038,7 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
           const normalizedRead = readPath ? normPath(readPath) : null
           const cachedFile = normalizedRead ? fileRegistry.get(normalizedRead) : null
 
-          // If we already have this file in the registry, return cached content
+          // If we already have this file in the registry, serve from cache (transparent cache hit)
           if (cachedFile) {
             // If the model is requesting a line range, extract it from the full cached content
             const startLine = toolCall.args.start_line as number | undefined
@@ -1053,33 +1051,24 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
               excerpt = `[Lines ${s + 1}-${e} of ${lines.length} total]\n` + lines.slice(s, e).join('\n')
             }
 
-            console.log(`[${this.type}] Step ${step}: Dedup — file "${readPath}" already in registry from step ${cachedFile.step}`)
+            console.log(`[${this.type}] Step ${step}: Cache hit — serving "${readPath}" from registry (step ${cachedFile.step})`)
+            // Return the ACTUAL content so the model can verify edits and see current state
             toolResults.push({
               tool: toolCall.tool,
               success: true,
-              content: `ALREADY READ — this file is in your FILES IN MEMORY section from step ${cachedFile.step}. USE IT.`,
+              content: excerpt,
             })
             toolCallHistory.push({ tool: toolCall.tool, argsHash })
-            const dedupFreq = (toolFrequency.get(toolBaseName) ?? 0) + 1
-            toolFrequency.set(toolBaseName, dedupFreq)
 
             this.bus.emitEvent('agent:tool-result', {
               agentType: this.type,
               taskId: context.taskId,
               tool: toolCall.tool,
               success: true,
-              summary: `Skipped (already read)`,
+              summary: `Read from cache (${cachedFile.content.split('\n').length} lines)`,
               step,
             })
-
-            currentPrompt =
-              `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
-              buildHistoryBlock() + '\n' +
-              `== ⚠️ DUPLICATE READ BLOCKED ==\n` +
-              `You tried to read "${readPath}" but you ALREADY HAVE IT in the FILES IN MEMORY section above.\n` +
-              `Look at the FILES section — the content is RIGHT THERE.\n\n` +
-              `NOW: Either EDIT/FIX files using local::file_edit, or signal completion with { "done": true, "summary": "..." }.\n` +
-              `DO NOT read any more files unless it's a NEW file you haven't read yet.`
+            // Normal continuation — no scary blocking messages
             continue
           }
 
@@ -1089,79 +1078,34 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
             toolCallHistory.some(h => `${h.tool}:${h.argsHash}` === callSig)
           )
           if (priorResult) {
-            console.log(`[${this.type}] Step ${step}: Dedup — exact match for ${toolBaseName}`)
+            console.log(`[${this.type}] Step ${step}: Cache hit — exact match for ${toolBaseName}`)
+            // Return the actual cached content for transparency
             toolResults.push({
               tool: toolCall.tool,
               success: true,
-              content: `ALREADY READ — you already have this content from a previous step. USE IT.`,
+              content: priorResult.content,
             })
             toolCallHistory.push({ tool: toolCall.tool, argsHash })
-            const dedupFreq = (toolFrequency.get(toolBaseName) ?? 0) + 1
-            toolFrequency.set(toolBaseName, dedupFreq)
 
             this.bus.emitEvent('agent:tool-result', {
               agentType: this.type,
               taskId: context.taskId,
               tool: toolCall.tool,
               success: true,
-              summary: `Skipped (already read)`,
+              summary: `Read from cache`,
               step,
             })
-
-            currentPrompt =
-              `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
-              buildHistoryBlock() + '\n' +
-              `== ⚠️ DUPLICATE READ BLOCKED ==\n` +
-              `You already read this exact content. It's in the ACTION LOG above.\n\n` +
-              `NOW: Either EDIT/FIX files or signal completion with { "done": true, "summary": "..." }.`
+            // Normal continuation — no blocking messages
             continue
-          }
-        }
-
-        // ── Per-file write cap — prevents endless re-editing of the same file ──
-        const isWriteOp = ['file_edit', 'file_write', 'file_create'].includes(toolBaseName)
-        if (isWriteOp) {
-          const writePath = getReadPath(toolCall.args)
-          if (writePath) {
-            const normWritePath = normPath(writePath)
-            const fileWrites = (fileWriteFrequency.get(normWritePath) ?? 0) + 1
-            fileWriteFrequency.set(normWritePath, fileWrites)
-
-            if (fileWrites > MAX_FILE_WRITES) {
-              console.warn(`[${this.type}] Per-file write cap: "${writePath}" written ${fileWrites}× — forcing completion`)
-              toolResults.push({
-                tool: toolCall.tool,
-                success: false,
-                content: `BLOCKED: You have already written to "${writePath}" ${MAX_FILE_WRITES} times. The file is done. You MUST signal completion NOW with { "done": true, "summary": "..." }.`,
-              })
-              this.bus.emitEvent('agent:tool-result', {
-                agentType: this.type,
-                taskId: context.taskId,
-                tool: toolCall.tool,
-                success: false,
-                summary: `Blocked: ${writePath} already written ${MAX_FILE_WRITES}× — must complete`,
-                step,
-              })
-              currentPrompt =
-                `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
-                buildHistoryBlock() + '\n' +
-                `== \u26d4 FILE WRITE LIMIT REACHED ==\n` +
-                `You have written to "${writePath}" ${MAX_FILE_WRITES} times already. That is ENOUGH.\n` +
-                `The task is COMPLETE. Signal completion NOW:\n` +
-                `{ "done": true, "summary": "describe what you did" }\n\n` +
-                `DO NOT write to any more files. DO NOT edit any more files. JUST COMPLETE.`
-              continue
-            }
           }
         }
 
         // ── Loop detection (multi-strategy) ──
         toolCallHistory.push({ tool: toolCall.tool, argsHash })
 
-        // Update per-tool frequency (group all write tools together)
-        const freqKey = isWriteOp ? '_write_ops_' : toolBaseName
-        const freq = (toolFrequency.get(freqKey) ?? 0) + 1
-        toolFrequency.set(freqKey, freq)
+        // Update per-tool frequency
+        const freq = (toolFrequency.get(toolBaseName) ?? 0) + 1
+        toolFrequency.set(toolBaseName, freq)
 
         // Strategy 1: Exact match — same tool + identical args N times
         const exactRepeatCount = toolCallHistory.filter(h => `${h.tool}:${h.argsHash}` === callSig).length
@@ -1175,31 +1119,28 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         if (freq >= MAX_TOOL_FREQUENCY) {
           if (!stuckWarningGiven) {
             stuckWarningGiven = true
-            const stuckLabel = isWriteOp ? 'write operations (file_edit/file_write/file_create)' : `"${toolBaseName}"`
-            console.warn(`[${this.type}] Stuck warning: ${stuckLabel} called ${freq} times total — injecting warning`)
+            console.warn(`[${this.type}] Stuck warning: "${toolBaseName}" called ${freq} times total — injecting warning`)
             // Don't execute this call — instead warn the agent
             toolResults.push({
               tool: toolCall.tool,
               success: false,
-              content: `STUCK DETECTION: You have made ${freq} write operations (file_edit/file_write/file_create) with different arguments but similar results. You are NOT making progress. The file is ALREADY UPDATED. You MUST signal completion with { "done": true, "summary": "..." } summarizing what you did.`,
+              content: `STUCK DETECTION: You have called "${toolBaseName}" ${freq} times. You may be looping. Consider whether the task is already complete and signal { "done": true, "summary": "..." }, or try a completely different approach.`,
             })
             this.bus.emitEvent('agent:tool-result', {
               agentType: this.type,
               taskId: context.taskId,
               tool: toolCall.tool,
               success: false,
-              summary: `Stuck warning: ${stuckLabel} called ${freq}× — agent must change approach`,
+              summary: `Stuck warning: "${toolBaseName}" called ${freq}× — should change approach`,
               step,
             })
             currentPrompt =
               `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
               buildHistoryBlock() + '\n' +
-              `== ⚠️ STUCK DETECTION ==\n` +
-              `You have made ${freq} write operations. You are looping.\n` +
-              `The file is ALREADY UPDATED. STOP editing/writing files.\n\n` +
-              `You MUST signal completion NOW:\n` +
-              `{ "done": true, "summary": "describe what you did" }\n\n` +
-              `Do NOT make any more file edits or writes.`
+              `== ⚠️ HIGH TOOL USAGE ==\n` +
+              `You have called "${toolBaseName}" ${freq} times. Check if you're making progress.\n` +
+              `If the task is done, signal completion: { "done": true, "summary": "..." }\n` +
+              `If not done, try a different approach or tool.`
             continue
           }
           // Already warned — hard break
