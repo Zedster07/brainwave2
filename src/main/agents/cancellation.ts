@@ -22,6 +22,11 @@ export class CancellationToken {
 
   private constructor() {
     this.controller = new AbortController()
+    // Prevent MaxListenersExceededWarning in long-running agent loops
+    // Each think() call adds a listener when passing signal to the SDK
+    if (typeof (this.controller.signal as any).setMaxListeners === 'function') {
+      ;(this.controller.signal as any).setMaxListeners(100)
+    }
   }
 
   /** Create a new cancellation token */

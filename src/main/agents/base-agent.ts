@@ -7,6 +7,7 @@
  */
 import os from 'os'
 import { randomUUID } from 'crypto'
+import { readFile as fsReadFile } from 'fs/promises'
 import { LLMFactory } from '../llm'
 import type { LLMRequest, LLMResponse, AgentModelConfig } from '../llm'
 import { getEventBus, type AgentType } from './event-bus'
@@ -1399,6 +1400,25 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
               }
             }
           }
+
+          // ── After file_edit/file_write/file_create: refresh registry with new content ──
+          // This prevents the dedup system from serving stale content after edits
+          const isWriteOp = ['file_edit', 'file_write', 'file_create'].includes(toolBaseName)
+          if (isWriteOp) {
+            const writePath = getReadPath(toolCall.args)
+            if (writePath) {
+              try {
+                const freshContent = await fsReadFile(writePath, 'utf-8')
+                fileRegistry.set(normPath(writePath), { content: freshContent, step })
+                console.log(`[${this.type}] Step ${step}: Registry refreshed for "${writePath}" after ${toolBaseName}`)
+              } catch (err) {
+                // If we can't re-read (e.g. file_delete edge case), evict stale entry
+                fileRegistry.delete(normPath(writePath))
+                console.warn(`[${this.type}] Step ${step}: Could not refresh registry for "${writePath}":`, err)
+              }
+            }
+          }
+
           // Detect `type "file"` shell commands as implicit file reads
           if (toolBaseName === 'shell_execute') {
             const cmd = String(toolCall.args.command ?? '')
