@@ -55,6 +55,20 @@ export type MessageType =
   | 'agent-spawned'
   | 'agent-completed'
 
+// ─── Plan Task List Types ────────────────────────────────────
+
+export type PlanTaskItemStatus = 'pending' | 'in-progress' | 'completed' | 'failed'
+
+export interface PlanTaskItem {
+  id: string
+  title: string
+  agent: AgentType
+  status: PlanTaskItemStatus
+  dependsOn: string[]
+}
+
+// ─── Event Map ──────────────────────────────────────────────
+
 export interface EventMap {
   // Task lifecycle
   'task:submitted': { taskId: string; prompt: string; priority: string }
@@ -76,10 +90,16 @@ export interface EventMap {
   // Agent messages
   'agent:message': AgentMessage
 
+  // Streaming (LLM response chunks → renderer for live text display)
+  'agent:stream-chunk': { taskId: string; agentType: AgentType; chunk: string; isFirst: boolean }
+  'agent:stream-end': { taskId: string; agentType: AgentType; fullText: string }
+
   // Plan
   'plan:created': { taskId: string; planId: string; steps: number; agents: AgentType[] }
   'plan:step-completed': { taskId: string; planId: string; stepId: string; agentType: AgentType }
   'plan:step-failed': { taskId: string; planId: string; stepId: string; error: string }
+  'plan:task-list': { taskId: string; planId: string; items: PlanTaskItem[] }
+  'plan:task-item-update': { taskId: string; planId: string; itemId: string; status: PlanTaskItemStatus }
 
   // Escalation (retries exhausted)
   'task:escalation': { taskId: string; stepId: string; agent: string; error: string; attempts: number; message: string }

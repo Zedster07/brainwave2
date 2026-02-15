@@ -32,7 +32,7 @@ export class EmbeddingService {
    */
   async generate(text: string): Promise<Float32Array> {
     // Check cache
-    const cacheKey = text.slice(0, 200) // cache by prefix to save memory
+    const cacheKey = text // full text as cache key
     const cached = this.cache.get(cacheKey)
     if (cached) return cached
 
@@ -69,7 +69,7 @@ export class EmbeddingService {
          created_at = CURRENT_TIMESTAMP`,
       memoryId,
       memoryType,
-      text.slice(0, 1000), // truncate for storage
+      text, // store full text
       buffer
     )
   }

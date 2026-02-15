@@ -272,7 +272,7 @@ export class MemoryDecayService {
       return {
         subject: 'brainwave',
         predicate: 'completed-task',
-        object: (taskMatch[2] ?? taskMatch[1]).slice(0, 200),
+        object: (taskMatch[2] ?? taskMatch[1]),
       }
     }
 
@@ -282,7 +282,7 @@ export class MemoryDecayService {
       return {
         subject: 'system',
         predicate: 'learned',
-        object: lessonMatch[1].slice(0, 200),
+        object: lessonMatch[1],
       }
     }
 
@@ -291,7 +291,7 @@ export class MemoryDecayService {
       return {
         subject: 'experience',
         predicate: 'observation',
-        object: content.slice(0, 200),
+        object: content,
       }
     }
 

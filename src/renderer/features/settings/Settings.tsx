@@ -67,6 +67,7 @@ export function Settings() {
 function GeneralSettings() {
   const [transparency, setTransparency] = useSetting<string>('ui_transparency', 'smart')
   const [maxAgents, setMaxAgents] = useSetting<number>('max_concurrent_agents', 3)
+  const [homeDir, setHomeDir] = useSetting<string>('brainwave_home_dir', '')
   const [updateStatus, setUpdateStatus] = useState<{ state: string; version?: string; progress?: number; error?: string }>({ state: 'idle' })
 
   useEffect(() => {
@@ -104,6 +105,31 @@ function GeneralSettings() {
           max={8}
           className="w-20 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white text-center focus:outline-none focus:border-accent/40"
         />
+      </SettingRow>
+
+      <SettingRow
+        label="Home Directory"
+        description="Default directory where Brainwave creates projects and files"
+      >
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={homeDir ?? ''}
+            onChange={(e) => setHomeDir(e.target.value)}
+            placeholder="Not set — uses Desktop"
+            className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-accent/40"
+          />
+          <button
+            onClick={async () => {
+              const selected = await window.brainwave.selectDirectory('Select Brainwave Home Directory')
+              if (selected) setHomeDir(selected)
+            }}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white/[0.05] text-gray-400 rounded-md hover:bg-white/[0.08] transition-colors"
+          >
+            <FolderOpen className="w-3.5 h-3.5" />
+            Browse
+          </button>
+        </div>
       </SettingRow>
 
       {/* Auto-Update Section */}

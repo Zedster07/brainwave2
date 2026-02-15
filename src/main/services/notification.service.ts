@@ -31,7 +31,7 @@ class NotificationService {
     // 1. Task completed
     bus.onEvent('task:completed', (data) => {
       const result = typeof data.result === 'string'
-        ? data.result.slice(0, 120)
+        ? data.result
         : 'Task finished successfully'
       this.send({
         title: 'Task Completed',
@@ -45,7 +45,7 @@ class NotificationService {
     bus.onEvent('task:failed', (data) => {
       this.send({
         title: 'Task Failed',
-        body: data.error?.slice(0, 120) ?? 'Unknown error',
+        body: data.error ?? 'Unknown error',
         type: 'task',
         taskId: data.taskId,
       })

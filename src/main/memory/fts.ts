@@ -156,12 +156,12 @@ export class FTSService {
 
     // Wildcard / empty — snippets don't apply, return content as-is
     if (trimmed === '*' || !trimmed) {
-      return this.getAll(memoryType, limit).map((r) => ({ ...r, snippet: r.content.slice(0, 200) }))
+      return this.getAll(memoryType, limit).map((r) => ({ ...r, snippet: r.content }))
     }
 
     const sanitized = this.sanitizeQuery(trimmed)
     if (!sanitized) {
-      return this.getAll(memoryType, limit).map((r) => ({ ...r, snippet: r.content.slice(0, 200) }))
+      return this.getAll(memoryType, limit).map((r) => ({ ...r, snippet: r.content }))
     }
 
     try {

@@ -1,0 +1,250 @@
+/**
+ * Token Counter — Context-window-aware token estimation
+ *
+ * Uses gpt-tokenizer (o200k_base, same as GPT-4o/Claude) to provide:
+ *   - Fast, cached token counting for text
+ *   - Full prompt size estimation (system + user + context + tool catalog)
+ *   - Model context limit lookup
+ *   - Budget checking for context compaction triggers
+ *
+ * Inspired by Goose's TokenCounter (tiktoken o200k_base + DashMap cache).
+ */
+import { encode } from 'gpt-tokenizer/model/gpt-4o'
+
+// ─── Token Cache ──────────────────────────────────────────
+
+const TOKEN_CACHE = new Map<string, number>()
+const MAX_CACHE_SIZE = 5_000
+const MAX_CACHEABLE_LENGTH = 50_000 // don't cache very large strings — hash would be slow
+
+/**
+ * Count tokens in a text string.
+ * Uses an LRU-style cache for repeated calls with the same text.
+ */
+export function countTokens(text: string): number {
+  if (!text) return 0
+
+  // For short/medium strings, use cache
+  if (text.length <= MAX_CACHEABLE_LENGTH) {
+    const cached = TOKEN_CACHE.get(text)
+    if (cached !== undefined) return cached
+
+    const count = encode(text).length
+
+    // Evict oldest entries if cache is full
+    if (TOKEN_CACHE.size >= MAX_CACHE_SIZE) {
+      const firstKey = TOKEN_CACHE.keys().next().value
+      if (firstKey !== undefined) TOKEN_CACHE.delete(firstKey)
+    }
+
+    TOKEN_CACHE.set(text, count)
+    return count
+  }
+
+  // For very large strings, count directly without caching
+  return encode(text).length
+}
+
+// ─── Prompt Estimation ──────────────────────────────────────
+
+/** Per-message framing overhead (role header + delimiters) */
+const TOKENS_PER_MESSAGE = 4
+
+/** Reply primer tokens */
+const REPLY_PRIMER_TOKENS = 3
+
+/**
+ * Estimate total tokens for a full LLM request.
+ * Accounts for system prompt, user message, context, and message framing.
+ */
+export function estimateRequestTokens(
+  system: string,
+  user: string,
+  context?: string
+): number {
+  let tokens = 0
+
+  // System message
+  if (system) {
+    tokens += countTokens(system) + TOKENS_PER_MESSAGE
+  }
+
+  // Context message (injected as second system message)
+  if (context) {
+    tokens += countTokens(`<context>\n${context}\n</context>`) + TOKENS_PER_MESSAGE
+  }
+
+  // User message
+  if (user) {
+    tokens += countTokens(user) + TOKENS_PER_MESSAGE
+  }
+
+  // Reply primer
+  tokens += REPLY_PRIMER_TOKENS
+
+  return tokens
+}
+
+/**
+ * Estimate tokens for a tool catalog section.
+ * If the section is already rendered as a string, just count its tokens.
+ * Otherwise estimate from tool count.
+ */
+export function estimateToolCatalogTokens(catalogText: string): number {
+  if (!catalogText) return 0
+  return countTokens(catalogText)
+}
+
+// ─── Model Context Limits ───────────────────────────────────
+
+/**
+ * Known context window sizes for models used in Brainwave2.
+ * Keys are partial matches — the lookup checks if the model ID contains the key.
+ * More specific keys should come first.
+ */
+const MODEL_CONTEXT_LIMITS: Array<[pattern: string, limit: number]> = [
+  // Anthropic
+  ['claude-opus-4.5', 200_000],
+  ['claude-sonnet-4.5', 200_000],
+  ['claude-sonnet-4', 200_000],
+  ['claude-3.5-haiku', 200_000],
+  ['claude-3-haiku', 200_000],
+  ['claude-3-opus', 200_000],
+  ['claude-3-sonnet', 200_000],
+
+  // Google
+  ['gemini-2.5-pro', 1_048_576],
+  ['gemini-2.5-flash', 1_048_576],
+  ['gemini-2.0-flash', 1_048_576],
+  ['gemini-1.5-pro', 1_048_576],
+  ['gemini-1.5-flash', 1_048_576],
+
+  // OpenAI
+  ['gpt-5', 400_000],
+  ['o3', 200_000],
+  ['o1', 200_000],
+  ['gpt-4o', 128_000],
+  ['gpt-4.1-mini', 1_047_576],
+  ['gpt-4.1', 1_047_576],
+  ['gpt-4-turbo', 128_000],
+
+  // Qwen
+  ['qwen3-coder-next', 256_000],
+  ['qwen3-coder', 128_000],
+  ['qwen2.5-coder', 128_000],
+
+  // DeepSeek
+  ['deepseek-chat', 128_000],
+  ['deepseek-coder', 128_000],
+  ['deepseek-r1', 128_000],
+
+  // MiniMax
+  ['minimax-m2.5', 1_048_576],
+
+  // Ollama / Local
+  ['llama3.1', 128_000],
+  ['llama3', 8_192],
+  ['mistral', 32_000],
+  ['mixtral', 32_000],
+]
+
+/** Default context limit if model is not in the lookup table */
+const DEFAULT_CONTEXT_LIMIT = 128_000
+
+/**
+ * Get the context window size for a model.
+ * Uses partial matching against known model IDs.
+ */
+export function getContextLimit(model: string): number {
+  if (!model) return DEFAULT_CONTEXT_LIMIT
+
+  const lower = model.toLowerCase()
+  for (const [pattern, limit] of MODEL_CONTEXT_LIMITS) {
+    if (lower.includes(pattern.toLowerCase())) {
+      return limit
+    }
+  }
+
+  return DEFAULT_CONTEXT_LIMIT
+}
+
+// ─── Budget Checking ──────────────────────────────────────────
+
+/** Default compaction threshold — compact when context is this % full */
+export const DEFAULT_COMPACTION_THRESHOLD = 0.80
+
+/** Reserve this many tokens for the model's response */
+const OUTPUT_RESERVE_TOKENS = 4_096
+
+export interface TokenBudget {
+  /** Total context window for the model */
+  contextLimit: number
+  /** Tokens reserved for output */
+  outputReserve: number
+  /** Available tokens for input (contextLimit - outputReserve) */
+  inputBudget: number
+  /** Current estimated input tokens */
+  currentUsage: number
+  /** Usage ratio (0.0 to 1.0) */
+  usageRatio: number
+  /** Whether compaction should be triggered */
+  shouldCompact: boolean
+  /** Tokens remaining before compaction threshold */
+  tokensRemaining: number
+}
+
+/**
+ * Calculate the token budget for the current prompt state.
+ * Returns a budget object with compaction recommendation.
+ */
+export function calculateBudget(
+  model: string,
+  currentTokens: number,
+  compactionThreshold = DEFAULT_COMPACTION_THRESHOLD
+): TokenBudget {
+  const contextLimit = getContextLimit(model)
+  const outputReserve = Math.min(OUTPUT_RESERVE_TOKENS, Math.floor(contextLimit * 0.1))
+  const inputBudget = contextLimit - outputReserve
+  const usageRatio = currentTokens / inputBudget
+  const thresholdTokens = Math.floor(inputBudget * compactionThreshold)
+  const shouldCompact = currentTokens > thresholdTokens
+
+  return {
+    contextLimit,
+    outputReserve,
+    inputBudget,
+    currentUsage: currentTokens,
+    usageRatio: Math.min(usageRatio, 1.0),
+    shouldCompact,
+    tokensRemaining: Math.max(0, thresholdTokens - currentTokens),
+  }
+}
+
+/**
+ * Quick check: should we compact before the next request?
+ */
+export function shouldCompactContext(
+  model: string,
+  currentTokens: number,
+  threshold = DEFAULT_COMPACTION_THRESHOLD
+): boolean {
+  return calculateBudget(model, currentTokens, threshold).shouldCompact
+}
+
+// ─── Utilities ──────────────────────────────────────────────
+
+/**
+ * Format a token count for human display.
+ */
+export function formatTokenCount(tokens: number): string {
+  if (tokens < 1_000) return `${tokens}`
+  if (tokens < 1_000_000) return `${(tokens / 1_000).toFixed(1)}k`
+  return `${(tokens / 1_000_000).toFixed(2)}M`
+}
+
+/**
+ * Clear the token cache. Useful for testing or memory pressure.
+ */
+export function clearTokenCache(): void {
+  TOKEN_CACHE.clear()
+}

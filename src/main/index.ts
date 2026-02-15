@@ -16,6 +16,7 @@ import { initAutoUpdater } from './updater'
 import { getMcpRegistry } from './mcp'
 import { getPluginRegistry } from './plugins'
 import { getNotificationService } from './services/notification.service'
+import { initAutonomySystem, saveScheduledJobs } from './services/autonomy-jobs'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -167,20 +168,42 @@ app.whenReady().then(() => {
   const scheduler = getScheduler()
   scheduler.start()
 
-  // When a scheduled job fires, submit it as a task to the Orchestrator
+  // Load persisted jobs, seed default autonomy jobs, and start auto-persistence
+  initAutonomySystem()
+
+  // When a scheduled job fires, create a chat session and submit as a task
   scheduler.on('job:execute', (payload) => {
     console.log(`[Main] Scheduled job executing: ${payload.jobId} → "${payload.taskPrompt}"`)
 
     // Notify: scheduled job starting
     getNotificationService().send({
       title: 'Scheduled Job Starting',
-      body: payload.taskPrompt.slice(0, 120),
+      body: payload.taskPrompt,
       type: 'scheduler',
       jobId: payload.jobId,
     })
 
+    // Create an autonomous chat session so the user can view results separately from their chats
+    const db = getDatabase()
+    const { randomUUID } = require('crypto')
+    const sessionId = randomUUID()
+    const now = Date.now()
+    const jobName = payload.taskContext?._jobName || payload.taskPrompt
+    const sessionTitle = `🤖 ${jobName}`
+    db.run(
+      `INSERT INTO chat_sessions (id, title, session_type, created_at, updated_at) VALUES (?, ?, 'autonomous', ?, ?)`,
+      sessionId, sessionTitle, now, now
+    )
+    console.log(`[Main] Created autonomous session "${sessionTitle}" (${sessionId}) for scheduled job`)
+
+    // Forward new session to renderer so it appears in the autonomous tab immediately
+    const { BrowserWindow: BW } = require('electron')
+    BW.getAllWindows().forEach((win: BrowserWindow) => {
+      win.webContents.send('session:created', { id: sessionId, title: sessionTitle, type: 'autonomous', createdAt: now, updatedAt: now })
+    })
+
     const orchestrator = getOrchestrator()
-    orchestrator.submitTask(payload.taskPrompt, payload.taskPriority ?? 'normal').catch((err: Error) => {
+    orchestrator.submitTask(payload.taskPrompt, payload.taskPriority ?? 'normal', sessionId).catch((err: Error) => {
       console.error(`[Main] Scheduled task failed:`, err)
     })
   })
@@ -200,6 +223,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   app.isQuitting = true
   getScheduler().stop()
+  saveScheduledJobs()  // Persist scheduler state before exit
   getDecayService().stop()
   getMcpRegistry().disconnectAll().catch(() => {})
   destroyTray()

@@ -12,6 +12,7 @@
  * - complex: multi-step work → full planner → DAG → reflection
  */
 import { randomUUID } from 'crypto'
+import os from 'os'
 import { BaseAgent, type AgentContext, type AgentResult, type SubTask, type TaskPlan } from './base-agent'
 import { PlannerAgent } from './planner'
 import { getEventBus, type AgentType } from './event-bus'
@@ -27,6 +28,7 @@ import { getPromptRegistry } from '../prompts'
 import { getMcpRegistry } from '../mcp'
 import type { ImageAttachment } from '@shared/types'
 import { Blackboard } from './blackboard'
+import { createTaskToken, cancelTaskToken } from './cancellation'
 
 // ─── Task Record (stored in DB) ────────────────────────────
 
@@ -41,6 +43,7 @@ export interface TaskRecord {
   createdAt: number
   completedAt?: number
   images?: ImageAttachment[]
+  sessionId?: string
 }
 
 // ─── Triage Classification ─────────────────────────────────
@@ -124,7 +127,7 @@ export class Orchestrator extends BaseAgent {
       if (disconnected.length > 0) {
         summary += `\n- ${disconnected.length} more server(s) configured but not connected`
       }
-      summary += '\n\nLocal built-in tools: file_read, file_write, file_create, file_delete, file_move, directory_list, shell_execute, http_request, web_search, webpage_fetch, send_notification'
+      summary += '\n\nLocal built-in tools: file_read, file_write, file_create, file_delete, file_move, directory_list, create_directory, shell_execute, http_request, web_search, webpage_fetch, send_notification'
       return summary
     } catch {
       return '\nMCP Servers: Unable to query status.'
@@ -132,7 +135,14 @@ export class Orchestrator extends BaseAgent {
   }
 
   protected getSystemPrompt(_context: AgentContext): string {
+    const brainwaveHomeDir = this.getBrainwaveHomeDir()
+    const homeDir = os.homedir()
+
     return `You are the Orchestrator — the central intelligence of the Brainwave system.
+
+Your home directory (Brainwave Home): **${brainwaveHomeDir}**
+This is where you create projects, store files, and work by default.
+The user's OS home is ${homeDir} — that is NOT your home directory.
 
 Your responsibilities:
 1. Analyze incoming tasks to understand their nature and complexity
@@ -203,10 +213,12 @@ MANDATORY — CONTEXT-FIRST PROTOCOL (follow this BEFORE every task):
 
       // Build conversation history string
       const historyBlock = conversationHistory.length > 0
-        ? `\n\nCONVERSATION HISTORY (this session so far):\n${conversationHistory.map((msg) => `${msg.role === 'user' ? 'User' : 'Brainwave'}: ${msg.content.slice(0, 300)}`).join('\n')}`
+        ? `\n\nCONVERSATION HISTORY (this session so far):\n${conversationHistory.map((msg) => `${msg.role === 'user' ? 'User' : 'Brainwave'}: ${msg.content}`).join('\n')}`
         : ''
 
       const mcpSummary = this.getMcpSummary()
+      const brainwaveHomeDir = this.getBrainwaveHomeDir()
+      const homeDir = os.homedir()
       const { parsed } = await this.thinkJSON<TriageResult>(
         `You are a strict classifier. Analyze the user prompt and route it to exactly ONE processing lane.
 Do NOT answer the question — only classify it.
@@ -230,12 +242,15 @@ If YES to ANY → set the matching toolingNeeds flags to true.
 If ANY toolingNeeds flag is true → this CANNOT be "conversational". Route to "direct" agent "executor" (or "complex" if multi-step).
 
 STEP 1.5 — CHECK IF IT'S A SELF-KNOWLEDGE QUESTION (→ "conversational" with factual reply)
-Is the user asking about YOUR capabilities, tools, MCP servers, or system configuration?
+Is the user asking about YOUR capabilities, tools, MCP servers, system configuration, or YOUR home directory/settings?
 Examples: "what tools do you have?", "list your MCP servers", "what can Puppeteer do?",
-"what tools are in the GitHub server?", "what are your capabilities?"
-If YES → the answer is in the SYSTEM CAPABILITIES section above. Use lane "conversational" and
-answer ONLY from the data listed above. Do NOT use training knowledge — ONLY report what is
-actually listed in the SYSTEM CAPABILITIES section. Include specific tool names from the listing.
+"what tools are in the GitHub server?", "what are your capabilities?",
+"what's your home directory?", "where do you store files?"
+If YES → the answer is in the SYSTEM CAPABILITIES section above or from this info:
+  YOUR HOME DIRECTORY (Brainwave Home): ${brainwaveHomeDir}
+  (This is where you create projects and store files — NOT the OS user home ${homeDir})
+Use lane "conversational" and answer ONLY from the data listed above.
+Do NOT use training knowledge — ONLY report what is actually listed.
 NEVER route these to "researcher" — the researcher has NO access to this system data!
 
 STEP 2 — CHECK IF IT'S A KNOWLEDGE/REASONING TASK (→ "direct" with specialist)
@@ -267,7 +282,9 @@ EXAMPLES of CONVERSATIONAL (lane = "conversational"):
   "what tools do you have?" (self-knowledge — answer from SYSTEM CAPABILITIES above) |
   "what MCP servers are connected?" (self-knowledge — answer from SYSTEM CAPABILITIES above) |
   "what can you do?" (self-knowledge — answer from SYSTEM CAPABILITIES above) |
-  "what tools does the Puppeteer server have?" (self-knowledge — answer from SYSTEM CAPABILITIES above)
+  "what tools does the Puppeteer server have?" (self-knowledge — answer from SYSTEM CAPABILITIES above) |
+  "what's your home directory?" (self-knowledge — answer: ${brainwaveHomeDir}) |
+  "where do you create projects?" (self-knowledge — answer: ${brainwaveHomeDir})
 
 EXAMPLES that are NOT CONVERSATIONAL (common misclassifications to avoid):
   "explain how React hooks work" → direct/researcher (knowledge task)
@@ -408,16 +425,20 @@ FINAL CHECK — before outputting, verify:
       status: 'pending',
       createdAt: Date.now(),
       images,
+      sessionId,
     }
 
     this.activeTasks.set(taskId, task)
+
+    // Create cancellation token for this task
+    const cancellationToken = createTaskToken(taskId)
 
     // Persist to DB
     this.db.run(
       `INSERT INTO tasks (id, title, description, status, priority, session_id, created_at)
        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
       taskId,
-      prompt.slice(0, 200),
+      prompt,
       prompt,
       'pending',
       priority === 'high' ? 0.9 : priority === 'normal' ? 0.5 : 0.2,
@@ -432,7 +453,7 @@ FINAL CHECK — before outputting, verify:
     this.bus.emitEvent('task:submitted', { taskId, prompt, priority })
 
     // Run asynchronously — don't block the caller
-    this.processTask(task, sessionId).catch((err) => {
+    this.processTask(task, sessionId, cancellationToken).catch((err) => {
       console.error(`[Orchestrator] Task ${taskId} failed:`, err)
       this.failTask(task, err instanceof Error ? err.message : String(err))
     })
@@ -440,14 +461,20 @@ FINAL CHECK — before outputting, verify:
     return task
   }
 
-  /** Cancel a running task */
+  /** Cancel a running task — aborts in-flight LLM calls and tool loop */
   cancelTask(taskId: string): boolean {
     const task = this.activeTasks.get(taskId)
     if (!task || task.status === 'completed' || task.status === 'failed') return false
 
     task.status = 'cancelled'
     this.db.run(`UPDATE tasks SET status = 'cancelled' WHERE id = ?`, taskId)
+
+    // Abort the cancellation token — this interrupts in-flight HTTP requests
+    // and causes the executeWithTools loop to break on next iteration
+    cancelTaskToken(taskId, 'User cancelled task')
+
     this.bus.emitEvent('task:cancelled', { taskId })
+    console.log(`[Orchestrator] Task ${taskId} cancelled — token aborted`)
 
     return true
   }
@@ -462,7 +489,7 @@ FINAL CHECK — before outputting, verify:
     const whereClause = sessionId ? `WHERE session_id = ?` : ''
     const params = sessionId ? [sessionId, limit] : [limit]
     const rows = this.db.all(
-      `SELECT id, title, description, status, priority, result, error, created_at, completed_at
+      `SELECT id, title, description, status, priority, result, error, created_at, completed_at, session_id
        FROM tasks ${whereClause} ORDER BY created_at DESC LIMIT ?`,
       ...params
     ) as Array<{
@@ -475,6 +502,7 @@ FINAL CHECK — before outputting, verify:
       error: string | null
       created_at: string
       completed_at: string | null
+      session_id: string | null
     }>
 
     return rows.map((row) => ({
@@ -486,6 +514,7 @@ FINAL CHECK — before outputting, verify:
       error: row.error ?? undefined,
       createdAt: new Date(row.created_at).getTime(),
       completedAt: row.completed_at ? new Date(row.completed_at).getTime() : undefined,
+      sessionId: row.session_id ?? undefined,
     }))
   }
 
@@ -518,27 +547,45 @@ FINAL CHECK — before outputting, verify:
 
   // ─── Core Processing Pipeline ────────────────────────────
 
-  private async processTask(task: TaskRecord, sessionId?: string): Promise<void> {
+  private async processTask(task: TaskRecord, sessionId?: string, cancellationToken?: import('./cancellation').CancellationToken): Promise<void> {
     try {
+      // Detect whether this is an autonomous (cron/scheduled) task
+      let isAutonomous = false
+      if (sessionId) {
+        try {
+          const session = this.db.get(
+            `SELECT session_type FROM chat_sessions WHERE id = ?`,
+            sessionId
+          ) as { session_type?: string } | undefined
+          isAutonomous = session?.session_type === 'autonomous'
+        } catch { /* ignore */ }
+      }
+
       // 0. Memory recall — gather relevant context from past experiences
+      // Skip for autonomous tasks — cron jobs should NOT receive user task memories
+      // as they cause context contamination (e.g. Reminders reading webOS files)
       const memoryManager = getMemoryManager()
       const workingMemory = getWorkingMemory()
 
       workingMemory.setTask(task.id, task.prompt)
 
       let relevantMemories: string[] = []
-      try {
-        relevantMemories = await memoryManager.recallForContext(task.prompt, 8)
-        if (relevantMemories.length > 0) {
-          workingMemory.set('recalled_memories', JSON.stringify(relevantMemories))
-          this.bus.emitEvent('system:log', {
-            level: 'info',
-            message: `Recalled ${relevantMemories.length} relevant memories for task`,
-            data: { taskId: task.id },
-          })
+      if (!isAutonomous) {
+        try {
+          relevantMemories = await memoryManager.recallForContext(task.prompt, 8)
+          if (relevantMemories.length > 0) {
+            workingMemory.set('recalled_memories', JSON.stringify(relevantMemories))
+            this.bus.emitEvent('system:log', {
+              level: 'info',
+              message: `Recalled ${relevantMemories.length} relevant memories for task`,
+              data: { taskId: task.id },
+            })
+          }
+        } catch (err) {
+          console.warn('[Orchestrator] Memory recall failed, continuing without:', err)
         }
-      } catch (err) {
-        console.warn('[Orchestrator] Memory recall failed, continuing without:', err)
+      } else {
+        console.log(`[Orchestrator] Autonomous task — skipping memory recall to avoid cross-task contamination`)
       }
 
       // 0b. Fetch session conversation history for context continuity
@@ -576,7 +623,7 @@ FINAL CHECK — before outputting, verify:
       this.db.run(`UPDATE tasks SET status = 'planning' WHERE id = ?`, task.id)
       this.bus.emitEvent('task:planning', { taskId: task.id })
 
-      const triageContext: AgentContext = { taskId: task.id, relevantMemories, conversationHistory, images: task.images }
+      const triageContext: AgentContext = { taskId: task.id, relevantMemories, conversationHistory, images: task.images, cancellationToken }
       const triage = await this.triage(task.prompt, triageContext, relevantMemories, conversationHistory)
 
       // 1b. Apply code-level routing guards (prompts are suggestions; guards are law)
@@ -589,10 +636,10 @@ FINAL CHECK — before outputting, verify:
           await this.handleConversational(task, triage, memoryManager, relevantMemories, conversationHistory)
           break
         case 'direct':
-          await this.handleDirect(task, triage, relevantMemories, memoryManager, conversationHistory)
+          await this.handleDirect(task, triage, relevantMemories, memoryManager, conversationHistory, cancellationToken)
           break
         case 'complex':
-          await this.handleComplex(task, relevantMemories, memoryManager, conversationHistory)
+          await this.handleComplex(task, relevantMemories, memoryManager, conversationHistory, cancellationToken)
           break
       }
 
@@ -658,7 +705,7 @@ FINAL CHECK — before outputting, verify:
           ? `Things you remember:\n${relevantMemories.map((m, i) => `${i + 1}. ${m}`).join('\n')}`
           : 'You have no relevant memories about this topic.'
         const historyContext = conversationHistory.length > 0
-          ? `\n\nConversation so far:\n${conversationHistory.map((msg) => `${msg.role === 'user' ? 'User' : 'You'}: ${msg.content.slice(0, 300)}`).join('\n')}`
+          ? `\n\nConversation so far:\n${conversationHistory.map((msg) => `${msg.role === 'user' ? 'User' : 'You'}: ${msg.content}`).join('\n')}`
           : ''
 
         const response = await adapter.complete({
@@ -807,7 +854,7 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     if (triage.shouldRemember) {
       try {
         await memoryManager.storeEpisodic({
-          content: `User said: "${task.prompt.slice(0, 200)}". Lane: ${triage.lane}.`,
+          content: `User said: "${task.prompt}". Lane: ${triage.lane}.`,
           source: 'orchestrator',
           importance: 0.4,
           emotionalValence: 0.5,
@@ -830,7 +877,8 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     triage: TriageResult,
     relevantMemories: string[],
     memoryManager: ReturnType<typeof getMemoryManager>,
-    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [],
+    cancellationToken?: import('./cancellation').CancellationToken
   ): Promise<void> {
     const agentType = triage.agent ?? ('coder' as AgentType)
     console.log(`[Orchestrator] handleDirect() → agent=${agentType} | task="${task.prompt.slice(0, 100)}"`)
@@ -885,7 +933,7 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     task.status = 'in_progress'
     this.db.run(`UPDATE tasks SET status = 'in_progress', started_at = CURRENT_TIMESTAMP WHERE id = ?`, task.id)
 
-    const results = await this.executePlan(task, plan, relevantMemories, conversationHistory)
+    const results = await this.executePlan(task, plan, relevantMemories, conversationHistory, cancellationToken)
     if (task.status === 'cancelled') return
 
     // Check if all subtasks failed — provide a clear error instead of null
@@ -927,7 +975,8 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     task: TaskRecord,
     relevantMemories: string[],
     memoryManager: ReturnType<typeof getMemoryManager>,
-    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [],
+    cancellationToken?: import('./cancellation').CancellationToken
   ): Promise<void> {
     console.log(`[Orchestrator] handleComplex() | task="${task.prompt.slice(0, 100)}"`)
 
@@ -942,19 +991,19 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     if (conversationHistory.length > 0) {
       const recent = conversationHistory.slice(-6)
       const historyStr = recent.map((msg) =>
-        `${msg.role === 'user' ? 'User' : 'Brainwave'}: ${msg.content.slice(0, 400)}`
+        `${msg.role === 'user' ? 'User' : 'Brainwave'}: ${msg.content}`
       ).join('\n')
       plannerPrompt = `${task.prompt}\n\nCONVERSATION CONTEXT (previous exchanges this session):\n${historyStr}`
     }
 
     let plan: TaskPlan
     try {
-      plan = await this.planner.decompose(task.id, plannerPrompt)
+      plan = await this.planner.decompose(task.id, plannerPrompt, undefined, conversationHistory)
     } catch (err) {
       // Planner JSON parse failure — fall back to direct execution with executor
       console.warn(`[Orchestrator] Planner failed, falling back to direct execution:`, err instanceof Error ? err.message : err)
       const fallbackTriage: TriageResult = { ...({ lane: 'direct', agent: 'executor', reasoning: `Planner failed: ${err instanceof Error ? err.message : String(err)}. Falling back to executor.` } as TriageResult) }
-      return this.handleDirect(task, fallbackTriage, relevantMemories, memoryManager, conversationHistory)
+      return this.handleDirect(task, fallbackTriage, relevantMemories, memoryManager, conversationHistory, cancellationToken)
     }
 
     // Apply code-level plan guards — fix misrouted subtasks before execution
@@ -980,7 +1029,7 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     task.status = 'in_progress'
     this.db.run(`UPDATE tasks SET status = 'in_progress', started_at = CURRENT_TIMESTAMP WHERE id = ?`, task.id)
 
-    const results = await this.executePlan(task, plan, relevantMemories, conversationHistory)
+    const results = await this.executePlan(task, plan, relevantMemories, conversationHistory, cancellationToken)
     if (task.status === 'cancelled') return
 
     // Synthesize a human-readable answer from all agent outputs
@@ -1016,18 +1065,32 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
 
     this.bus.emitEvent('task:completed', { taskId: task.id, result })
 
-    // Store experience as episodic memory
-    try {
-      await memoryManager.storeEpisodic({
-        content: `Task completed: "${task.prompt.slice(0, 200)}". Result: ${JSON.stringify(result).slice(0, 500)}`,
-        source: 'orchestrator',
-        importance: task.priority === 'high' ? 0.8 : task.priority === 'normal' ? 0.5 : 0.3,
-        emotionalValence: 0.6,
-        tags: ['task-completed', `priority-${task.priority}`],
-        participants: ['orchestrator', ...plan.requiredAgents],
-      })
-    } catch (err) {
-      console.warn('[Orchestrator] Failed to store task memory:', err)
+    // Store experience as episodic memory — skip for autonomous tasks
+    // to prevent cron results like "No pending reminders" from polluting recall
+    let isAutonomous = false
+    if (task.sessionId) {
+      try {
+        const session = this.db.get(
+          `SELECT session_type FROM chat_sessions WHERE id = ?`,
+          task.sessionId
+        ) as { session_type?: string } | undefined
+        isAutonomous = session?.session_type === 'autonomous'
+      } catch { /* ignore */ }
+    }
+
+    if (!isAutonomous) {
+      try {
+        await memoryManager.storeEpisodic({
+          content: `Task completed: "${task.prompt}". Result: ${JSON.stringify(result)}`,
+          source: 'orchestrator',
+          importance: task.priority === 'high' ? 0.8 : task.priority === 'normal' ? 0.5 : 0.3,
+          emotionalValence: 0.6,
+          tags: ['task-completed', `priority-${task.priority}`],
+          participants: ['orchestrator', ...plan.requiredAgents],
+        })
+      } catch (err) {
+        console.warn('[Orchestrator] Failed to store task memory:', err)
+      }
     }
   }
 
@@ -1086,7 +1149,8 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     task: TaskRecord,
     plan: TaskPlan,
     relevantMemories: string[] = [],
-    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
+    conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = [],
+    cancellationToken?: import('./cancellation').CancellationToken
   ): Promise<Map<string, AgentResult>> {
     const results = new Map<string, AgentResult>()
     const remaining = new Set(plan.subTasks.map((st) => st.id))
@@ -1122,6 +1186,14 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
         subTask.status = 'in-progress'
         console.log(`[Orchestrator] executePlan: dispatching ${subTask.assignedAgent} for subtask "${subTask.id}" — "${subTask.description.slice(0, 100)}"`)
 
+        // Emit task list item update: in-progress
+        this.bus.emitEvent('plan:task-item-update', {
+          taskId: task.id,
+          planId: plan.id,
+          itemId: subTask.id,
+          status: 'in-progress',
+        })
+
         const stepIndex = plan.subTasks.indexOf(subTask) + 1
         this.bus.emitEvent('task:progress', {
           taskId: task.id,
@@ -1144,6 +1216,7 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
           images: stepIndex === 1 ? task.images : undefined,
           blackboard: blackboardHandle,
           toolingNeeds: (task as any)._toolingNeeds,
+          cancellationToken,
         })
 
         results.set(subTask.id, result)
@@ -1168,10 +1241,45 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
         }
 
         if (result.status === 'success' || result.status === 'partial') {
+          // ── Code Verification Loop ──
+          // After a coder step writes files, auto-verify with type-check/lint.
+          // If verification fails, feed errors back to the coder for self-correction.
+          let verificationFailed = false
+          if (subTask.assignedAgent === 'coder' && result.status === 'success') {
+            const verifyResult = await this.verifyCodingOutput(task.id, plan.id, subTask, context)
+            if (verifyResult && !verifyResult.passed) {
+              subTask.attempts++
+              if (subTask.attempts < subTask.maxAttempts) {
+                subTask.status = 'retrying'
+                subTask.description += `\n\nVERIFICATION FAILED — fix the following errors:\n${verifyResult.errors}\nDo NOT rewrite the entire file. Use file_edit to fix only the broken parts.`
+                console.log(`[Orchestrator] ⚠ Coder verification failed for ${subTask.id}, retrying with error feedback`)
+                this.bus.emitEvent('plan:task-item-update', {
+                  taskId: task.id,
+                  planId: plan.id,
+                  itemId: subTask.id,
+                  status: 'in-progress',
+                })
+                verificationFailed = true
+              } else {
+                console.warn(`[Orchestrator] Coder verification failed but max retries exhausted for ${subTask.id}`)
+              }
+            }
+          }
+
+          if (verificationFailed) return // Will be re-picked in next loop iteration
+
           subTask.status = 'completed'
           subTask.result = result.output
           completed.add(subTask.id)
           remaining.delete(subTask.id)
+
+          // Emit task list item update: completed ✓
+          this.bus.emitEvent('plan:task-item-update', {
+            taskId: task.id,
+            planId: plan.id,
+            itemId: subTask.id,
+            status: 'completed',
+          })
 
           this.bus.emitEvent('plan:step-completed', {
             taskId: task.id,
@@ -1197,6 +1305,14 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
             subTask.error = result.error
             remaining.delete(subTask.id)
             completed.add(subTask.id)
+
+            // Emit task list item update: failed ✗
+            this.bus.emitEvent('plan:task-item-update', {
+              taskId: task.id,
+              planId: plan.id,
+              itemId: subTask.id,
+              status: 'failed',
+            })
 
             this.bus.emitEvent('plan:step-failed', {
               taskId: task.id,
@@ -1245,6 +1361,88 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
    * Execute a single sub-task via the registered executor.
    * If no executor is registered, uses the base agent's think() directly.
    */
+  /**
+   * Auto-verify coder output by running type-check / lint via the executor.
+   * Returns null if no verification is possible (no project context),
+   * or { passed, errors } with the result.
+   */
+  private async verifyCodingOutput(
+    taskId: string,
+    planId: string,
+    subTask: SubTask,
+    context: AgentContext
+  ): Promise<{ passed: boolean; errors: string } | null> {
+    try {
+      // Determine the project directory from coder output or context
+      const coderOutput = typeof subTask.result === 'string' ? subTask.result : JSON.stringify(subTask.result ?? '')
+      // Look for file paths in the coder's output to detect the project root
+      const pathMatch = coderOutput.match(/(?:wrote|created|edited|modified|updated)\s+(?:file\s+)?[`"']?([^\s`"']+\.[a-z]{1,4})/i)
+      if (!pathMatch) return null // No files written — skip verification
+
+      const filePath = pathMatch[1]
+      // Derive project directory (go up from the file to find package.json, etc.)
+      const parts = filePath.replace(/\\/g, '/').split('/')
+      // Try to find a reasonable project root (parent of src/, lib/, etc.)
+      let projectDir = ''
+      for (let i = parts.length - 1; i >= 0; i--) {
+        if (['src', 'lib', 'app', 'packages'].includes(parts[i])) {
+          projectDir = parts.slice(0, i).join('/')
+          break
+        }
+      }
+      if (!projectDir) {
+        // Use parent directory of the file
+        projectDir = parts.slice(0, -1).join('/')
+      }
+      if (!projectDir) return null
+
+      console.log(`[Orchestrator] 🔍 Running code verification in: ${projectDir}`)
+
+      this.bus.emitEvent('task:progress', {
+        taskId,
+        currentStep: `Verifying code changes in ${projectDir.split('/').pop()}...`,
+      })
+
+      // Run verification via the executor: attempt tsc --noEmit first, then fallback to basic syntax check
+      const verifySubTask: SubTask = {
+        id: `${subTask.id}_verify`,
+        description: `Run code verification in "${projectDir}". Execute the following commands and report results:
+1. If package.json exists with a TypeScript config: run "npx tsc --noEmit --pretty" to type-check
+2. If that's not available, try "npx eslint --no-error-on-unmatched-pattern ." for lint
+3. Report ONLY the errors found (if any). If no errors, say "VERIFICATION PASSED".
+Do NOT install any packages. Do NOT fix errors — just report them.`,
+        assignedAgent: 'executor',
+        status: 'in-progress',
+        dependencies: [],
+        attempts: 0,
+        maxAttempts: 1,
+      }
+
+      const verifyResult = await this.executeSubTask(verifySubTask, {
+        ...context,
+        planId,
+      })
+
+      const output = typeof verifyResult.output === 'string' ? verifyResult.output : JSON.stringify(verifyResult.output ?? '')
+      const passed = verifyResult.status === 'success' && /verification passed|no\s*errors?|0\s*errors?/i.test(output)
+
+      if (!passed) {
+        // Extract just the error lines (truncated to keep context manageable)
+        const errorLines = output.split('\n').filter(l => /error|Error|TS\d{4}|warning/i.test(l))
+        const errors = errorLines.length > 0 ? errorLines.join('\n') : output
+        console.log(`[Orchestrator] ⚠ Verification found issues: ${errors.slice(0, 200)}`)
+        return { passed: false, errors }
+      }
+
+      console.log(`[Orchestrator] ✅ Code verification passed for ${subTask.id}`)
+      return { passed: true, errors: '' }
+    } catch (err) {
+      // Verification itself failed — don't block the pipeline
+      console.warn(`[Orchestrator] Code verification error (non-blocking):`, err)
+      return null
+    }
+  }
+
   private async executeSubTask(subTask: SubTask, context: AgentContext): Promise<AgentResult> {
     if (this.agentExecutor) {
       return this.agentExecutor(subTask, context)

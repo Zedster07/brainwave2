@@ -35,7 +35,7 @@ export class ReplicateProvider implements LLMAdapter {
               ? `<context>\n${request.context}\n</context>\n\n${request.user}`
               : request.user,
             temperature: request.temperature ?? 0.7,
-            max_tokens: request.maxTokens ?? 4096,
+            ...(request.maxTokens ? { max_tokens: request.maxTokens } : {}),
           },
         }),
         { maxAttempts: 3 },
@@ -68,7 +68,7 @@ export class ReplicateProvider implements LLMAdapter {
           ? `<context>\n${request.context}\n</context>\n\n${request.user}`
           : request.user,
         temperature: request.temperature ?? 0.7,
-        max_tokens: request.maxTokens ?? 4096,
+        ...(request.maxTokens ? { max_tokens: request.maxTokens } : {}),
       },
     })
 

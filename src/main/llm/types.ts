@@ -14,10 +14,12 @@ export interface LLMRequest {
   user: string
   context?: string
   temperature?: number  // default 0.7
-  maxTokens?: number    // default 4096
+  maxTokens?: number    // omit = model's max output (unlimited)
   responseFormat?: 'text' | 'json'
   /** Optional images for vision-capable models (base64-encoded) */
   images?: Array<{ data: string; mimeType: string }>
+  /** Optional AbortSignal for cancelling in-flight requests */
+  signal?: AbortSignal
 }
 
 export interface LLMResponse {

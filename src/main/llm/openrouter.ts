@@ -63,17 +63,17 @@ export class OpenRouterProvider implements LLMAdapter {
     }
 
     try {
-      console.log(`[OpenRouter] → ${model} | msgs=${messages.length} | format=${request.responseFormat ?? 'text'} | temp=${request.temperature ?? 0.7} | maxTokens=${request.maxTokens ?? 4096}${request.images?.length ? ` | images=${request.images.length}` : ''}`)
+      console.log(`[OpenRouter] → ${model} | msgs=${messages.length} | format=${request.responseFormat ?? 'text'} | temp=${request.temperature ?? 0.7} | maxTokens=${request.maxTokens ?? 'auto'}${request.images?.length ? ` | images=${request.images.length}` : ''}`)
 
       const response = await withRetry(
         () => this.client.chat.completions.create({
           model,
           messages,
           temperature: request.temperature ?? 0.7,
-          max_tokens: request.maxTokens ?? 4096,
+          max_tokens: request.maxTokens,
           response_format:
             request.responseFormat === 'json' ? { type: 'json_object' } : undefined,
-        }),
+        }, { signal: request.signal }),
         { maxAttempts: 3 },
         `OpenRouter ${model}`
       )
@@ -131,9 +131,9 @@ export class OpenRouterProvider implements LLMAdapter {
       model,
       messages,
       temperature: request.temperature ?? 0.7,
-      max_tokens: request.maxTokens ?? 4096,
+      max_tokens: request.maxTokens,
       stream: true,
-    })
+    }, { signal: request.signal })
 
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta?.content

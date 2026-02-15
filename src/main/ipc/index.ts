@@ -373,10 +373,31 @@ export function registerIpcHandlers(): void {
     })
   })
   eventBus.onEvent('plan:created', (data) => {
-    const step = `Plan created: ${data.steps} steps → ${data.agents.join(', ')}`
+    const agentList = data.agents.join(', ')
+    const step = `Planning: ${data.steps} step${data.steps > 1 ? 's' : ''} → ${agentList}`
     updateLiveState(data.taskId, { status: 'executing', currentStep: step })
     forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
       taskId: data.taskId, status: 'executing', currentStep: step, timestamp: Date.now(),
+    })
+  })
+  eventBus.onEvent('plan:task-list', (data) => {
+    // Forward the full task list to the renderer for progress tracking
+    forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+      taskId: data.taskId, status: 'executing', timestamp: Date.now(),
+      taskList: data.items.map(item => ({
+        id: item.id,
+        title: item.title,
+        agent: item.agent,
+        status: item.status,
+        dependsOn: item.dependsOn,
+      })),
+    })
+  })
+  eventBus.onEvent('plan:task-item-update', (data) => {
+    // Forward individual task item status updates to the renderer
+    forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+      taskId: data.taskId, status: 'executing', timestamp: Date.now(),
+      taskListUpdate: { itemId: data.itemId, status: data.status },
     })
   })
   eventBus.onEvent('task:progress', (data) => {
@@ -386,7 +407,7 @@ export function registerIpcHandlers(): void {
     })
   })
   eventBus.onEvent('plan:step-completed', (data) => {
-    const step = `✓ ${data.agentType} completed step "${data.stepId}"`
+    const step = `✓ ${data.agentType} completed`
     updateLiveState(data.taskId, { status: 'executing', currentStep: step })
     forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
       taskId: data.taskId, status: 'executing', currentStep: step, timestamp: Date.now(),
@@ -416,10 +437,21 @@ export function registerIpcHandlers(): void {
     id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agentType, agentType: data.agentType,
     level: 'info', message: `Thinking with ${data.model}...`, timestamp: Date.now(),
   }))
-  eventBus.onEvent('agent:acting', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
-    id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agentType, agentType: data.agentType,
-    level: 'info', message: data.action, timestamp: Date.now(),
-  }))
+  eventBus.onEvent('agent:acting', (data) => {
+    forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
+      id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agentType, agentType: data.agentType,
+      level: 'info', message: data.action, timestamp: Date.now(),
+    })
+    // Forward reasoning steps (prefixed with 💭) to the activity log in CommandCenter
+    if (data.action.startsWith('💭')) {
+      const reasoning = data.action.slice(2).trim()
+      const step = `💭 ${reasoning}`
+      updateLiveState(data.taskId, { status: 'executing', currentStep: step })
+      forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
+        taskId: data.taskId, status: 'executing', currentStep: step, timestamp: Date.now(),
+      })
+    }
+  })
   eventBus.onEvent('agent:completed', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
     id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agentType, agentType: data.agentType,
     level: 'info', message: `Completed (confidence: ${(data.confidence * 100).toFixed(0)}%, tokens: ${data.tokensIn + data.tokensOut})`, timestamp: Date.now(),
@@ -432,8 +464,7 @@ export function registerIpcHandlers(): void {
   // Live tool-result streaming → renderer (appears in activity log as results arrive)
   eventBus.onEvent('agent:tool-result', (data) => {
     const icon = data.success ? '✓' : '✗'
-    const toolName = data.tool.split('::').pop() ?? data.tool
-    const step = `${icon} ${data.agentType}→${toolName}: ${data.summary.slice(0, 150)}`
+    const step = `${icon} ${data.summary}`
     updateLiveState(data.taskId, { status: 'executing', currentStep: step })
     forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
       taskId: data.taskId, status: 'executing', currentStep: step, timestamp: Date.now(),
@@ -450,6 +481,27 @@ export function registerIpcHandlers(): void {
     updateLiveState(data.taskId, { status: 'executing', currentStep: step })
     forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
       taskId: data.taskId, status: 'executing', currentStep: step, timestamp: Date.now(),
+    })
+  })
+
+  // Streaming events — forward LLM response chunks to renderer for live text display
+  eventBus.onEvent('agent:stream-chunk', (data) => {
+    forwardToRenderer(IPC_CHANNELS.AGENT_STREAM_CHUNK, {
+      taskId: data.taskId,
+      agentType: data.agentType,
+      chunk: data.chunk,
+      isFirst: data.isFirst,
+      isDone: false,
+    })
+  })
+  eventBus.onEvent('agent:stream-end', (data) => {
+    forwardToRenderer(IPC_CHANNELS.AGENT_STREAM_CHUNK, {
+      taskId: data.taskId,
+      agentType: data.agentType,
+      chunk: '',
+      isFirst: false,
+      isDone: true,
+      fullText: data.fullText,
     })
   })
 
@@ -674,6 +726,17 @@ export function registerIpcHandlers(): void {
 
   // ─── Settings (DB-backed) ───
   const db = getDatabase()
+
+  // Directory picker dialog
+  ipcMain.handle(IPC_CHANNELS.DIALOG_SELECT_DIRECTORY, async (_event, title?: string) => {
+    const win = BrowserWindow.getFocusedWindow()
+    const result = await dialog.showOpenDialog(win!, {
+      title: title || 'Select Directory',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0]
+  })
 
   ipcMain.handle(IPC_CHANNELS.SETTINGS_GET, async (_event, key: string) => {
     const row = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, key)
@@ -980,20 +1043,23 @@ export function registerIpcHandlers(): void {
     const now = Date.now()
     const sessionTitle = title || 'New Chat'
     db.run(
-      `INSERT INTO chat_sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO chat_sessions (id, title, session_type, created_at, updated_at) VALUES (?, ?, 'user', ?, ?)`,
       id, sessionTitle, now, now
     )
-    return { id, title: sessionTitle, createdAt: now, updatedAt: now }
+    return { id, title: sessionTitle, type: 'user' as const, createdAt: now, updatedAt: now }
   })
 
-  ipcMain.handle(IPC_CHANNELS.SESSION_LIST, async () => {
+  ipcMain.handle(IPC_CHANNELS.SESSION_LIST, async (_event, type?: string) => {
+    const filter = type ? `WHERE cs.session_type = ?` : ''
+    const params = type ? [type] : []
     const rows = db.all(
-      `SELECT cs.id, cs.title, cs.created_at, cs.updated_at,
+      `SELECT cs.id, cs.title, cs.session_type, cs.created_at, cs.updated_at,
               (SELECT COUNT(*) FROM tasks t WHERE t.session_id = cs.id) as task_count
-       FROM chat_sessions cs ORDER BY cs.updated_at DESC`
-    ) as Array<{ id: string; title: string; created_at: number; updated_at: number; task_count: number }>
+       FROM chat_sessions cs ${filter} ORDER BY cs.updated_at DESC`,
+      ...params
+    ) as Array<{ id: string; title: string; session_type: string; created_at: number; updated_at: number; task_count: number }>
     return rows.map((r) => ({
-      id: r.id, title: r.title, createdAt: r.created_at, updatedAt: r.updated_at, taskCount: r.task_count,
+      id: r.id, title: r.title, type: r.session_type as 'user' | 'autonomous', createdAt: r.created_at, updatedAt: r.updated_at, taskCount: r.task_count,
     }))
   })
 

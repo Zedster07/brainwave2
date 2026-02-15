@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Clock, Lightbulb, Play, CheckCircle2,
   AlertTriangle, XCircle, RefreshCw, Search, Filter, ChevronDown,
-  ChevronUp, Ban, History, Zap
+  ChevronUp, Ban, History, Zap, MessageSquare
 } from 'lucide-react'
 import type { TaskRecord } from '@shared/types'
 
@@ -26,6 +27,7 @@ const COLUMNS: Column[] = [
 // ─── Plan Board ─────────────────────────────────────────
 
 export function PlanBoard() {
+  const navigate = useNavigate()
   const [tasks, setTasks] = useState<TaskRecord[]>([])
   const [historyTasks, setHistoryTasks] = useState<TaskRecord[]>([])
   const [loading, setLoading] = useState(true)
@@ -233,6 +235,7 @@ export function PlanBoard() {
                         expandedTaskId === task.id ? null : task.id
                       )}
                       onCancel={handleCancel}
+                      onViewInChat={task.sessionId ? () => navigate(`/?session=${task.sessionId}`) : undefined}
                     />
                   ))
                 )}
@@ -271,9 +274,10 @@ interface TaskCardProps {
   expanded: boolean
   onToggle: () => void
   onCancel: (id: string) => void
+  onViewInChat?: () => void
 }
 
-function TaskCard({ task, expanded, onToggle, onCancel }: TaskCardProps) {
+function TaskCard({ task, expanded, onToggle, onCancel, onViewInChat }: TaskCardProps) {
   const StatusIcon =
     task.status === 'pending' ? Clock :
     task.status === 'planning' ? Lightbulb :
@@ -381,8 +385,17 @@ function TaskCard({ task, expanded, onToggle, onCancel }: TaskCardProps) {
           )}
 
           {/* Actions */}
-          {isActive && (
-            <div className="flex items-center gap-2 pt-1">
+          <div className="flex items-center gap-2 pt-1">
+            {onViewInChat && (
+              <button
+                onClick={onViewInChat}
+                className="flex items-center gap-1 text-[10px] text-accent/70 hover:text-accent px-2 py-1 rounded hover:bg-accent/10 transition-colors"
+              >
+                <MessageSquare className="w-3 h-3" />
+                View in Chat
+              </button>
+            )}
+            {isActive && (
               <button
                 onClick={() => onCancel(task.id)}
                 className="flex items-center gap-1 text-[10px] text-red-400/70 hover:text-red-400 px-2 py-1 rounded hover:bg-red-500/10 transition-colors"
@@ -390,8 +403,8 @@ function TaskCard({ task, expanded, onToggle, onCancel }: TaskCardProps) {
                 <Ban className="w-3 h-3" />
                 Cancel
               </button>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
     </div>

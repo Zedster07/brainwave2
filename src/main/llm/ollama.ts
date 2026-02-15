@@ -75,7 +75,7 @@ export class OllamaProvider implements LLMAdapter {
             model,
             messages,
             temperature: request.temperature ?? 0.7,
-            max_tokens: request.maxTokens ?? 4096,
+            max_tokens: request.maxTokens,
             response_format:
               request.responseFormat === 'json' ? { type: 'json_object' } : undefined,
           }),
@@ -133,7 +133,7 @@ export class OllamaProvider implements LLMAdapter {
       model,
       messages,
       temperature: request.temperature ?? 0.7,
-      max_tokens: request.maxTokens ?? 4096,
+      max_tokens: request.maxTokens,
       stream: true,
     })
 

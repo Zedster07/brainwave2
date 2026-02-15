@@ -205,7 +205,7 @@ Be thorough but concise. Quality over quantity.${parentContext}${toolSection}`
     // Include sibling results for context
     if (context.siblingResults && context.siblingResults.size > 0) {
       const siblingContext = [...context.siblingResults.entries()]
-        .map(([id, result]) => `[${id}]: ${JSON.stringify(result.output).slice(0, 300)}`)
+        .map(([id, result]) => `[${id}]: ${JSON.stringify(result.output)}`)
         .join('\n')
       query += `\n\nCONTEXT FROM OTHER AGENTS:\n${siblingContext}`
     }

@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Send, Sparkles, Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, Ban, Plus, MessageSquare, Trash2, Pencil, PanelLeftClose, PanelLeft, Mic, MicOff, Volume2, VolumeX, Paperclip, X, ImageIcon } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Send, Sparkles, Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, Ban, Plus, MessageSquare, Trash2, Pencil, PanelLeftClose, PanelLeft, Mic, MicOff, Volume2, VolumeX, Paperclip, X, ImageIcon, Bot } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
 import { useVoice } from '../../hooks/useVoice'
-import type { TaskUpdate, TaskStatus, ChatSession, TaskLiveState, ImageAttachment } from '@shared/types'
+import type { TaskUpdate, TaskStatus, ChatSession, TaskLiveState, ImageAttachment, TaskListItem, TaskListItemStatus } from '@shared/types'
 
 interface LiveTask {
   id: string
@@ -14,9 +15,11 @@ interface LiveTask {
   result?: unknown
   error?: string
   timestamp: number
+  taskList?: TaskListItem[]
 }
 
 export function CommandCenter() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [input, setInput] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [tasks, setTasks] = useState<LiveTask[]>([])
@@ -79,20 +82,53 @@ export function CommandCenter() {
 
   // Session state
   const [sessions, setSessions] = useState<ChatSession[]>([])
+  const [autoSessions, setAutoSessions] = useState<ChatSession[]>([])
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarTab, setSidebarTab] = useState<'user' | 'autonomous'>('user')
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
 
   // Load sessions on mount
   useEffect(() => {
-    window.brainwave.listSessions().then((list) => {
-      setSessions(list)
-      // Auto-select the most recent session if any
-      if (list.length > 0) {
-        setActiveSessionId(list[0].id)
+    // Load both types in parallel
+    Promise.all([
+      window.brainwave.listSessions('user'),
+      window.brainwave.listSessions('autonomous'),
+    ]).then(([userList, autoList]) => {
+      setSessions(userList)
+      setAutoSessions(autoList)
+
+      // Check for deep-link session from URL (?session=<id>)
+      const deepLinkSession = searchParams.get('session')
+      if (deepLinkSession) {
+        // Check which list the session belongs to
+        const inUser = userList.some((s) => s.id === deepLinkSession)
+        const inAuto = autoList.some((s) => s.id === deepLinkSession)
+        if (inUser) {
+          setSidebarTab('user')
+          setActiveSessionId(deepLinkSession)
+        } else if (inAuto) {
+          setSidebarTab('autonomous')
+          setActiveSessionId(deepLinkSession)
+        }
+        setSearchParams({}, { replace: true })
+      } else if (userList.length > 0) {
+        setActiveSessionId(userList[0].id)
       }
     }).catch(console.error)
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Listen for sessions created by scheduled jobs (from main process)
+  useEffect(() => {
+    const unsubscribe = window.brainwave.onSessionCreated((session) => {
+      if (session.type === 'autonomous') {
+        setAutoSessions((prev) => [session, ...prev])
+      } else {
+        setSessions((prev) => [session, ...prev])
+      }
+    })
+    return unsubscribe
   }, [])
 
   // Load tasks when active session changes
@@ -159,6 +195,17 @@ export function CommandCenter() {
             if (update.currentStep && update.currentStep !== t.currentStep) {
               activityLog.push(update.currentStep)
             }
+            // Merge task list updates
+            let taskList = t.taskList
+            if (update.taskList) {
+              taskList = update.taskList
+            } else if (update.taskListUpdate && taskList) {
+              taskList = taskList.map((item) =>
+                item.id === update.taskListUpdate!.itemId
+                  ? { ...item, status: update.taskListUpdate!.status }
+                  : item
+              )
+            }
             return {
               ...t,
               status: update.status,
@@ -167,6 +214,7 @@ export function CommandCenter() {
               result: update.result ?? t.result,
               error: update.error ?? t.error,
               activityLog,
+              taskList,
               timestamp: update.timestamp,
             }
           })
@@ -183,6 +231,7 @@ export function CommandCenter() {
       const session = await window.brainwave.createSession('New Chat')
       setSessions((prev) => [session, ...prev])
       setActiveSessionId(session.id)
+      setSidebarTab('user')
       setTasks([])
       inputRef.current?.focus()
     } catch (err) {
@@ -263,6 +312,7 @@ export function CommandCenter() {
     try {
       await window.brainwave.deleteSession(id)
       setSessions((prev) => prev.filter((s) => s.id !== id))
+      setAutoSessions((prev) => prev.filter((s) => s.id !== id))
       if (activeSessionId === id) {
         setActiveSessionId(null)
         setTasks([])
@@ -281,6 +331,7 @@ export function CommandCenter() {
       const updated = await window.brainwave.renameSession(id, title.trim())
       if (updated) {
         setSessions((prev) => prev.map((s) => s.id === id ? { ...s, title: updated.title } : s))
+        setAutoSessions((prev) => prev.map((s) => s.id === id ? { ...s, title: updated.title } : s))
       }
     } catch (err) {
       console.error('[CommandCenter] Failed to rename session:', err)
@@ -288,46 +339,80 @@ export function CommandCenter() {
     setEditingSessionId(null)
   }, [])
 
-  const activeSession = sessions.find((s) => s.id === activeSessionId)
+  const activeSession = sessions.find((s) => s.id === activeSessionId) || autoSessions.find((s) => s.id === activeSessionId)
+
+  // Helper: which list to show in the sidebar
+  const visibleSessions = sidebarTab === 'user' ? sessions : autoSessions
 
   return (
     <div className="flex h-full">
       {/* Session Sidebar */}
       {sidebarOpen && (
         <div style={{
-            // maxHeight:"90vh",
-            // minHeight:"90vh",
             minWidth:"325px",
-            // position:"fixed",
-            // top:"130px"
         }} className="w-64 flex-shrink-0 border-r border-white/[0.06] flex flex-col bg-white/[0.01]">
-          {/* Sidebar Header */}
-          <div className="p-3 flex items-center justify-between border-b border-white/[0.06]">
-            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Chats</span>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={handleNewChat}
-                className="p-1.5 rounded-md hover:bg-white/[0.06] text-gray-400 hover:text-white transition-colors"
-                title="New Chat"
-              >
-                <Plus className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setSidebarOpen(false)}
-                className="p-1.5 rounded-md hover:bg-white/[0.06] text-gray-400 hover:text-white transition-colors"
-                title="Close sidebar"
-              >
-                <PanelLeftClose className="w-4 h-4" />
-              </button>
+          {/* Sidebar Header with Tabs */}
+          <div className="border-b border-white/[0.06]">
+            <div className="p-3 flex items-center justify-between">
+              <div className="flex items-center gap-0.5 bg-white/[0.04] rounded-lg p-0.5">
+                <button
+                  onClick={() => setSidebarTab('user')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors flex items-center gap-1.5
+                    ${sidebarTab === 'user'
+                      ? 'bg-white/[0.1] text-white shadow-sm'
+                      : 'text-gray-500 hover:text-gray-300'
+                    }`}
+                >
+                  <MessageSquare className="w-3 h-3" />
+                  Chats
+                  {sessions.length > 0 && (
+                    <span className="text-[10px] opacity-60">{sessions.length}</span>
+                  )}
+                </button>
+                <button
+                  onClick={() => setSidebarTab('autonomous')}
+                  className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors flex items-center gap-1.5
+                    ${sidebarTab === 'autonomous'
+                      ? 'bg-white/[0.1] text-white shadow-sm'
+                      : 'text-gray-500 hover:text-gray-300'
+                    }`}
+                >
+                  <Bot className="w-3 h-3" />
+                  Auto
+                  {autoSessions.length > 0 && (
+                    <span className="text-[10px] opacity-60">{autoSessions.length}</span>
+                  )}
+                </button>
+              </div>
+              <div className="flex items-center gap-1">
+                {sidebarTab === 'user' && (
+                  <button
+                    onClick={handleNewChat}
+                    className="p-1.5 rounded-md hover:bg-white/[0.06] text-gray-400 hover:text-white transition-colors"
+                    title="New Chat"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                )}
+                <button
+                  onClick={() => setSidebarOpen(false)}
+                  className="p-1.5 rounded-md hover:bg-white/[0.06] text-gray-400 hover:text-white transition-colors"
+                  title="Close sidebar"
+                >
+                  <PanelLeftClose className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
 
           {/* Session List */}
           <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-            {sessions.length === 0 ? (
-              <p className="text-[11px] text-gray-600 text-center py-6">No chats yet</p>
+            {visibleSessions.length === 0 ? (
+              <p className="text-[11px] text-gray-600 text-center py-6">
+                {sidebarTab === 'user' ? 'No chats yet' : 'No autonomous sessions yet'}
+              </p>
             ) : (
-              sessions.map((session) => (
+              visibleSessions.map((session) => (
                 <div
                   key={session.id}
                   className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors
@@ -337,7 +422,10 @@ export function CommandCenter() {
                     }`}
                   onClick={() => { setActiveSessionId(session.id); setEditingSessionId(null) }}
                 >
-                  <MessageSquare className="w-3.5 h-3.5 flex-shrink-0 opacity-60" />
+                  {sidebarTab === 'autonomous'
+                    ? <Bot className="w-3.5 h-3.5 flex-shrink-0 opacity-60 text-purple-400" />
+                    : <MessageSquare className="w-3.5 h-3.5 flex-shrink-0 opacity-60" />
+                  }
                   {editingSessionId === session.id ? (
                     <input
                       autoFocus
@@ -640,18 +728,39 @@ function TaskCard({ task, onCancel }: { task: LiveTask; onCancel: (id: string) =
               <p className="text-[11px] text-accent/80 mt-1.5 animate-pulse">{task.currentStep}</p>
             )}
 
+            {/* Task list progress checklist */}
+            {task.taskList && task.taskList.length > 0 && (
+              <div className="mt-2.5 space-y-1">
+                {task.taskList.map((item) => (
+                  <div key={item.id} className="flex items-center gap-2">
+                    <TaskItemIcon status={item.status} />
+                    <span className={`text-[11px] leading-relaxed ${
+                      item.status === 'completed' ? 'text-gray-500 line-through' :
+                      item.status === 'in-progress' ? 'text-accent' :
+                      item.status === 'failed' ? 'text-red-400' :
+                      'text-gray-400'
+                    }`}>
+                      {item.title}
+                    </span>
+                    <span className="text-[9px] text-gray-600 ml-auto">{item.agent}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {task.activityLog.length > 0 && (
               <div className="mt-2">
                 <button
                   onClick={() => setExpanded(!expanded)}
-                  className="text-[10px] text-gray-500 hover:text-gray-300 transition-colors"
+                  className="text-[10px] text-gray-500 hover:text-gray-300 transition-colors flex items-center gap-1"
                 >
-                  {expanded ? '▾' : '▸'} {task.activityLog.length} steps
+                  <span className="text-[9px]">{expanded ? '▾' : '▸'}</span>
+                  {task.activityLog.length} step{task.activityLog.length !== 1 ? 's' : ''}
                 </button>
                 {expanded && (
-                  <div className="mt-1 space-y-0.5 border-l border-white/[0.06] pl-2 ml-1">
+                  <div className="mt-1.5 space-y-px ml-1">
                     {task.activityLog.map((step, i) => (
-                      <p key={i} className="text-[11px] text-gray-500 leading-relaxed">{step}</p>
+                      <StepEntry key={i} step={step} index={i} />
                     ))}
                   </div>
                 )}
@@ -708,6 +817,44 @@ function TaskCard({ task, onCancel }: { task: LiveTask; onCancel: (id: string) =
   )
 }
 
+// ─── Step Entry (activity log row) ───
+
+function StepEntry({ step, index }: { step: string; index: number }) {
+  const isSuccess = step.startsWith('✓')
+  const isFail = step.startsWith('✗')
+  const isPlanning = step.startsWith('Planning:') || step.startsWith('Analyzing')
+  const isWarning = step.includes('⚠')
+  const isReasoning = step.startsWith('💭')
+
+  const color = isReasoning
+    ? 'text-gray-400 italic'
+    : isFail
+      ? 'text-red-400/70'
+      : isWarning
+        ? 'text-amber-400/70'
+        : isPlanning
+          ? 'text-blue-400/60'
+          : isSuccess
+            ? 'text-gray-400'
+            : 'text-gray-500'
+
+  // Clean up the step text — remove leading icon since we render our own
+  const text = step.replace(/^[✓✗⚠💭]\s*/, '')
+  const icon = isReasoning ? '💭' : isFail ? '✗' : isWarning ? '⚠' : isPlanning ? '◆' : '✓'
+
+  return (
+    <div className="flex items-start gap-1.5 py-0.5 group">
+      <span className={`text-[10px] font-mono ${color} flex-shrink-0 mt-px w-4 text-right opacity-40`}>
+        {index + 1}
+      </span>
+      <span className={`text-[10px] flex-shrink-0 mt-px ${color}`}>
+        {icon}
+      </span>
+      <span className={`text-[10px] leading-relaxed ${color}`}>{text}</span>
+    </div>
+  )
+}
+
 function StatusIcon({ status }: { status: TaskStatus }) {
   switch (status) {
     case 'queued':
@@ -724,6 +871,19 @@ function StatusIcon({ status }: { status: TaskStatus }) {
       return <XCircle className="w-4 h-4 text-gray-500 flex-shrink-0 mt-0.5" />
     default:
       return <Clock className="w-4 h-4 text-gray-500 flex-shrink-0 mt-0.5" />
+  }
+}
+
+function TaskItemIcon({ status }: { status: TaskListItemStatus }) {
+  switch (status) {
+    case 'in-progress':
+      return <Loader2 className="w-3 h-3 text-accent flex-shrink-0 animate-spin" />
+    case 'completed':
+      return <CheckCircle2 className="w-3 h-3 text-green-400 flex-shrink-0" />
+    case 'failed':
+      return <XCircle className="w-3 h-3 text-red-400 flex-shrink-0" />
+    default:
+      return <div className="w-3 h-3 rounded-full border border-gray-600 flex-shrink-0" />
   }
 }
 

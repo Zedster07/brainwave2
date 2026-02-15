@@ -202,7 +202,7 @@ OUTPUT FORMAT (JSON):
           const outputStr = typeof result.output === 'string'
             ? result.output
             : JSON.stringify(result.output, null, 2)
-          return `── Agent Output: ${id} ──\n${outputStr.slice(0, 3000)}`
+          return `── Agent Output: ${id} ──\n${outputStr}`
         })
         .join('\n\n')
 

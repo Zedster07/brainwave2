@@ -300,7 +300,7 @@ function parseJiraResults(content: string): Array<Record<string, string>> {
     if (keyMatch) {
       items.push({
         key: keyMatch[1],
-        summary: line.replace(keyMatch[0], '').replace(/[-:]\s*/, '').trim().slice(0, 100) || 'No summary',
+        summary: line.replace(keyMatch[0], '').replace(/[-:]\s*/, '').trim() || 'No summary',
         status: 'To Do',
         priority: 'Medium',
         type: 'jira',

@@ -2,7 +2,7 @@
  * Local Tool Provider — Built-in system tools for agents
  *
  * Provides comprehensive OS-level tools:
- *   File:    file_read, file_write, file_create, file_delete, file_move, directory_list
+ *   File:    file_read, file_write, file_create, file_delete, file_move, directory_list, directory_create
  *   Shell:   shell_execute
  *   Network: http_request, web_search, webpage_fetch
  *
@@ -10,7 +10,8 @@
  * Tools use the same shape as MCP tools so the executor treats them identically.
  */
 import { readFile, writeFile, unlink, mkdir, stat, rename, readdir } from 'node:fs/promises'
-import { exec } from 'node:child_process'
+import { exec, spawn } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { resolve, dirname, basename, join } from 'node:path'
 import https from 'node:https'
 import http from 'node:http'
@@ -18,8 +19,6 @@ import { getHardEngine } from '../rules'
 import { getEventBus } from '../agents/event-bus'
 import type { McpTool, McpToolCallResult } from '../mcp/types'
 
-// Max output from shell commands (100 KB)
-const MAX_SHELL_OUTPUT = 100 * 1024
 
 /**
  * Make an HTTP/HTTPS request using Node.js core modules.
@@ -86,9 +85,6 @@ function nodeHttpRequest(
   })
 }
 
-// Max file read size (5 MB)
-const MAX_READ_SIZE = 5 * 1024 * 1024
-
 // ─── Tool Definitions ───────────────────────────────────────
 
 const TOOL_DEFS: McpTool[] = [
@@ -97,12 +93,14 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'file_read',
-    description: 'Read the contents of a file. Returns the text content.',
+    description: 'Read the contents of a file. Returns the text content. For large files, use start_line/end_line to read specific sections.',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute or relative path to the file' },
         encoding: { type: 'string', description: 'File encoding (default: utf-8)' },
+        start_line: { type: 'number', description: '1-based line number to start reading from (inclusive). Omit to start from beginning.' },
+        end_line: { type: 'number', description: '1-based line number to stop reading at (inclusive). Omit to read to end.' },
       },
       required: ['path'],
     },
@@ -182,19 +180,48 @@ const TOOL_DEFS: McpTool[] = [
     },
   },
   {
+    key: 'local::create_directory',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'create_directory',
+    description: 'Create a new directory (and any parent directories). Use this before writing files to a new project folder.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path of the directory to create' },
+      },
+      required: ['path'],
+    },
+  },
+  {
     key: 'local::shell_execute',
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'shell_execute',
-    description: 'Execute a shell command (cmd/PowerShell on Windows, sh on Unix). Returns stdout and stderr.',
+    description: 'Execute a shell command. Returns stdout/stderr. For long-running servers (http-server, python -m http.server, etc.), set "background": true to start them detached — returns immediately with a process ID you can later kill with shell_kill.',
     inputSchema: {
       type: 'object',
       properties: {
         command: { type: 'string', description: 'The shell command to execute' },
         cwd: { type: 'string', description: 'Working directory (optional)' },
-        timeout: { type: 'number', description: 'Timeout in milliseconds (default: 30000)' },
+        timeout: { type: 'number', description: 'Timeout in milliseconds (default: 30000). Ignored if background=true.' },
+        background: { type: 'boolean', description: 'If true, starts the command as a detached background process and returns immediately with a process ID. Use this for servers, watchers, and other long-running commands.' },
       },
       required: ['command'],
+    },
+  },
+  {
+    key: 'local::shell_kill',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'shell_kill',
+    description: 'Kill a background process started with shell_execute(background=true). Provide the pid returned by the background shell_execute call.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pid: { type: 'number', description: 'The process ID to kill' },
+      },
+      required: ['pid'],
     },
   },
   {
@@ -255,9 +282,24 @@ const TOOL_DEFS: McpTool[] = [
       type: 'object',
       properties: {
         url: { type: 'string', description: 'The URL of the webpage to fetch' },
-        max_length: { type: 'number', description: 'Maximum characters to return (default: 15000)' },
       },
       required: ['url'],
+    },
+  },
+  {
+    key: 'local::file_edit',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'file_edit',
+    description: 'Edit an existing file by replacing a specific string with new content. Much more efficient than file_write for small changes — avoids rewriting entire files. The old_string must match exactly (including whitespace/indentation). Include 2-3 lines of context around the target to ensure a unique match.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the file to edit' },
+        old_string: { type: 'string', description: 'The exact text to find and replace (must match uniquely)' },
+        new_string: { type: 'string', description: 'The replacement text' },
+      },
+      required: ['path', 'old_string', 'new_string'],
     },
   },
 ]
@@ -265,6 +307,9 @@ const TOOL_DEFS: McpTool[] = [
 // ─── Provider ───────────────────────────────────────────────
 
 class LocalToolProvider {
+  /** Background process tracker — maps PID to child process reference */
+  private backgroundProcesses = new Map<number, ChildProcess>()
+
   /** Get all available local tool definitions */
   getTools(): McpTool[] {
     return [...TOOL_DEFS]
@@ -299,8 +344,12 @@ class LocalToolProvider {
         return this.fileMove(args)
       case 'directory_list':
         return this.directoryList(args)
+      case 'create_directory':
+        return this.createDirectory(args)
       case 'shell_execute':
         return this.shellExecute(args)
+      case 'shell_kill':
+        return this.shellKill(args)
       case 'http_request':
         return this.httpRequest(args)
       case 'send_notification':
@@ -309,6 +358,8 @@ class LocalToolProvider {
         return this.webSearch(args)
       case 'webpage_fetch':
         return this.webpageFetch(args)
+      case 'file_edit':
+        return this.fileEdit(args)
       default:
         return {
           toolKey: `local::${toolName}`,
@@ -334,17 +385,23 @@ class LocalToolProvider {
     }
 
     try {
-      // Check size before reading
-      const info = await stat(filePath)
-      if (info.size > MAX_READ_SIZE) {
-        return this.error(
-          'local::file_read',
-          `File too large (${(info.size / 1024 / 1024).toFixed(1)} MB). Max is ${MAX_READ_SIZE / 1024 / 1024} MB.`,
-          start
-        )
+      const fullContent = await readFile(filePath, { encoding })
+      const allLines = fullContent.split('\n')
+      const totalLines = allLines.length
+
+      // Support line-range reading for large files
+      const startLine = typeof args.start_line === 'number' ? Math.max(1, Math.floor(args.start_line)) : 1
+      const endLine = typeof args.end_line === 'number' ? Math.min(totalLines, Math.floor(args.end_line)) : totalLines
+      const isPartial = startLine > 1 || endLine < totalLines
+
+      let content: string
+      if (isPartial) {
+        const selectedLines = allLines.slice(startLine - 1, endLine)
+        content = `[Lines ${startLine}-${endLine} of ${totalLines} total]\n` + selectedLines.join('\n')
+      } else {
+        content = fullContent
       }
 
-      const content = await readFile(filePath, { encoding })
       return {
         toolKey: 'local::file_read',
         success: true,
@@ -376,6 +433,12 @@ class LocalToolProvider {
     }
 
     try {
+      // Backup existing file before overwriting
+      try {
+        const existingContent = await readFile(filePath, 'utf-8')
+        this.storeBackup(filePath, existingContent)
+      } catch { /* file doesn't exist yet — no backup needed */ }
+
       // Ensure parent directories exist
       await mkdir(dirname(filePath), { recursive: true })
       await writeFile(filePath, content, 'utf-8')
@@ -405,6 +468,12 @@ class LocalToolProvider {
     }
 
     try {
+      // Backup file before deleting
+      try {
+        const existingContent = await readFile(filePath, 'utf-8')
+        this.storeBackup(filePath, existingContent)
+      } catch { /* couldn't read — proceed with delete anyway */ }
+
       await unlink(filePath)
 
       return {
@@ -495,6 +564,32 @@ class LocalToolProvider {
     }
   }
 
+  // ─── Create Directory ────────────────────────────────
+
+  private async createDirectory(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const dirPath = resolve(String(args.path ?? ''))
+    const start = Date.now()
+
+    // Safety gate (treat as file_write to the directory path)
+    const verdict = getHardEngine().evaluate({ type: 'file_write', path: dirPath, content: '', size: 0 })
+    if (!verdict.allowed) {
+      return this.blocked('local::create_directory', verdict.reason, start)
+    }
+
+    try {
+      await mkdir(dirPath, { recursive: true })
+      return {
+        toolKey: 'local::create_directory',
+        success: true,
+        content: `Successfully created directory ${dirPath}`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::create_directory', this.errMsg(err), start)
+    }
+  }
+
   // ─── Directory List ──────────────────────────────────
 
   private async directoryList(args: Record<string, unknown>): Promise<McpToolCallResult> {
@@ -569,6 +664,7 @@ class LocalToolProvider {
     const command = String(args.command ?? '')
     const cwd = args.cwd ? resolve(String(args.cwd)) : undefined
     const timeout = typeof args.timeout === 'number' ? args.timeout : 30_000
+    const background = args.background === true
     const start = Date.now()
 
     if (!command.trim()) {
@@ -592,13 +688,82 @@ class LocalToolProvider {
       return this.blocked('local::shell_execute', verdict.reason, start)
     }
 
+    // ── Background mode: spawn detached and return immediately ──
+    if (background) {
+      try {
+        const isWin = process.platform === 'win32'
+        const child = spawn(
+          isWin ? 'cmd' : 'sh',
+          isWin ? ['/c', command] : ['-c', command],
+          {
+            cwd,
+            detached: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            windowsHide: true,
+          }
+        )
+        const pid = child.pid ?? 0
+        if (pid) {
+          this.backgroundProcesses.set(pid, child)
+        }
+        console.log(`[LocalTools] Background process started: PID=${pid} cmd="${command.slice(0, 100)}"`)
+
+        // Capture initial stdout/stderr for crash detection
+        let stdout = ''
+        let stderr = ''
+        child.stdout?.on('data', (d: Buffer) => { stdout += d.toString().slice(0, 4000) })
+        child.stderr?.on('data', (d: Buffer) => { stderr += d.toString().slice(0, 4000) })
+
+        // Wait up to 2s and check if the process crashed
+        let exited = false
+        let exitCode: number | null = null
+        child.on('exit', (code) => { exited = true; exitCode = code })
+        await new Promise(r => setTimeout(r, 2000))
+
+        if (exited || child.exitCode !== null) {
+          // Process died during startup — report the error
+          this.backgroundProcesses.delete(pid)
+          const code = exitCode ?? child.exitCode ?? 'unknown'
+          const output = [
+            `Background process exited immediately (code ${code}).`,
+            stdout.trim() ? `STDOUT:\n${stdout.trim()}` : '',
+            stderr.trim() ? `STDERR:\n${stderr.trim()}` : '',
+            'The server failed to start. Check if the port is already in use or the command is correct.',
+          ].filter(Boolean).join('\n')
+          console.log(`[LocalTools] Background process crashed immediately: PID=${pid} code=${code}`)
+          return this.error('local::shell_execute', output, start)
+        }
+
+        // Process is still alive — disconnect pipes and let it run freely
+        const capturedInfo = (stderr.trim() || stdout.trim()).slice(0, 200)
+        child.stdout?.removeAllListeners('data')
+        child.stderr?.removeAllListeners('data')
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        child.unref()
+
+        console.log(`[LocalTools] Background process confirmed alive: PID=${pid}${capturedInfo ? ` | ${capturedInfo}` : ''}`)
+
+        return {
+          toolKey: 'local::shell_execute',
+          success: true,
+          content: `Background process started and confirmed running (PID: ${pid}).${capturedInfo ? ` Server output: "${capturedInfo}"` : ''} To stop it later, call shell_kill with pid=${pid}.`,
+          isError: false,
+          duration: Date.now() - start,
+        }
+      } catch (err) {
+        return this.error('local::shell_execute', `Failed to start background process: ${err instanceof Error ? err.message : String(err)}`, start)
+      }
+    }
+
+    // ── Normal (foreground) mode: exec and wait ──
     return new Promise<McpToolCallResult>((resolvePromise) => {
       exec(
         command,
         {
           cwd,
           timeout,
-          maxBuffer: MAX_SHELL_OUTPUT,
+          maxBuffer: Infinity,
           windowsHide: true,
         },
         (error, stdout, stderr) => {
@@ -613,8 +778,8 @@ class LocalToolProvider {
 
             const output = [
               errorMsg,
-              stdout?.trim() ? `\nSTDOUT:\n${this.truncate(stdout)}` : '',
-              stderr?.trim() ? `\nSTDERR:\n${this.truncate(stderr)}` : '',
+              stdout?.trim() ? `\nSTDOUT:\n${stdout}` : '',
+              stderr?.trim() ? `\nSTDERR:\n${stderr}` : '',
             ]
               .filter(Boolean)
               .join('\n')
@@ -628,8 +793,8 @@ class LocalToolProvider {
             })
           } else {
             const output = [
-              stdout?.trim() ? this.truncate(stdout) : '(no output)',
-              stderr?.trim() ? `\nSTDERR:\n${this.truncate(stderr)}` : '',
+              stdout?.trim() ? stdout : '(no output)',
+              stderr?.trim() ? `\nSTDERR:\n${stderr}` : '',
             ]
               .filter(Boolean)
               .join('\n')
@@ -645,6 +810,41 @@ class LocalToolProvider {
         }
       )
     })
+  }
+
+  // ─── Shell Kill ──────────────────────────────────────
+
+  private async shellKill(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const pid = typeof args.pid === 'number' ? args.pid : parseInt(String(args.pid ?? '0'), 10)
+    const start = Date.now()
+
+    if (!pid) {
+      return this.error('local::shell_kill', 'pid is required', start)
+    }
+
+    const child = this.backgroundProcesses.get(pid)
+    try {
+      if (process.platform === 'win32') {
+        // On Windows, kill the process tree
+        exec(`taskkill /pid ${pid} /T /F`, { windowsHide: true })
+      } else {
+        // On Unix, kill the process group
+        process.kill(-pid, 'SIGTERM')
+      }
+      if (child) {
+        this.backgroundProcesses.delete(pid)
+      }
+      console.log(`[LocalTools] Background process killed: PID=${pid}`)
+      return {
+        toolKey: 'local::shell_kill',
+        success: true,
+        content: `Process ${pid} killed.`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::shell_kill', `Failed to kill process ${pid}: ${err instanceof Error ? err.message : String(err)}`, start)
+    }
   }
 
   // ─── HTTP Request ────────────────────────────────────
@@ -693,11 +893,6 @@ class LocalToolProvider {
         responseBody = JSON.stringify(json, null, 2)
       } else {
         responseBody = await response.text()
-      }
-
-      // Truncate very large responses
-      if (responseBody.length > MAX_SHELL_OUTPUT) {
-        responseBody = responseBody.slice(0, MAX_SHELL_OUTPUT) + `\n... [truncated, ${responseBody.length} total chars]`
       }
 
       const statusLine = `HTTP ${response.status} ${response.statusText}`
@@ -841,7 +1036,6 @@ class LocalToolProvider {
 
   private async webpageFetch(args: Record<string, unknown>): Promise<McpToolCallResult> {
     const url = String(args.url ?? '').trim()
-    const maxLength = typeof args.max_length === 'number' ? args.max_length : 15_000
     const start = Date.now()
 
     if (!url) {
@@ -886,10 +1080,6 @@ class LocalToolProvider {
         .replace(/\s+/g, ' ')
         .trim()
 
-      if (text.length > maxLength) {
-        text = text.slice(0, maxLength) + `\n... [truncated, ${text.length} total chars]`
-      }
-
       return {
         toolKey: 'local::webpage_fetch',
         success: true,
@@ -903,6 +1093,332 @@ class LocalToolProvider {
         : this.errMsg(err)
       return this.error('local::webpage_fetch', message, start)
     }
+  }
+
+  // ─── File Edit (search-and-replace with fuzzy matching) ──────────────────
+
+  private async fileEdit(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const filePath = resolve(String(args.path ?? ''))
+    const oldString = String(args.old_string ?? '')
+    const newString = String(args.new_string ?? '')
+    const start = Date.now()
+
+    if (!oldString) {
+      return this.error('local::file_edit', 'old_string is required and cannot be empty', start)
+    }
+
+    // Safety gate — needs both read and write access
+    const readVerdict = getHardEngine().evaluate({ type: 'file_read', path: filePath })
+    if (!readVerdict.allowed) {
+      return this.blocked('local::file_edit', readVerdict.reason, start)
+    }
+    const writeVerdict = getHardEngine().evaluate({
+      type: 'file_write', path: filePath, content: newString, size: Buffer.byteLength(newString, 'utf-8'),
+    })
+    if (!writeVerdict.allowed) {
+      return this.blocked('local::file_edit', writeVerdict.reason, start)
+    }
+
+    try {
+      const content = await readFile(filePath, 'utf-8')
+
+      // ── Tier 1: Exact match (fastest, most reliable) ──
+      const exactOccurrences = content.split(oldString).length - 1
+
+      if (exactOccurrences === 1) {
+        return this.applyEdit(filePath, content, oldString, newString, start, 'exact')
+      }
+
+      if (exactOccurrences > 1) {
+        return this.error(
+          'local::file_edit',
+          `old_string matches ${exactOccurrences} locations in ${filePath}. Include more surrounding context to make the match unique.`,
+          start
+        )
+      }
+
+      // ── Tier 2: Whitespace-flexible match ──
+      // Normalize whitespace: collapse runs of spaces/tabs, trim line endings
+      const normalizeWS = (s: string) =>
+        s.split('\n').map(line => line.replace(/[\t ]+/g, ' ').trimEnd()).join('\n')
+
+      const normalizedContent = normalizeWS(content)
+      const normalizedOld = normalizeWS(oldString)
+      const wsOccurrences = normalizedContent.split(normalizedOld).length - 1
+
+      if (wsOccurrences === 1) {
+        // Find the actual location in the original content by matching normalized positions
+        const wsIndex = normalizedContent.indexOf(normalizedOld)
+        // Map back to original content by matching line-by-line
+        const matchResult = this.findWhitespaceFlexibleMatch(content, oldString)
+        if (matchResult) {
+          console.log(`[file_edit] Tier 2 (whitespace-flexible) match for ${filePath}`)
+          return this.applyEdit(filePath, content, matchResult, newString, start, 'whitespace-flexible')
+        }
+      }
+
+      // ── Tier 3: Line-trimmed match ──
+      // Trim each line of both sides, then match
+      const trimLines = (s: string) =>
+        s.split('\n').map(line => line.trim()).join('\n')
+
+      const trimmedContent = trimLines(content)
+      const trimmedOld = trimLines(oldString)
+      const trimOccurrences = trimmedContent.split(trimmedOld).length - 1
+
+      if (trimOccurrences === 1) {
+        const matchResult = this.findLineTrimmedMatch(content, oldString)
+        if (matchResult) {
+          console.log(`[file_edit] Tier 3 (line-trimmed) match for ${filePath}`)
+          return this.applyEdit(filePath, content, matchResult, newString, start, 'line-trimmed')
+        }
+      }
+
+      // ── Tier 4: Fuzzy similarity match ──
+      // Find the most similar block in the file using line-based comparison
+      const fuzzyResult = this.findFuzzyMatch(content, oldString, 0.75)
+      if (fuzzyResult) {
+        console.log(`[file_edit] Tier 4 (fuzzy, ${(fuzzyResult.similarity * 100).toFixed(0)}% match) for ${filePath}`)
+        return this.applyEdit(filePath, content, fuzzyResult.matched, newString, start, `fuzzy-${(fuzzyResult.similarity * 100).toFixed(0)}%`)
+      }
+
+      // All tiers failed — provide helpful error
+      const contentLines = content.split('\n')
+      const oldLines = oldString.split('\n')
+      return this.error(
+        'local::file_edit',
+        `old_string not found in ${filePath} (tried exact, whitespace-flexible, line-trimmed, and fuzzy matching). ` +
+        `File has ${contentLines.length} lines, old_string has ${oldLines.length} lines. ` +
+        `First 3 lines of file: "${contentLines.slice(0, 3).join('\\n')}"`,
+        start
+      )
+    } catch (err) {
+      return this.error('local::file_edit', this.errMsg(err), start)
+    }
+  }
+
+  /** Apply a verified edit and write the result */
+  private async applyEdit(
+    filePath: string,
+    content: string,
+    matchedOld: string,
+    newString: string,
+    start: number,
+    matchTier: string
+  ): Promise<McpToolCallResult> {
+    // Create backup before writing
+    this.storeBackup(filePath, content)
+
+    const newContent = content.replace(matchedOld, newString)
+    await writeFile(filePath, newContent, 'utf-8')
+
+    const oldLines = matchedOld.split('\n').length
+    const newLines = newString.split('\n').length
+    const diffSummary = oldLines === newLines
+      ? `${oldLines} line(s) modified`
+      : `${oldLines} line(s) → ${newLines} line(s)`
+
+    return {
+      toolKey: 'local::file_edit',
+      success: true,
+      content: `File edited: ${filePath} (${diffSummary}, match=${matchTier}, ${Buffer.byteLength(newContent)} bytes total)`,
+      isError: false,
+      duration: Date.now() - start,
+    }
+  }
+
+  /**
+   * Find a whitespace-flexible match in the content.
+   * Returns the actual substring from content that matches when whitespace is normalized.
+   */
+  private findWhitespaceFlexibleMatch(content: string, oldString: string): string | null {
+    const contentLines = content.split('\n')
+    const oldLines = oldString.split('\n')
+    const normalizeLine = (line: string) => line.replace(/[\t ]+/g, ' ').trimEnd()
+
+    const normalizedOldLines = oldLines.map(normalizeLine)
+
+    // Slide a window of oldLines.length over contentLines
+    for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
+      let matches = true
+      for (let j = 0; j < oldLines.length; j++) {
+        if (normalizeLine(contentLines[i + j]) !== normalizedOldLines[j]) {
+          matches = false
+          break
+        }
+      }
+      if (matches) {
+        // Return the original lines from content (preserving original whitespace)
+        return contentLines.slice(i, i + oldLines.length).join('\n')
+      }
+    }
+    return null
+  }
+
+  /**
+   * Find a line-trimmed match in the content.
+   * Returns the actual substring that matches when lines are trimmed.
+   */
+  private findLineTrimmedMatch(content: string, oldString: string): string | null {
+    const contentLines = content.split('\n')
+    const oldLines = oldString.split('\n')
+    const trimmedOldLines = oldLines.map(l => l.trim())
+
+    for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
+      let matches = true
+      for (let j = 0; j < oldLines.length; j++) {
+        if (contentLines[i + j].trim() !== trimmedOldLines[j]) {
+          matches = false
+          break
+        }
+      }
+      if (matches) {
+        return contentLines.slice(i, i + oldLines.length).join('\n')
+      }
+    }
+    return null
+  }
+
+  /**
+   * Find the best fuzzy match for old_string in the content.
+   * Uses line-based Levenshtein similarity. Returns null if no match
+   * exceeds the minimum similarity threshold.
+   *
+   * Inspired by Aider's SequenceMatcher approach.
+   */
+  private findFuzzyMatch(
+    content: string,
+    oldString: string,
+    minSimilarity: number
+  ): { matched: string; similarity: number } | null {
+    const contentLines = content.split('\n')
+    const oldLines = oldString.split('\n')
+
+    if (oldLines.length > contentLines.length) return null
+
+    let bestMatch: { start: number; end: number; similarity: number } | null = null
+
+    // Slide a window of oldLines.length ± 2 over contentLines
+    for (let windowSize = Math.max(1, oldLines.length - 2); windowSize <= Math.min(contentLines.length, oldLines.length + 2); windowSize++) {
+      for (let i = 0; i <= contentLines.length - windowSize; i++) {
+        const candidateLines = contentLines.slice(i, i + windowSize)
+        const similarity = this.calculateLineSimilarity(candidateLines, oldLines)
+
+        if (similarity >= minSimilarity && (!bestMatch || similarity > bestMatch.similarity)) {
+          bestMatch = { start: i, end: i + windowSize, similarity }
+        }
+      }
+    }
+
+    if (!bestMatch) return null
+
+    // Verify uniqueness — check if there's another match with similar similarity
+    let secondBest = 0
+    for (let i = 0; i <= contentLines.length - oldLines.length; i++) {
+      if (i === bestMatch.start) continue
+      const candidateLines = contentLines.slice(i, i + oldLines.length)
+      const sim = this.calculateLineSimilarity(candidateLines, oldLines)
+      if (sim > secondBest) secondBest = sim
+    }
+
+    // If the second-best match is too close, the match is ambiguous
+    if (secondBest > 0.9 * bestMatch.similarity && secondBest >= minSimilarity) {
+      return null // ambiguous — multiple similar blocks
+    }
+
+    return {
+      matched: contentLines.slice(bestMatch.start, bestMatch.end).join('\n'),
+      similarity: bestMatch.similarity,
+    }
+  }
+
+  /**
+   * Calculate similarity between two arrays of lines (0.0 to 1.0).
+   * Uses a simple ratio of matching lines + character-level similarity for close lines.
+   */
+  private calculateLineSimilarity(a: string[], b: string[]): number {
+    const maxLen = Math.max(a.length, b.length)
+    if (maxLen === 0) return 1.0
+
+    let totalSimilarity = 0
+    const minLen = Math.min(a.length, b.length)
+
+    for (let i = 0; i < minLen; i++) {
+      if (a[i] === b[i]) {
+        totalSimilarity += 1.0
+      } else if (a[i].trim() === b[i].trim()) {
+        totalSimilarity += 0.95 // whitespace-only difference
+      } else {
+        // Character-level similarity (simple ratio)
+        totalSimilarity += this.stringSimilarity(a[i], b[i])
+      }
+    }
+
+    // Penalty for length mismatch
+    return totalSimilarity / maxLen
+  }
+
+  /**
+   * Calculate character-level similarity between two strings (0.0 to 1.0).
+   * Simple longest common subsequence ratio.
+   */
+  private stringSimilarity(a: string, b: string): number {
+    if (a === b) return 1.0
+    if (!a || !b) return 0.0
+
+    const maxLen = Math.max(a.length, b.length)
+    if (maxLen === 0) return 1.0
+
+    // Simple approach: count matching characters at each position
+    const minLen = Math.min(a.length, b.length)
+    let matches = 0
+    for (let i = 0; i < minLen; i++) {
+      if (a[i] === b[i]) matches++
+    }
+
+    return matches / maxLen
+  }
+
+  // ─── File Backup System ──────────────────────────────
+
+  /** In-memory backup of file contents before modification */
+  private fileBackups = new Map<string, { content: string; timestamp: number }>()
+  private readonly MAX_BACKUPS = 30
+  private readonly BACKUP_TTL_MS = 30 * 60 * 1000 // 30 minutes
+
+  /** Store a backup of a file before modifying it */
+  private storeBackup(filePath: string, content: string): void {
+    // Evict expired backups
+    const now = Date.now()
+    for (const [path, backup] of this.fileBackups) {
+      if (now - backup.timestamp > this.BACKUP_TTL_MS) {
+        this.fileBackups.delete(path)
+      }
+    }
+
+    // Evict oldest if at capacity
+    if (this.fileBackups.size >= this.MAX_BACKUPS) {
+      let oldestPath = ''
+      let oldestTime = Infinity
+      for (const [path, backup] of this.fileBackups) {
+        if (backup.timestamp < oldestTime) {
+          oldestTime = backup.timestamp
+          oldestPath = path
+        }
+      }
+      if (oldestPath) this.fileBackups.delete(oldestPath)
+    }
+
+    this.fileBackups.set(filePath, { content, timestamp: now })
+  }
+
+  /** Get a backup for a file (if available) */
+  getBackup(filePath: string): { content: string; timestamp: number } | undefined {
+    const backup = this.fileBackups.get(resolve(filePath))
+    if (backup && Date.now() - backup.timestamp <= this.BACKUP_TTL_MS) {
+      return backup
+    }
+    return undefined
   }
 
   // ─── Helpers ──────────────────────────────────────────
@@ -929,11 +1445,6 @@ class LocalToolProvider {
 
   private errMsg(err: unknown): string {
     return err instanceof Error ? err.message : String(err)
-  }
-
-  private truncate(text: string, max = MAX_SHELL_OUTPUT): string {
-    if (text.length <= max) return text
-    return text.slice(0, max) + `\n... [truncated, ${text.length} total chars]`
   }
 }
 

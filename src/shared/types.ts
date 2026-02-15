@@ -25,6 +25,7 @@ export const IPC_CHANNELS = {
   AGENT_EVENT: 'agent:event',
   AGENT_TASK_UPDATE: 'agent:task-update',
   AGENT_LOG: 'agent:log',
+  AGENT_STREAM_CHUNK: 'agent:stream-chunk',
 
   // Memory
   MEMORY_QUERY: 'memory:query',
@@ -57,6 +58,9 @@ export const IPC_CHANNELS = {
   PROSPECTIVE_CREATE: 'prospective:create',
   PROSPECTIVE_COMPLETE: 'prospective:complete',
   PROSPECTIVE_DELETE: 'prospective:delete',
+
+  // Dialog
+  DIALOG_SELECT_DIRECTORY: 'dialog:select-directory',
 
   // Settings
   SETTINGS_GET: 'settings:get',
@@ -194,6 +198,22 @@ export interface TaskUpdate {
   result?: unknown
   error?: string
   timestamp: number
+  /** Task list from planner (sent once when plan is created) */
+  taskList?: TaskListItem[]
+  /** Individual task list item update */
+  taskListUpdate?: { itemId: string; status: TaskListItemStatus }
+}
+
+// ─── Task List Types (planner progress tracking) ───
+
+export type TaskListItemStatus = 'pending' | 'in-progress' | 'completed' | 'failed'
+
+export interface TaskListItem {
+  id: string
+  title: string
+  agent: string
+  status: TaskListItemStatus
+  dependsOn: string[]
 }
 
 export interface AgentLogEntry {
@@ -205,6 +225,16 @@ export interface AgentLogEntry {
   message: string
   data?: unknown
   timestamp: number
+}
+
+/** Streaming chunk from LLM response — forwarded to renderer for live text display */
+export interface StreamChunk {
+  taskId: string
+  agentType: string
+  chunk: string
+  isFirst: boolean
+  isDone: boolean
+  fullText?: string  // only set when isDone=true
 }
 
 export interface AgentStatus {
@@ -224,11 +254,15 @@ export interface TaskRecord {
   error?: string
   createdAt: number
   completedAt?: number
+  sessionId?: string
 }
+
+export type SessionType = 'user' | 'autonomous'
 
 export interface ChatSession {
   id: string
   title: string
+  type: SessionType
   createdAt: number
   updatedAt: number
   taskCount?: number
@@ -346,6 +380,7 @@ export interface BrainwaveAPI {
   // Events (main → renderer)
   onTaskUpdate: (callback: (update: TaskUpdate) => void) => () => void
   onAgentLog: (callback: (log: AgentLogEntry) => void) => () => void
+  onStreamChunk: (callback: (chunk: StreamChunk) => void) => () => void
 
   // Memory
   queryMemory: (query: MemoryQuery) => Promise<MemoryEntry[]>
@@ -391,6 +426,7 @@ export interface BrainwaveAPI {
   // Settings
   getSetting: <T = unknown>(key: string) => Promise<T>
   setSetting: <T = unknown>(key: string, value: T) => Promise<void>
+  selectDirectory: (title?: string) => Promise<string | null>
 
   // Model Mode
   getModelMode: () => Promise<string>
@@ -418,10 +454,11 @@ export interface BrainwaveAPI {
 
   // Chat Sessions
   createSession: (title?: string) => Promise<ChatSession>
-  listSessions: () => Promise<ChatSession[]>
+  listSessions: (type?: SessionType) => Promise<ChatSession[]>
   deleteSession: (id: string) => Promise<boolean>
   renameSession: (id: string, title: string) => Promise<ChatSession | null>
   getSessionTasks: (sessionId: string, limit?: number) => Promise<TaskRecord[]>
+  onSessionCreated: (callback: (session: ChatSession) => void) => () => void
 
   // Task live state (replay missed events on remount)
   getTaskLiveState: (taskIds: string[]) => Promise<Record<string, TaskLiveState>>

@@ -8,6 +8,7 @@ import migration002 from './002_chat_sessions'
 import migration003 from './003_confidence_calibration'
 import migration004 from './004_prompt_versioning'
 import migration005 from './005_people_attributes'
+import migration006 from './006_session_type'
 
 export const ALL_MIGRATIONS: Migration[] = [
   migration001,
@@ -15,5 +16,6 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration003,
   migration004,
   migration005,
+  migration006,
   // Add future migrations here in order
 ]

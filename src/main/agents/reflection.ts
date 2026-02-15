@@ -173,7 +173,7 @@ Focus on concrete, actionable insights that can improve future performance.`
       // Store the reflection itself as episodic memory
       try {
         await memoryManager.storeEpisodic({
-          content: `Reflection on task "${context.parentTask?.slice(0, 100)}": Quality ${parsed.overallTaskQuality}/10. ${parsed.taskSummary}`,
+          content: `Reflection on task "${context.parentTask}": Quality ${parsed.overallTaskQuality}/10. ${parsed.taskSummary}`,
           source: 'reflection',
           importance: 0.6,
           emotionalValence: parsed.overallTaskQuality >= 7 ? 0.7 : parsed.overallTaskQuality >= 4 ? 0.4 : 0.2,
@@ -255,7 +255,7 @@ Focus on concrete, actionable insights that can improve future performance.`
           const outputStr = typeof result.output === 'string'
             ? result.output
             : JSON.stringify(result.output, null, 2)
-          return `${statusEmoji} [${id}] (confidence: ${result.confidence.toFixed(2)}, tokens: ${result.tokensIn + result.tokensOut})\n${outputStr.slice(0, 2000)}`
+          return `${statusEmoji} [${id}] (confidence: ${result.confidence.toFixed(2)}, tokens: ${result.tokensIn + result.tokensOut})\n${outputStr}`
         })
         .join('\n\n')
 

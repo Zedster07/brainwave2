@@ -117,8 +117,8 @@ export class WorkingMemory {
       parts.push('RECENT RESULTS:')
       for (const { subTaskId, result } of this.recentResults.slice(-5)) {
         const summary = typeof result.output === 'string'
-          ? result.output.slice(0, 200)
-          : JSON.stringify(result.output).slice(0, 200)
+          ? result.output
+          : JSON.stringify(result.output)
         parts.push(`  [${subTaskId}] ${result.status} (confidence: ${result.confidence}) → ${summary}`)
       }
     }

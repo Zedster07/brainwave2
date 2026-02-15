@@ -49,7 +49,7 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
   // Read filesystem + write code — can read context, write files
   coder: {
     tier: 'readWrite',
-    allowedLocalTools: ['file_read', 'file_write', 'file_create', 'directory_list', 'web_search', 'webpage_fetch'],
+    allowedLocalTools: ['file_read', 'file_write', 'file_create', 'file_edit', 'directory_list', 'web_search', 'webpage_fetch'],
     blockedLocalTools: ['shell_execute', 'file_delete'],
     timeoutMs: 5 * 60 * 1000,
   },
@@ -80,9 +80,12 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
     tier: 'none',
   },
 
-  // Pure reasoning — no tools needed
+  // Read-only reconnaissance — can inspect project structure before planning
   planner: {
-    tier: 'none',
+    tier: 'read',
+    allowedLocalTools: ['file_read', 'directory_list'],
+    maxSteps: 8,
+    timeoutMs: 2 * 60 * 1000,
   },
 
   // Pure reasoning — no tools needed
@@ -105,7 +108,7 @@ function classifyLocalTool(toolName: string): 'read' | 'write' | 'execute' {
     'http_request', 'send_notification',
   ])
   const WRITE_TOOLS = new Set([
-    'file_write', 'file_create', 'file_delete', 'file_move',
+    'file_write', 'file_create', 'file_delete', 'file_move', 'file_edit',
   ])
 
   if (READ_TOOLS.has(toolName)) return 'read'

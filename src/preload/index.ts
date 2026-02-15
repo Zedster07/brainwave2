@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession, type NotificationPayload, type TaskLiveState } from '@shared/types'
+import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type StreamChunk, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession, type NotificationPayload, type TaskLiveState } from '@shared/types'
 
 const api: BrainwaveAPI = {
   // ─── Window Controls ───
@@ -43,6 +43,12 @@ const api: BrainwaveAPI = {
     const handler = (_event: Electron.IpcRendererEvent, log: AgentLogEntry) => callback(log)
     ipcRenderer.on(IPC_CHANNELS.AGENT_LOG, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_LOG, handler)
+  },
+
+  onStreamChunk: (callback: (chunk: StreamChunk) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, chunk: StreamChunk) => callback(chunk)
+    ipcRenderer.on(IPC_CHANNELS.AGENT_STREAM_CHUNK, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_STREAM_CHUNK, handler)
   },
 
   // ─── Notifications (main → renderer) ───
@@ -157,6 +163,9 @@ const api: BrainwaveAPI = {
   setSetting: <T = unknown>(key: string, value: T) =>
     ipcRenderer.invoke(IPC_CHANNELS.SETTINGS_SET, key, value) as Promise<void>,
 
+  selectDirectory: (title?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SELECT_DIRECTORY, title) as Promise<string | null>,
+
   // ─── Model Mode ───
   getModelMode: () =>
     ipcRenderer.invoke(IPC_CHANNELS.MODEL_MODE_GET) as Promise<string>,
@@ -225,8 +234,8 @@ const api: BrainwaveAPI = {
   createSession: (title?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.SESSION_CREATE, title) as Promise<ChatSession>,
 
-  listSessions: () =>
-    ipcRenderer.invoke(IPC_CHANNELS.SESSION_LIST) as Promise<ChatSession[]>,
+  listSessions: (type?: 'user' | 'autonomous') =>
+    ipcRenderer.invoke(IPC_CHANNELS.SESSION_LIST, type) as Promise<ChatSession[]>,
 
   deleteSession: (id: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.SESSION_DELETE, id) as Promise<boolean>,
@@ -236,6 +245,12 @@ const api: BrainwaveAPI = {
 
   getSessionTasks: (sessionId: string, limit?: number) =>
     ipcRenderer.invoke(IPC_CHANNELS.SESSION_GET_TASKS, sessionId, limit) as Promise<TaskRecord[]>,
+
+  onSessionCreated: (callback: (session: ChatSession) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, session: ChatSession) => callback(session)
+    ipcRenderer.on('session:created', handler)
+    return () => ipcRenderer.removeListener('session:created', handler)
+  },
 
   // Task live state (replay missed events on remount)
   getTaskLiveState: (taskIds: string[]) =>

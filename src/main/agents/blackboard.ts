@@ -45,8 +45,6 @@ export class Blackboard {
   private static TTL_MS = 10 * 60 * 1000
   /** Max entries per plan (prevent runaway writes) */
   private static MAX_ENTRIES_PER_PLAN = 50
-  /** Max characters per value (prevent huge writes) */
-  private static MAX_VALUE_LENGTH = 2000
 
   static getInstance(): Blackboard {
     if (!Blackboard.instance) {
@@ -73,9 +71,6 @@ export class Blackboard {
     }
 
     const entries = this.store.get(planId)!
-    const trimmedValue = value.length > Blackboard.MAX_VALUE_LENGTH
-      ? value.slice(0, Blackboard.MAX_VALUE_LENGTH) + '…(truncated)'
-      : value
 
     // Overwrite if same key + agent + task already exists
     const existingIdx = entries.findIndex(
@@ -84,7 +79,7 @@ export class Blackboard {
 
     const entry: BlackboardEntry = {
       key,
-      value: trimmedValue,
+      value,
       agentType,
       taskId,
       timestamp: Date.now(),

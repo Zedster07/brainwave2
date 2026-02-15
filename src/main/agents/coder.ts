@@ -5,6 +5,7 @@
  * When tools are available, can read/write actual files and search docs.
  * Falls back to structured JSON output when tools aren't available.
  */
+import os from 'os'
 import { BaseAgent, type AgentContext, type AgentResult, type SubTask, type Artifact, type SuggestedMemory } from './base-agent'
 import { hasToolAccess } from '../tools/permissions'
 import type { LLMResponse } from '../llm'
@@ -65,7 +66,23 @@ You HAVE tools available — use them to work with real files.
 - When you are done, provide your final summary with { "done": true, "summary": "..." }`
       : ''
 
+    // System environment for path awareness
+    const homeDir = os.homedir()
+    const platform = os.platform()
+    const brainwaveHomeDir = this.getBrainwaveHomeDir()
+
+    const systemEnv = `
+## System Environment
+- Platform: ${platform} (${os.arch()})
+- OS User Home: ${homeDir}
+- **YOUR Home Directory (Brainwave Home): ${brainwaveHomeDir}**
+- Shell working directory (CWD): ${process.cwd()}
+
+Your home directory is **${brainwaveHomeDir}**. When creating new files or projects, use this as the default location unless a different path is specified. ALWAYS use absolute paths.
+Note: The OS user home (${homeDir}) is the user's system home — NOT your home.`
+
     return `You are the Coder Agent in the Brainwave system.
+${systemEnv}
 
 Your role: Write clean, maintainable, production-quality code.
 
@@ -235,7 +252,7 @@ OUTPUT FORMAT (JSON):
         .filter(([, result]) => result.status === 'success')
         .map(([id, result]) => {
           const output = result.output as Record<string, unknown>
-          const summary = output?.summary ?? output?.explanation ?? JSON.stringify(output).slice(0, 500)
+          const summary = output?.summary ?? output?.explanation ?? JSON.stringify(output)
           return `[${id}]: ${summary}`
         })
         .join('\n')
