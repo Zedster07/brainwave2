@@ -35,6 +35,7 @@ import { type CancellationToken, CancellationError } from './cancellation'
 import { requiresApproval, requestApproval, classifyToolSafety, type ApprovalSettings, getDefaultApprovalSettings } from '../tools/approval'
 import { parseAssistantMessage, xmlToolToLocalCall, registerToolName } from './xml-parser'
 import { StreamingXmlParser, type StreamingFeedResult } from './streaming-xml-parser'
+import { extractToolsFromProse } from './prose-tool-extractor'
 import { ConversationManager, formatToolResult, formatSystemNotice } from './conversation-manager'
 import { getCheckpointService, type CheckpointEntry } from './checkpoint-service'
 import { detectWorkspace, getEnvironmentDetails, getCompactEnvironmentDetails, buildSystemEnvironmentBlock } from './environment'
@@ -1894,6 +1895,116 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
           }
         }
 
+        // ── Prose-to-tool fallback: extract tool calls from markdown ──
+        // Models like minimax output code in markdown fences instead of XML tool blocks.
+        // Before nudging, try to extract synthetic tool calls from the prose.
+        const proseExtraction = extractToolsFromProse(response.content)
+        if (proseExtraction.toolCalls.length > 0) {
+          console.log(`[${this.type}] Step ${step}: Prose extraction found ${proseExtraction.toolCalls.length} synthetic tool call(s)`)
+          let proseToolSuccess = false
+          const proseResults: string[] = []
+
+          for (const syntheticCall of proseExtraction.toolCalls) {
+            const toolBaseName = syntheticCall.tool.split('::').pop() ?? syntheticCall.tool
+            const perm = canAgentCallTool(this.type, syntheticCall.tool)
+            if (!perm.allowed) {
+              console.log(`[${this.type}] Prose tool ${syntheticCall.tool} blocked: ${perm.reason}`)
+              proseResults.push(`${toolBaseName}: PERMISSION DENIED — ${perm.reason}`)
+              continue
+            }
+
+            // Check .brainwaveignore for file operations
+            if (ignoreMatcher.hasPatterns && syntheticCall.args.path) {
+              const tp = String(syntheticCall.args.path)
+              if (ignoreMatcher.isIgnored(tp)) {
+                proseResults.push(`${toolBaseName}: ACCESS BLOCKED by .brainwaveignore`)
+                continue
+              }
+            }
+
+            try {
+              const proseStartTime = Date.now()
+              const result = syntheticCall.tool.startsWith('local::')
+                ? await localProvider.callTool(toolBaseName, syntheticCall.args)
+                : await registry.callTool(syntheticCall.tool, syntheticCall.args)
+              const proseDuration = Date.now() - proseStartTime
+
+              toolResults.push({ tool: syntheticCall.tool, success: result.success, content: result.content })
+              proseResults.push(`${toolBaseName} → ${result.success ? 'OK' : 'FAIL'}: ${result.content.slice(0, 150)}`)
+              if (result.success) proseToolSuccess = true
+
+              // Update file registry for read ops
+              if (result.success) {
+                const isReadOp = ['file_read', 'directory_list', 'read_file'].includes(toolBaseName)
+                if (isReadOp) {
+                  const readPath = getReadPath(syntheticCall.args)
+                  if (readPath) fileRegistry.set(normPath(readPath), { content: result.content, step })
+                }
+              }
+
+              const proseSummary = this.summarizeForUI(syntheticCall.tool, syntheticCall.args, result)
+              this.bus.emitEvent('agent:tool-result', {
+                agentType: this.type,
+                taskId: context.taskId,
+                tool: syntheticCall.tool,
+                success: result.success,
+                summary: proseSummary,
+                step,
+              })
+              this.emitToolCallInfo({
+                taskId: context.taskId, step, tool: syntheticCall.tool,
+                args: syntheticCall.args as Record<string, string>,
+                success: result.success, summary: proseSummary,
+                duration: proseDuration,
+                resultPreview: result.content.slice(0, 300),
+              })
+            } catch (err) {
+              const errMsg = err instanceof Error ? err.message : String(err)
+              proseResults.push(`${toolBaseName} → ERROR: ${errMsg.slice(0, 150)}`)
+              toolResults.push({ tool: syntheticCall.tool, success: false, content: errMsg })
+            }
+          }
+
+          // Feed results back to the model so it knows what happened
+          const proseToolSummary = proseResults.join('\n')
+          conversation.addToolResult(
+            'prose-extraction',
+            proseToolSuccess,
+            `[Prose Extraction] Detected and executed ${proseExtraction.toolCalls.length} tool call(s) from your markdown output:\n${proseToolSummary}\n\n` +
+            `Tip: For better reliability, use XML tool blocks directly. Example:\n` +
+            `<write_to_file>\n<path>src/file.ts</path>\n<content>file content here</content>\n</write_to_file>`
+          )
+
+          // Reset no-tool-use counter since the model IS producing actionable output
+          mistakes.noToolUse = 0
+
+          // If the prose also had a completion signal, wrap up
+          if (proseExtraction.completionResult && proseToolSuccess) {
+            console.log(`[${this.type}] Prose extraction includes completion signal — finishing`)
+            return this.buildToolResult(
+              'success',
+              proseExtraction.completionResult,
+              0.8,
+              totalTokensIn, totalTokensOut, model, startTime, artifacts
+            )
+          }
+
+          continue
+        }
+
+        // If prose extraction found a completion signal but no tool calls,
+        // treat it as an attempt_completion
+        if (proseExtraction.completionResult) {
+          console.log(`[${this.type}] Prose extraction found completion signal at step ${step}`)
+          const anySuccess = toolResults.some(t => t.success)
+          return this.buildToolResult(
+            anySuccess ? 'success' : 'partial',
+            proseExtraction.completionResult,
+            anySuccess ? 0.8 : 0.6,
+            totalTokensIn, totalTokensOut, model, startTime, artifacts
+          )
+        }
+
         // ── Pure prose response (no tool call, no completion) ──
         // Grace retry pattern: first N are soft nudges, then escalate, then abort
         if (step < ABSOLUTE_MAX_STEPS - 1) {
@@ -1906,8 +2017,8 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
           if (mistakes.noToolUse >= NO_TOOL_USE_ABORT_THRESHOLD) {
             console.warn(`[${this.type}] Step ${step}: Model failed to use tools after ${mistakes.noToolUse} attempts — aborting to save tokens`)
             return this.buildToolResult(
-              toolResults.some(t => t.success) ? 'partial' : 'error',
-              parsed.textContent || response.content || 'Model was unable to use the required tool format. Try a different model (e.g. Claude, GPT-4o).',
+              toolResults.some(t => t.success) ? 'partial' : 'failed',
+              parsed.textContent || response.content || 'Model was unable to use the required tool format.',
               0.3,
               totalTokensIn, totalTokensOut, model, startTime, artifacts
             )
