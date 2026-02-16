@@ -74,7 +74,8 @@ async function extractDOCX(filePath: string): Promise<string> {
 // ─── XLSX Extraction ───
 
 async function extractXLSX(filePath: string): Promise<string> {
-  const ExcelJS = await import('exceljs')
+  const ExcelJSModule = await import('exceljs')
+  const ExcelJS = (ExcelJSModule as any).default ?? ExcelJSModule
   const workbook = new ExcelJS.Workbook()
   await workbook.xlsx.readFile(filePath)
 

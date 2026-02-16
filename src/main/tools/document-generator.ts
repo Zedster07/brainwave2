@@ -289,7 +289,9 @@ export async function generateXLSX(
     author?: string
   }
 ): Promise<{ path: string; sheetCount: number }> {
-  const ExcelJS = await import('exceljs')
+  const ExcelJSModule = await import('exceljs')
+  // Handle ESM/CJS interop — exceljs may export Workbook on .default or directly
+  const ExcelJS = (ExcelJSModule as any).default ?? ExcelJSModule
   const workbook = new ExcelJS.Workbook()
   workbook.creator = options.author || 'Brainwave'
   workbook.created = new Date()
@@ -297,10 +299,12 @@ export async function generateXLSX(
   await mkdir(dirname(outputPath), { recursive: true })
 
   for (const sheet of options.sheets) {
-    const ws = workbook.addWorksheet(sheet.name || 'Sheet1')
+    // Accept both "name" and "title" as the sheet name (LLMs sometimes use "title")
+    const sheetName = sheet.name || (sheet as any).title || 'Sheet1'
+    const ws = workbook.addWorksheet(sheetName)
 
     // Header row
-    if (sheet.headers.length > 0) {
+    if (sheet.headers && sheet.headers.length > 0) {
       ws.addRow(sheet.headers)
       // Bold + light background for header
       const headerRow = ws.getRow(1)
@@ -313,8 +317,9 @@ export async function generateXLSX(
       headerRow.commit()
     }
 
-    // Data rows
-    for (const row of sheet.rows) {
+    // Data rows — accept both "rows" and "data" keys (LLMs sometimes use "data")
+    const rows = sheet.rows ?? (sheet as any).data ?? []
+    for (const row of rows) {
       ws.addRow(row)
     }
 
