@@ -5,6 +5,7 @@ import { Markdown } from '../../components/Markdown'
 import { useVoice } from '../../hooks/useVoice'
 import { ToolCallCard, type ToolCallCardData } from './ToolCallCard'
 import { ContextIndicator, type ContextUsageData } from './ContextIndicator'
+import { StreamingContent } from './StreamingCodeCard'
 import type { TaskUpdate, TaskStatus, ChatSession, TaskLiveState, ImageAttachment, TaskListItem, TaskListItemStatus, StreamChunk, FollowupQuestion, ApprovalRequest, CheckpointInfo, ModeInfo, ContextUsageInfo, ToolCallInfo } from '@shared/types'
 
 interface LiveTask {
@@ -1002,8 +1003,7 @@ function TaskCard({ task, onCancel, onFollowupResponse, onApprovalResponse }: { 
             {/* Live streaming text — shows LLM response as it generates */}
             {isActive && task.streamingText && (
               <div className="mt-3">
-                <Markdown content={task.streamingText} />
-                <span className="inline-block w-1.5 h-4 bg-accent/60 animate-pulse ml-0.5 align-text-bottom" />
+                <StreamingContent text={task.streamingText} />
               </div>
             )}
 
