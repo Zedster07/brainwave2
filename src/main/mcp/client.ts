@@ -9,6 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { McpServerConfig, McpTool, McpToolCallResult, McpServerStatus } from './types'
 
 /** Max reconnect attempts before giving up */
@@ -74,7 +75,7 @@ export class McpClient {
 
       // Listen for tool list changes
       this.client.setNotificationHandler(
-        { method: 'notifications/tools/list_changed' },
+        ToolListChangedNotificationSchema,
         async () => {
           console.log(`[MCP] Tool list changed for "${this.config.name}", refreshing...`)
           await this.refreshTools()
