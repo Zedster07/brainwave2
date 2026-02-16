@@ -20,7 +20,7 @@ import { getEventBus } from '../agents/event-bus'
 import type { McpTool, McpToolCallResult } from '../mcp/types'
 import { getDiffStrategy, parsePatchOperations, type DiffBlock } from './diff-strategy'
 import { isBinaryDocument, extractDocumentText } from './document-extractor'
-import { generatePDF, generateDOCX, generateXLSX } from './document-generator'
+import { generatePDF, generateDOCX, generateXLSX, generatePPTX } from './document-generator'
 
 
 /**
@@ -429,6 +429,24 @@ const TOOL_DEFS: McpTool[] = [
       required: ['output_path', 'sheets'],
     },
   },
+  {
+    key: 'local::generate_pptx',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'generate_pptx',
+    description: 'Generate a PPTX (PowerPoint) presentation. Provide an array of slides, each with an optional title, body text, bullet points, table, and speaker notes. The file is written to the specified output path.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        output_path: { type: 'string', description: 'Absolute path for the output PPTX file (e.g. /path/to/presentation.pptx)' },
+        title: { type: 'string', description: 'Presentation title metadata' },
+        author: { type: 'string', description: 'Document author metadata' },
+        subject: { type: 'string', description: 'Presentation subject metadata' },
+        slides: { type: 'string', description: 'JSON array of slide objects: [{title?: string, body?: string, bullets?: string[], notes?: string, table?: {headers: string[], rows: string[][]}}]' },
+      },
+      required: ['output_path', 'slides'],
+    },
+  },
 ]
 
 // ─── Provider ───────────────────────────────────────────────
@@ -503,6 +521,8 @@ class LocalToolProvider {
         return this.generateDocx(args)
       case 'generate_xlsx':
         return this.generateXlsx(args)
+      case 'generate_pptx':
+        return this.generatePptx(args)
       default:
         return {
           toolKey: `local::${toolName}`,
@@ -2327,6 +2347,33 @@ class LocalToolProvider {
       }
     } catch (err) {
       return this.error('local::generate_xlsx', this.errMsg(err), start)
+    }
+  }
+
+  private async generatePptx(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const outputPath = resolve(String(args.output_path ?? ''))
+    const start = Date.now()
+
+    const verdict = getHardEngine().evaluate({ type: 'file_write', path: outputPath })
+    if (!verdict.allowed) return this.blocked('local::generate_pptx', verdict.reason, start)
+
+    try {
+      const slides = JSON.parse(String(args.slides ?? '[]'))
+      const result = await generatePPTX(outputPath, {
+        slides,
+        title: args.title ? String(args.title) : undefined,
+        author: args.author ? String(args.author) : undefined,
+        subject: args.subject ? String(args.subject) : undefined,
+      })
+      return {
+        toolKey: 'local::generate_pptx',
+        success: true,
+        content: `PPTX generated: ${result.path} (${result.slideCount} slide${result.slideCount !== 1 ? 's' : ''})`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::generate_pptx', this.errMsg(err), start)
     }
   }
 

@@ -1,12 +1,13 @@
 /**
- * Document Generator — Creates PDF, DOCX, and XLSX documents
+ * Document Generator — Creates PDF, DOCX, XLSX, and PPTX documents
  *
  * Provides structured document generation from agent-provided content:
  *   - PDF  → pdfkit
  *   - DOCX → docx (officegen)
  *   - XLSX → exceljs
+ *   - PPTX → pptxgenjs
  *
- * Used by the generate_pdf, generate_docx, generate_xlsx tools.
+ * Used by the generate_pdf, generate_docx, generate_xlsx, generate_pptx tools.
  */
 import { mkdir } from 'node:fs/promises'
 import { createWriteStream } from 'node:fs'
@@ -29,6 +30,14 @@ export interface SheetData {
   name: string
   headers: string[]
   rows: (string | number | boolean | null)[][]
+}
+
+export interface SlideData {
+  title?: string
+  body?: string
+  bullets?: string[]
+  notes?: string
+  table?: DocTable
 }
 
 // ─── PDF Generation ───
@@ -323,4 +332,105 @@ export async function generateXLSX(
   await workbook.xlsx.writeFile(outputPath)
 
   return { path: outputPath, sheetCount: options.sheets.length }
+}
+
+// ─── PPTX Generation ───
+
+export async function generatePPTX(
+  outputPath: string,
+  options: {
+    slides: SlideData[]
+    title?: string
+    author?: string
+    subject?: string
+  }
+): Promise<{ path: string; slideCount: number }> {
+  const PptxGenJS = (await import('pptxgenjs')).default
+  const pptx = new PptxGenJS()
+
+  await mkdir(dirname(outputPath), { recursive: true })
+
+  // Metadata
+  if (options.title) pptx.title = options.title
+  if (options.author) pptx.author = options.author
+  if (options.subject) pptx.subject = options.subject
+  pptx.company = 'Brainwave'
+
+  // If no slides provided, create a blank title slide
+  if (!options.slides || options.slides.length === 0) {
+    const slide = pptx.addSlide()
+    slide.addText(options.title || 'Untitled Presentation', {
+      x: 0.5, y: 1.5, w: 9, h: 1.5,
+      fontSize: 32, bold: true, align: 'center', color: '333333',
+    })
+    return { path: outputPath, slideCount: 1 }
+  }
+
+  for (const slideData of options.slides) {
+    const slide = pptx.addSlide()
+    let yOffset = 0.5
+
+    // Slide title
+    if (slideData.title) {
+      slide.addText(slideData.title, {
+        x: 0.5, y: yOffset, w: 9, h: 0.8,
+        fontSize: 24, bold: true, color: '333333',
+      })
+      yOffset += 1.0
+    }
+
+    // Body text
+    if (slideData.body) {
+      slide.addText(slideData.body, {
+        x: 0.5, y: yOffset, w: 9, h: 1.5,
+        fontSize: 14, color: '555555', valign: 'top',
+      })
+      yOffset += 1.7
+    }
+
+    // Bullet points
+    if (slideData.bullets && slideData.bullets.length > 0) {
+      const bulletText = slideData.bullets.map((b) => ({
+        text: b,
+        options: { bullet: true as const, fontSize: 14, color: '444444' },
+      }))
+      slide.addText(bulletText, {
+        x: 0.5, y: yOffset, w: 9,
+        h: Math.min(slideData.bullets.length * 0.45 + 0.3, 3.5),
+        valign: 'top',
+      })
+      yOffset += Math.min(slideData.bullets.length * 0.45 + 0.5, 3.7)
+    }
+
+    // Table
+    if (slideData.table && slideData.table.headers.length > 0) {
+      const tableRows: Array<Array<{ text: string; options?: Record<string, unknown> }>> = []
+      // Header row
+      tableRows.push(
+        slideData.table.headers.map((h) => ({
+          text: h,
+          options: { bold: true, fill: { color: 'E8E8E8' }, fontSize: 11 },
+        }))
+      )
+      // Data rows
+      for (const row of slideData.table.rows) {
+        tableRows.push(row.map((cell) => ({ text: String(cell ?? ''), options: { fontSize: 10 } })))
+      }
+
+      slide.addTable(tableRows, {
+        x: 0.5, y: yOffset, w: 9,
+        border: { type: 'solid', pt: 0.5, color: 'CCCCCC' },
+        colW: Array(slideData.table.headers.length).fill(9 / slideData.table.headers.length),
+      })
+    }
+
+    // Speaker notes
+    if (slideData.notes) {
+      slide.addNotes(slideData.notes)
+    }
+  }
+
+  await pptx.writeFile({ fileName: outputPath })
+
+  return { path: outputPath, slideCount: options.slides.length }
 }
