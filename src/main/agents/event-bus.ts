@@ -94,6 +94,23 @@ export interface EventMap {
   'agent:stream-chunk': { taskId: string; agentType: AgentType; chunk: string; isFirst: boolean }
   'agent:stream-end': { taskId: string; agentType: AgentType; fullText: string }
 
+  // User interaction (agent asks user a question, user responds)
+  'agent:ask-user': { questionId: string; question: string; options?: string[] }
+  'agent:user-response': { questionId: string; response: string }
+
+  // Tool approval (agent requests user approval before executing a tool)
+  'agent:approval-needed': { approvalId: string; taskId: string; agentType: string; tool: string; args: Record<string, unknown>; summary: string; diffPreview?: string; safetyLevel: 'safe' | 'write' | 'execute' | 'dangerous' }
+  'agent:approval-response': { approvalId: string; approved: boolean; feedback?: string; reason?: string }
+
+  // Context management (agent requests condensation)
+  'agent:condense-requested': Record<string, never>
+
+  // Context usage (Phase 16 — real-time context window indicator)
+  'agent:context-usage': { taskId: string; agentType: AgentType; tokensUsed: number; budgetTotal: number; usagePercent: number; messageCount: number; condensations: number; step: number }
+
+  // Structured tool call info (Phase 16 — rich activity feed cards)
+  'agent:tool-call-info': { taskId: string; agentType: AgentType; step: number; tool: string; toolName: string; args: Record<string, unknown>; success: boolean; summary: string; duration?: number; resultPreview?: string }
+
   // Plan
   'plan:created': { taskId: string; planId: string; steps: number; agents: AgentType[] }
   'plan:step-completed': { taskId: string; planId: string; stepId: string; agentType: AgentType }
@@ -107,6 +124,10 @@ export interface EventMap {
   // System
   'system:log': { level: 'debug' | 'info' | 'warn' | 'error'; message: string; data?: unknown }
   'system:error': { error: string; fatal: boolean }
+
+  // Checkpoints (shadow git snapshots)
+  'agent:checkpoint': { taskId: string; checkpointId: string; step: number; tool: string; filePath: string; commitHash: string }
+  'agent:rollback': { taskId: string; checkpointId: string; commitHash: string; rolledBackToStep: number }
 
   // Notifications
   'notification:send': { title: string; body: string; type: 'task' | 'scheduler' | 'agent' | 'system'; taskId?: string; jobId?: string }

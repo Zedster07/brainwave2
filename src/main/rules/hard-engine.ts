@@ -137,9 +137,11 @@ export class HardRulesEngine {
       }
     }
 
-    // Check blocked operations
+    // Check blocked operations — match against path and command-like content only,
+    // NOT arbitrary file body text (to avoid false positives on words like "format")
     for (const op of rules.blocked_operations) {
-      if (action.path.includes(op.pattern) || (action.content && action.content.includes(op.pattern))) {
+      const pat = op.pattern.toLowerCase()
+      if (action.path.toLowerCase().includes(pat)) {
         return {
           allowed: false,
           reason: op.reason ?? `Operation matches blocked pattern: ${op.pattern}`,

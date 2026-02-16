@@ -13,7 +13,7 @@ import { ReflectionAgent } from './reflection'
 import { ExecutorAgent } from './executor'
 import { getEventBus, type AgentType } from './event-bus'
 import { randomUUID } from 'crypto'
-import { MAX_DELEGATION_DEPTH } from './delegation'
+import { getMaxDelegationDepth, MAX_PARALLEL_SUBAGENTS } from './delegation'
 
 // ─── Agent Registry ─────────────────────────────────────────
 
@@ -155,7 +155,9 @@ export class AgentPool {
 
     // Inject delegation capability if not at max depth
     const currentDepth = context.delegationDepth ?? 0
-    if (currentDepth < MAX_DELEGATION_DEPTH && !context.delegateFn) {
+    const effectiveMaxDepth = getMaxDelegationDepth()
+    if (currentDepth < effectiveMaxDepth && !context.delegateFn) {
+      // Serial delegation (delegate_to_agent) — one sub-agent at a time
       context.delegateFn = async (agentType: AgentType, task: string) => {
         const delegatedTask: SubTask = {
           id: `delegate-${randomUUID().slice(0, 8)}`,
@@ -171,9 +173,44 @@ export class AgentPool {
           delegationDepth: currentDepth + 1,
           taskId: delegatedTask.id,
           delegateFn: undefined, // Will be re-injected by run() at the next level
+          parallelDelegateFn: undefined, // Will be re-injected by run() at the next level
         }
         console.log(`[AgentPool] Delegation: ${agent.type} → ${agentType} (depth ${currentDepth + 1}) | "${task.slice(0, 120)}"`)
         return this.executeTask(delegatedTask, delegatedContext)
+      }
+
+      // Parallel delegation (use_subagents) — multiple sub-agents concurrently
+      context.parallelDelegateFn = async (tasks: Array<{ agent: AgentType; task: string }>) => {
+        const capped = tasks.slice(0, MAX_PARALLEL_SUBAGENTS)
+        console.log(`[AgentPool] Parallel delegation: ${agent.type} → [${capped.map(t => t.agent).join(', ')}] (depth ${currentDepth + 1})`)
+
+        const executions = capped.map((t) => {
+          const delegatedTask: SubTask = {
+            id: `parallel-${randomUUID().slice(0, 8)}`,
+            description: t.task,
+            assignedAgent: t.agent,
+            status: 'pending',
+            dependencies: [],
+            attempts: 0,
+            maxAttempts: 1,
+          }
+          const delegatedContext: AgentContext = {
+            ...context,
+            delegationDepth: currentDepth + 1,
+            taskId: delegatedTask.id,
+            delegateFn: undefined,
+            parallelDelegateFn: undefined,
+            delegationContext: {
+              parentTaskId: context.taskId,
+              parentSummary: `Parent agent (${agent.type}) delegated this sub-task as part of parallel execution.`,
+              relevantFiles: [],
+              specificInstructions: t.task,
+            },
+          }
+          return this.executeTask(delegatedTask, delegatedContext)
+        })
+
+        return Promise.all(executions)
       }
     }
 

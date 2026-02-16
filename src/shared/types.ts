@@ -26,6 +26,17 @@ export const IPC_CHANNELS = {
   AGENT_TASK_UPDATE: 'agent:task-update',
   AGENT_LOG: 'agent:log',
   AGENT_STREAM_CHUNK: 'agent:stream-chunk',
+  AGENT_ASK_USER: 'agent:ask-user',
+  AGENT_USER_RESPONSE: 'agent:user-response',
+
+  // Approval (tool execution gating)
+  AGENT_APPROVAL_NEEDED: 'agent:approval-needed',
+  AGENT_APPROVAL_RESPONSE: 'agent:approval-response',
+
+  // Checkpoints
+  AGENT_GET_CHECKPOINTS: 'agent:get-checkpoints',
+  AGENT_ROLLBACK_CHECKPOINT: 'agent:rollback-checkpoint',
+  AGENT_CHECKPOINT_CREATED: 'agent:checkpoint-created',
 
   // Memory
   MEMORY_QUERY: 'memory:query',
@@ -128,6 +139,7 @@ export const IPC_CHANNELS = {
   MCP_GET_STATUSES: 'mcp:get-statuses',
   MCP_GET_TOOLS: 'mcp:get-tools',
   MCP_IMPORT_SERVERS: 'mcp:import-servers',
+  MCP_RELOAD: 'mcp:reload',
 
   // Calibration / Feedback
   CALIBRATION_SUBMIT_FEEDBACK: 'calibration:submit-feedback',
@@ -156,6 +168,19 @@ export const IPC_CHANNELS = {
 
   // Daily Pulse
   DAILY_PULSE_GET: 'daily-pulse:get',
+
+  // Modes
+  MODES_LIST: 'modes:list',
+  MODES_GET: 'modes:get',
+
+  // Instructions (Phase 12)
+  INSTRUCTIONS_LIST: 'instructions:list',
+  INSTRUCTIONS_GET_CONTENT: 'instructions:get-content',
+  INSTRUCTIONS_SAVE_CONTENT: 'instructions:save-content',
+
+  // Context usage (Phase 16 — real-time context window indicator)
+  AGENT_CONTEXT_USAGE: 'agent:context-usage',
+  AGENT_TOOL_CALL_INFO: 'agent:tool-call-info',
 } as const
 
 // ─── IPC Payload Types ───
@@ -167,6 +192,8 @@ export interface TaskSubmission {
   sessionId?: string
   context?: Record<string, unknown>
   images?: ImageAttachment[]
+  /** Optional mode slug — bypasses triage and routes directly to the mode's agent */
+  mode?: string
 }
 
 /** Base64-encoded image attachment for vision-capable LLMs */
@@ -235,6 +262,68 @@ export interface StreamChunk {
   isFirst: boolean
   isDone: boolean
   fullText?: string  // only set when isDone=true
+}
+
+/** Follow-up question from agent to user */
+export interface FollowupQuestion {
+  questionId: string
+  question: string
+  options?: string[]
+}
+
+/** Tool execution approval request from agent to user */
+export interface ApprovalRequest {
+  approvalId: string
+  taskId: string
+  agentType: string
+  tool: string
+  args: Record<string, unknown>
+  summary: string
+  diffPreview?: string
+  safetyLevel: 'safe' | 'write' | 'execute' | 'dangerous'
+}
+
+/** User's response to an approval request */
+export interface ApprovalResponse {
+  approvalId: string
+  approved: boolean
+  feedback?: string
+  reason?: string
+}
+
+// ─── Context Usage (Phase 16) ───
+
+/** Real-time context window usage for the active task */
+export interface ContextUsageInfo {
+  taskId: string
+  agentType: string
+  tokensUsed: number
+  budgetTotal: number
+  usagePercent: number
+  messageCount: number
+  condensations: number
+  step: number
+}
+
+// ─── Structured Tool Call (Phase 16) ───
+
+/** Structured tool call info for rich activity feed cards */
+export interface ToolCallInfo {
+  taskId: string
+  agentType: string
+  step: number
+  tool: string
+  /** Short display name (without server prefix) */
+  toolName: string
+  args: Record<string, unknown>
+  success: boolean
+  /** Human-readable summary */
+  summary: string
+  /** Duration in ms (if available) */
+  duration?: number
+  /** Result preview (first ~500 chars) */
+  resultPreview?: string
+  timestamp: number
 }
 
 export interface AgentStatus {
@@ -381,6 +470,16 @@ export interface BrainwaveAPI {
   onTaskUpdate: (callback: (update: TaskUpdate) => void) => () => void
   onAgentLog: (callback: (log: AgentLogEntry) => void) => () => void
   onStreamChunk: (callback: (chunk: StreamChunk) => void) => () => void
+  onContextUsage: (callback: (usage: ContextUsageInfo) => void) => () => void
+  onToolCallInfo: (callback: (info: ToolCallInfo) => void) => () => void
+
+  // Agent follow-up questions
+  onAskUser: (callback: (question: FollowupQuestion) => void) => () => void
+  respondToAgent: (questionId: string, response: string) => Promise<void>
+
+  // Tool approval
+  onApprovalNeeded: (callback: (request: ApprovalRequest) => void) => () => void
+  respondToApproval: (approvalId: string, approved: boolean, feedback?: string, reason?: string) => Promise<void>
 
   // Memory
   queryMemory: (query: MemoryQuery) => Promise<MemoryEntry[]>
@@ -494,6 +593,21 @@ export interface BrainwaveAPI {
   mcpGetStatuses: () => Promise<McpServerStatusInfo[]>
   mcpGetTools: () => Promise<McpToolInfo[]>
   mcpImportServers: (json: string) => Promise<{ imported: number; skipped: number; errors: string[] }>
+  mcpReload: () => Promise<{ connected: number; disconnected: number; errors: string[] }>
+
+  // Checkpoints
+  getCheckpoints: (taskId: string) => Promise<CheckpointInfo[]>
+  rollbackToCheckpoint: (taskId: string, checkpointId: string) => Promise<void>
+  onCheckpointCreated: (callback: (checkpoint: CheckpointInfo) => void) => () => void
+
+  // Modes
+  getModes: () => Promise<ModeInfo[]>
+  getMode: (slug: string) => Promise<ModeInfo | null>
+
+  // Custom Instructions (Phase 12)
+  getInstructions: (workDir: string, mode?: string) => Promise<InstructionInfo[]>
+  getInstructionContent: (filePath: string) => Promise<string | null>
+  saveInstructionContent: (filePath: string, content: string) => Promise<boolean>
 
   // Notifications (main → renderer)
   onNotification: (callback: (notification: NotificationPayload) => void) => () => void
@@ -508,6 +622,41 @@ export interface BrainwaveAPI {
   pluginRemove: (id: string) => Promise<boolean>
   pluginEnable: (id: string) => Promise<PluginInfoData | null>
   pluginDisable: (id: string) => Promise<PluginInfoData | null>
+}
+
+// ─── Checkpoint Types ───
+
+export interface CheckpointInfo {
+  id: string
+  taskId: string
+  step: number
+  tool: string
+  filePath: string
+  commitHash: string
+  description: string
+  createdAt: string
+}
+
+// ─── Mode Types ───
+
+export interface ModeInfo {
+  slug: string
+  name: string
+  description: string
+  agentType: string
+  icon?: string
+  builtIn?: boolean
+}
+
+// ─── Instruction Types (Phase 12) ───
+
+export interface InstructionInfo {
+  /** Origin category */
+  origin: 'global' | 'project' | 'mode' | 'mode-rules' | 'global-rules' | 'legacy'
+  /** Absolute file path */
+  filePath: string
+  /** Instruction content */
+  content: string
 }
 
 // ─── Update Types ───
@@ -525,22 +674,26 @@ export interface UpdateStatusInfo {
 export interface McpServerConfigInfo {
   id: string
   name: string
-  transport: 'stdio' | 'sse'
+  transport: 'stdio' | 'sse' | 'streamable-http'
   command?: string
   args?: string[]
   env?: Record<string, string>
   url?: string
+  headers?: Record<string, string>
   autoConnect: boolean
   enabled: boolean
+  autoApprove?: string[]
+  configSource?: 'sqlite' | 'global-file' | 'project-file'
 }
 
 export interface McpServerStatusInfo {
   id: string
   name: string
-  state: 'disconnected' | 'connecting' | 'connected' | 'error'
+  state: 'disconnected' | 'connecting' | 'connected' | 'error' | 'reconnecting'
   error?: string
   toolCount: number
   connectedAt?: number
+  reconnectAttempts?: number
 }
 
 export interface McpToolInfo {

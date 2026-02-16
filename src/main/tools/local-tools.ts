@@ -18,6 +18,7 @@ import http from 'node:http'
 import { getHardEngine } from '../rules'
 import { getEventBus } from '../agents/event-bus'
 import type { McpTool, McpToolCallResult } from '../mcp/types'
+import { getDiffStrategy, parsePatchOperations, type DiffBlock } from './diff-strategy'
 
 
 /**
@@ -291,15 +292,86 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'file_edit',
-    description: 'Edit an existing file by replacing a specific string with new content. Much more efficient than file_write for small changes — avoids rewriting entire files. The old_string must match exactly (including whitespace/indentation). Include 2-3 lines of context around the target to ensure a unique match.',
+    description: 'Edit an existing file by replacing a specific string with new content. Supports single old_string/new_string replacement OR multiple SEARCH/REPLACE diff blocks. For small changes, use old_string/new_string. For multi-edit, pass diff_blocks as a JSON array of {search, replace} objects. Include 2-3 lines of context around the target to ensure a unique match.',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Absolute path to the file to edit' },
         old_string: { type: 'string', description: 'The exact text to find and replace (must match uniquely)' },
         new_string: { type: 'string', description: 'The replacement text' },
+        diff_blocks: { type: 'string', description: 'JSON array of {search, replace} objects for multi-block edits' },
       },
-      required: ['path', 'old_string', 'new_string'],
+      required: ['path'],
+    },
+  },
+  {
+    key: 'local::search_files',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'search_files',
+    description: 'Search for files matching a regex pattern within a directory. Returns matching lines with file paths and line numbers. Useful for finding code patterns, function definitions, or specific strings across a project.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Directory to search in (absolute path)' },
+        regex: { type: 'string', description: 'Regex pattern to search for in file contents' },
+        file_pattern: { type: 'string', description: 'Glob pattern to filter files (e.g. "*.ts", "*.{js,tsx}"). Default: all text files' },
+      },
+      required: ['path', 'regex'],
+    },
+  },
+  {
+    key: 'local::apply_patch',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'apply_patch',
+    description: 'Apply a unified-diff-style patch that can update, create, or delete multiple files in one call. Use "*** Update File: path" with context/+/- lines, "*** Add File: path" with + lines, or "*** Delete File: path".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        diff: { type: 'string', description: 'The unified diff patch content' },
+      },
+      required: ['diff'],
+    },
+  },
+  {
+    key: 'local::list_code_definition_names',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'list_code_definition_names',
+    description: 'Parse source code files to extract top-level definitions (classes, functions, interfaces, types, exports). Shows the structure of a file or directory without reading full contents. Supports TypeScript, JavaScript, Python, Go, Rust, Java, C/C++.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to a file or directory to parse' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    key: 'local::ask_followup_question',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'ask_followup_question',
+    description: 'Ask the user a question to clarify requirements or get a decision before proceeding. Pauses execution until the user responds. Optionally provide quick-select options.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The question to ask the user' },
+        options: { type: 'string', description: 'JSON array of option strings for quick selection (optional)' },
+      },
+      required: ['question'],
+    },
+  },
+  {
+    key: 'local::condense',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'condense',
+    description: 'Condense the conversation history to free up context window space. Use when you notice the context is getting large or you\'re running low on tokens. Preserves key information while reducing token usage.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
     },
   },
 ]
@@ -360,6 +432,16 @@ class LocalToolProvider {
         return this.webpageFetch(args)
       case 'file_edit':
         return this.fileEdit(args)
+      case 'search_files':
+        return this.searchFiles(args)
+      case 'apply_patch':
+        return this.applyPatch(args)
+      case 'list_code_definition_names':
+        return this.listCodeDefinitionNames(args)
+      case 'ask_followup_question':
+        return this.askFollowupQuestion(args)
+      case 'condense':
+        return this.condenseContext(args)
       default:
         return {
           toolKey: `local::${toolName}`,
@@ -663,7 +745,11 @@ class LocalToolProvider {
   private async shellExecute(args: Record<string, unknown>): Promise<McpToolCallResult> {
     const command = String(args.command ?? '')
     const cwd = args.cwd ? resolve(String(args.cwd)) : undefined
-    const timeout = typeof args.timeout === 'number' ? args.timeout : 30_000
+    let timeout = typeof args.timeout === 'number' ? args.timeout : 30_000
+    // Auto-detect: if timeout < 1000, the model likely passed seconds instead of ms
+    if (timeout > 0 && timeout < 1000) {
+      timeout = timeout * 1000
+    }
     const background = args.background === true
     const start = Date.now()
 
@@ -1095,13 +1181,470 @@ class LocalToolProvider {
     }
   }
 
+  // ─── List Code Definition Names ──────────────────────────────────────────
+
+  private async listCodeDefinitionNames(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const targetPath = resolve(String(args.path ?? ''))
+    const start = Date.now()
+
+    const verdict = getHardEngine().evaluate({ type: 'file_read', path: targetPath })
+    if (!verdict.allowed) {
+      return this.blocked('local::list_code_definition_names', verdict.reason, start)
+    }
+
+    try {
+      const stats = await stat(targetPath)
+      const results: string[] = []
+
+      if (stats.isFile()) {
+        const defs = await this.parseCodeDefinitions(targetPath)
+        if (defs.length > 0) {
+          results.push(`## ${basename(targetPath)}`, ...defs.map(d => `  ${d}`))
+        } else {
+          results.push(`${basename(targetPath)}: No definitions found (unsupported or empty)`)
+        }
+      } else if (stats.isDirectory()) {
+        const entries = await readdir(targetPath, { withFileTypes: true })
+        const supportedExts = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.java', '.c', '.cpp', '.h', '.hpp', '.cs'])
+
+        for (const entry of entries) {
+          if (!entry.isFile()) continue
+          const ext = entry.name.slice(entry.name.lastIndexOf('.'))
+          if (!supportedExts.has(ext)) continue
+
+          const filePath = join(targetPath, entry.name)
+          const defs = await this.parseCodeDefinitions(filePath)
+          if (defs.length > 0) {
+            results.push(`## ${entry.name}`, ...defs.map(d => `  ${d}`))
+          }
+        }
+
+        if (results.length === 0) {
+          results.push('No code definitions found in directory')
+        }
+      }
+
+      return {
+        toolKey: 'local::list_code_definition_names',
+        success: true,
+        content: results.join('\n'),
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::list_code_definition_names', this.errMsg(err), start)
+    }
+  }
+
+  /** Parse top-level definitions from a source file using regex-based extraction */
+  private async parseCodeDefinitions(filePath: string): Promise<string[]> {
+    try {
+      const content = await readFile(filePath, 'utf-8')
+      const ext = filePath.slice(filePath.lastIndexOf('.'))
+      const defs: string[] = []
+
+      switch (ext) {
+        case '.ts':
+        case '.tsx':
+        case '.js':
+        case '.jsx':
+          this.extractJsTsDefinitions(content, defs)
+          break
+        case '.py':
+          this.extractPythonDefinitions(content, defs)
+          break
+        case '.go':
+          this.extractGoDefinitions(content, defs)
+          break
+        case '.rs':
+          this.extractRustDefinitions(content, defs)
+          break
+        case '.java':
+        case '.cs':
+          this.extractJavaDefinitions(content, defs)
+          break
+        case '.c':
+        case '.cpp':
+        case '.h':
+        case '.hpp':
+          this.extractCDefinitions(content, defs)
+          break
+      }
+
+      return defs
+    } catch {
+      return []
+    }
+  }
+
+  /** Extract TypeScript/JavaScript definitions */
+  private extractJsTsDefinitions(content: string, defs: string[]): void {
+    const lines = content.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      const trimmed = line.trimStart()
+
+      // Skip comments and empty lines
+      if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*') || !trimmed) continue
+
+      // export/default variations
+      const exportPrefix = trimmed.startsWith('export ') ? 'export ' : ''
+      const afterExport = exportPrefix ? trimmed.slice(7).trimStart() : trimmed
+      const defaultPrefix = afterExport.startsWith('default ') ? 'default ' : ''
+      const core = defaultPrefix ? afterExport.slice(8).trimStart() : afterExport
+
+      // Class
+      let m = core.match(/^(?:abstract\s+)?class\s+(\w+)/)
+      if (m) { defs.push(`${exportPrefix}${defaultPrefix}class ${m[1]} (line ${i + 1})`); continue }
+
+      // Interface
+      m = core.match(/^interface\s+(\w+)/)
+      if (m) { defs.push(`${exportPrefix}interface ${m[1]} (line ${i + 1})`); continue }
+
+      // Type alias
+      m = core.match(/^type\s+(\w+)/)
+      if (m) { defs.push(`${exportPrefix}type ${m[1]} (line ${i + 1})`); continue }
+
+      // Enum
+      m = core.match(/^enum\s+(\w+)/)
+      if (m) { defs.push(`${exportPrefix}enum ${m[1]} (line ${i + 1})`); continue }
+
+      // Function declaration
+      m = core.match(/^(?:async\s+)?function\s+(\w+)/)
+      if (m) { defs.push(`${exportPrefix}${defaultPrefix}function ${m[1]}() (line ${i + 1})`); continue }
+
+      // Arrow/const function (top-level only — no leading indentation beyond export)
+      if (line.match(/^(?:export\s+)?(?:const|let|var)\s/)) {
+        m = core.match(/^(?:const|let|var)\s+(\w+)\s*(?::\s*\S+\s*)?=\s*(?:async\s+)?(?:\([^)]*\)|[a-zA-Z_]\w*)\s*=>/)
+        if (m) { defs.push(`${exportPrefix}const ${m[1]} (arrow fn, line ${i + 1})`); continue }
+        m = core.match(/^(?:const|let|var)\s+(\w+)\s*(?::\s*\S+\s*)?=\s*(?:async\s+)?function/)
+        if (m) { defs.push(`${exportPrefix}const ${m[1]} (fn, line ${i + 1})`); continue }
+        // Non-function const exports
+        m = core.match(/^(?:const|let|var)\s+(\w+)/)
+        if (m && exportPrefix) { defs.push(`${exportPrefix}const ${m[1]} (line ${i + 1})`); continue }
+      }
+    }
+  }
+
+  /** Extract Python definitions */
+  private extractPythonDefinitions(content: string, defs: string[]): void {
+    const lines = content.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      // Top-level only: no leading whitespace
+      if (line.startsWith(' ') || line.startsWith('\t')) continue
+
+      let m = line.match(/^class\s+(\w+)/)
+      if (m) { defs.push(`class ${m[1]} (line ${i + 1})`); continue }
+
+      m = line.match(/^(?:async\s+)?def\s+(\w+)/)
+      if (m) { defs.push(`def ${m[1]}() (line ${i + 1})`); continue }
+
+      m = line.match(/^(\w+)\s*=/)
+      if (m && m[1] === m[1].toUpperCase()) { defs.push(`${m[1]} (constant, line ${i + 1})`); continue }
+    }
+  }
+
+  /** Extract Go definitions */
+  private extractGoDefinitions(content: string, defs: string[]): void {
+    const lines = content.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trimStart()
+
+      let m = line.match(/^func\s+(?:\(\s*\w+\s+\*?\w+\s*\)\s+)?(\w+)\s*\(/)
+      if (m) { defs.push(`func ${m[1]}() (line ${i + 1})`); continue }
+
+      m = line.match(/^type\s+(\w+)\s+(struct|interface)/)
+      if (m) { defs.push(`type ${m[1]} ${m[2]} (line ${i + 1})`); continue }
+
+      m = line.match(/^var\s+(\w+)/)
+      if (m) { defs.push(`var ${m[1]} (line ${i + 1})`); continue }
+    }
+  }
+
+  /** Extract Rust definitions */
+  private extractRustDefinitions(content: string, defs: string[]): void {
+    const lines = content.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trimStart()
+
+      let m = line.match(/^(?:pub\s+)?(?:async\s+)?fn\s+(\w+)/)
+      if (m) { defs.push(`fn ${m[1]}() (line ${i + 1})`); continue }
+
+      m = line.match(/^(?:pub\s+)?struct\s+(\w+)/)
+      if (m) { defs.push(`struct ${m[1]} (line ${i + 1})`); continue }
+
+      m = line.match(/^(?:pub\s+)?enum\s+(\w+)/)
+      if (m) { defs.push(`enum ${m[1]} (line ${i + 1})`); continue }
+
+      m = line.match(/^(?:pub\s+)?trait\s+(\w+)/)
+      if (m) { defs.push(`trait ${m[1]} (line ${i + 1})`); continue }
+
+      m = line.match(/^(?:pub\s+)?type\s+(\w+)/)
+      if (m) { defs.push(`type ${m[1]} (line ${i + 1})`); continue }
+
+      m = line.match(/^impl(?:<[^>]+>)?\s+(\w+)/)
+      if (m) { defs.push(`impl ${m[1]} (line ${i + 1})`); continue }
+    }
+  }
+
+  /** Extract Java/C# definitions */
+  private extractJavaDefinitions(content: string, defs: string[]): void {
+    const lines = content.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trimStart()
+
+      let m = line.match(/^(?:public|private|protected|static|final|abstract|synchronized|\s)*class\s+(\w+)/)
+      if (m) { defs.push(`class ${m[1]} (line ${i + 1})`); continue }
+
+      m = line.match(/^(?:public|private|protected|static|final|abstract|synchronized|\s)*interface\s+(\w+)/)
+      if (m) { defs.push(`interface ${m[1]} (line ${i + 1})`); continue }
+
+      m = line.match(/^(?:public|private|protected|static|final|abstract|synchronized|\s)*enum\s+(\w+)/)
+      if (m) { defs.push(`enum ${m[1]} (line ${i + 1})`); continue }
+    }
+  }
+
+  /** Extract C/C++ definitions */
+  private extractCDefinitions(content: string, defs: string[]): void {
+    const lines = content.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]
+      if (line.startsWith(' ') || line.startsWith('\t')) continue
+
+      let m = line.match(/^(?:static\s+)?(?:inline\s+)?(?:const\s+)?(?:\w+\s+)+(\w+)\s*\(/)
+      if (m && !['if', 'for', 'while', 'switch', 'return'].includes(m[1])) {
+        defs.push(`${m[1]}() (line ${i + 1})`); continue
+      }
+
+      m = line.match(/^(?:typedef\s+)?struct\s+(\w+)/)
+      if (m) { defs.push(`struct ${m[1]} (line ${i + 1})`); continue }
+
+      m = line.match(/^typedef\s+.*\s+(\w+)\s*;/)
+      if (m) { defs.push(`typedef ${m[1]} (line ${i + 1})`); continue }
+
+      m = line.match(/^#define\s+(\w+)/)
+      if (m) { defs.push(`#define ${m[1]} (line ${i + 1})`); continue }
+
+      m = line.match(/^(?:class|namespace)\s+(\w+)/)
+      if (m) { defs.push(`${line.includes('class') ? 'class' : 'namespace'} ${m[1]} (line ${i + 1})`); continue }
+    }
+  }
+
+  // ─── Ask Followup Question ──────────────────────────────────────────────
+
+  /**
+   * Ask the user a clarifying question and wait for their response.
+   * Emits an event to the UI, then blocks until the user responds.
+   */
+  private async askFollowupQuestion(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const question = String(args.question ?? '')
+    const start = Date.now()
+
+    if (!question) {
+      return this.error('local::ask_followup_question', 'question is required', start)
+    }
+
+    // Parse options if provided
+    let options: string[] | undefined
+    if (args.options) {
+      try {
+        options = typeof args.options === 'string' ? JSON.parse(args.options) : args.options as string[]
+      } catch { /* ignore invalid JSON */ }
+    }
+
+    const bus = getEventBus()
+    const questionId = `q-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    // Emit question to UI
+    bus.emitEvent('agent:ask-user', {
+      questionId,
+      question,
+      options,
+    })
+
+    // Wait for user response (with timeout)
+    const TIMEOUT_MS = 5 * 60 * 1000 // 5 minutes
+
+    try {
+      const response = await new Promise<string>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          cleanup()
+          reject(new Error('User did not respond within 5 minutes'))
+        }, TIMEOUT_MS)
+
+        const cleanup = bus.onEvent('agent:user-response', (data) => {
+          if (data.questionId === questionId) {
+            clearTimeout(timer)
+            cleanup()
+            resolve(data.response)
+          }
+        })
+      })
+
+      return {
+        toolKey: 'local::ask_followup_question',
+        success: true,
+        content: `User responded: ${response}`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::ask_followup_question', this.errMsg(err), start)
+    }
+  }
+
+  // ─── Condense Context ───────────────────────────────────────────────────
+
+  /**
+   * Condense the conversation history to free up context window space.
+   * This is a signal tool — the actual condensation is performed by the
+   * ConversationManager in base-agent.ts when it sees this tool result.
+   */
+  private async condenseContext(_args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const start = Date.now()
+
+    // Emit event so base-agent can intercept and trigger actual condensation
+    getEventBus().emitEvent('agent:condense-requested', {})
+
+    return {
+      toolKey: 'local::condense',
+      success: true,
+      content: 'Context condensation triggered. The conversation history will be trimmed to free up context space.',
+      isError: false,
+      duration: Date.now() - start,
+    }
+  }
+
+  // ─── Search Files ────────────────────────────────────────────────────────
+
+  private async searchFiles(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const dirPath = resolve(String(args.path ?? ''))
+    const regexStr = String(args.regex ?? '')
+    const filePattern = args.file_pattern ? String(args.file_pattern) : undefined
+    const start = Date.now()
+
+    if (!regexStr) {
+      return this.error('local::search_files', 'regex pattern is required', start)
+    }
+
+    // Safety gate
+    const verdict = getHardEngine().evaluate({ type: 'file_read', path: dirPath })
+    if (!verdict.allowed) {
+      return this.blocked('local::search_files', verdict.reason, start)
+    }
+
+    try {
+      const regex = new RegExp(regexStr, 'gi')
+      const results: string[] = []
+      const MAX_RESULTS = 300
+      const MAX_FILE_SIZE = 1024 * 1024 // 1MB
+
+      // Build file extension filter from glob pattern
+      const extFilter = filePattern ? this.globToExtensions(filePattern) : null
+
+      await this.walkDir(dirPath, async (filePath) => {
+        if (results.length >= MAX_RESULTS) return
+
+        // Check extension filter
+        if (extFilter && !extFilter(filePath)) return
+
+        // Skip very large files
+        try {
+          const stats = await stat(filePath)
+          if (stats.size > MAX_FILE_SIZE || stats.size === 0) return
+        } catch { return }
+
+        try {
+          const content = await readFile(filePath, 'utf-8')
+          // Quick binary check — null bytes → skip
+          if (content.includes('\0')) return
+
+          const lines = content.split('\n')
+          for (let i = 0; i < lines.length && results.length < MAX_RESULTS; i++) {
+            regex.lastIndex = 0
+            if (regex.test(lines[i])) {
+              results.push(`${filePath}:${i + 1}: ${lines[i].trimEnd()}`)
+            }
+          }
+        } catch { /* skip unreadable files */ }
+      })
+
+      if (results.length === 0) {
+        return {
+          toolKey: 'local::search_files',
+          success: true,
+          content: `No matches found for /${regexStr}/ in ${dirPath}`,
+          isError: false,
+          duration: Date.now() - start,
+        }
+      }
+
+      const truncNote = results.length >= MAX_RESULTS ? `\n\n(Results truncated at ${MAX_RESULTS} matches)` : ''
+      return {
+        toolKey: 'local::search_files',
+        success: true,
+        content: `Found ${results.length} match(es) for /${regexStr}/:\n\n${results.join('\n')}${truncNote}`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::search_files', this.errMsg(err), start)
+    }
+  }
+
+  /** Recursively walk a directory, calling fn for each file */
+  private async walkDir(dir: string, fn: (filePath: string) => Promise<void>): Promise<void> {
+    const SKIP_DIRS = new Set([
+      'node_modules', '.git', 'dist', 'build', '.next', '__pycache__',
+      '.venv', 'coverage', '.cache', '.turbo', 'out',
+    ])
+
+    try {
+      const entries = await readdir(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        const fullPath = join(dir, entry.name)
+        if (entry.isDirectory()) {
+          if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.')) {
+            await this.walkDir(fullPath, fn)
+          }
+        } else if (entry.isFile()) {
+          await fn(fullPath)
+        }
+      }
+    } catch { /* skip inaccessible directories */ }
+  }
+
+  /** Convert a simple glob pattern (e.g. "*.ts", "*.{js,tsx}") to a file filter function */
+  private globToExtensions(pattern: string): ((filePath: string) => boolean) | null {
+    // Handle patterns like "*.ts", "*.{js,tsx,ts}", "*.js"
+    const match = pattern.match(/^\*\.(?:\{([^}]+)\}|(\w+))$/)
+    if (match) {
+      const exts = (match[1] ?? match[2]).split(',').map(e => `.${e.trim()}`)
+      return (filePath: string) => exts.some(ext => filePath.endsWith(ext))
+    }
+    // Fallback: treat as a simple extension
+    if (pattern.startsWith('*.')) {
+      const ext = pattern.slice(1)
+      return (filePath: string) => filePath.endsWith(ext)
+    }
+    return null // Can't parse — match all files
+  }
+
   // ─── File Edit (search-and-replace with fuzzy matching) ──────────────────
 
   private async fileEdit(args: Record<string, unknown>): Promise<McpToolCallResult> {
     const filePath = resolve(String(args.path ?? ''))
+    const start = Date.now()
+
+    // ── Multi-block diff mode (diff_blocks param) ──
+    if (args.diff_blocks) {
+      return this.fileEditMultiBlock(filePath, args.diff_blocks, start)
+    }
+
+    // ── Single edit mode (old_string → new_string) ──
     const oldString = String(args.old_string ?? '')
     const newString = String(args.new_string ?? '')
-    const start = Date.now()
 
     if (!oldString) {
       return this.error('local::file_edit', 'old_string is required and cannot be empty', start)
@@ -1383,6 +1926,210 @@ class LocalToolProvider {
     }
 
     return matches / maxLen
+  }
+
+  // ─── Multi-Block File Edit (Diff Strategy) ──────────────────────────────
+
+  /**
+   * Apply multiple SEARCH/REPLACE diff blocks to a file using the diff strategy engine.
+   * This is the advanced path used when diff_blocks is provided as a JSON array.
+   */
+  private async fileEditMultiBlock(
+    filePath: string,
+    rawBlocks: unknown,
+    start: number
+  ): Promise<McpToolCallResult> {
+    // Safety gate — needs both read and write access
+    const readVerdict = getHardEngine().evaluate({ type: 'file_read', path: filePath })
+    if (!readVerdict.allowed) {
+      return this.blocked('local::file_edit', readVerdict.reason, start)
+    }
+
+    try {
+      // Parse diff_blocks: expect JSON string or already-parsed array
+      let parsedBlocks: Array<{ search: string; replace: string; start_line?: number }>
+      if (typeof rawBlocks === 'string') {
+        parsedBlocks = JSON.parse(rawBlocks)
+      } else if (Array.isArray(rawBlocks)) {
+        parsedBlocks = rawBlocks
+      } else {
+        return this.error('local::file_edit', 'diff_blocks must be a JSON array of {search, replace} objects', start)
+      }
+
+      if (!Array.isArray(parsedBlocks) || parsedBlocks.length === 0) {
+        return this.error('local::file_edit', 'diff_blocks array is empty', start)
+      }
+
+      // Map to DiffBlock[] for the strategy engine
+      const blocks: DiffBlock[] = parsedBlocks.map(b => ({
+        searchContent: b.search,
+        replaceContent: b.replace,
+        startLineHint: b.start_line,
+      }))
+
+      const content = await readFile(filePath, 'utf-8')
+      this.storeBackup(filePath, content)
+
+      const result = getDiffStrategy().applyDiff(content, blocks)
+
+      if (!result.success) {
+        // On failure, include file snippet to help the model recover
+        const contentLines = content.split('\n')
+        const snippet = contentLines.slice(0, 40).join('\n')
+        const truncNote = contentLines.length > 40 ? `\n... (${contentLines.length - 40} more lines)` : ''
+        return this.error(
+          'local::file_edit',
+          `${result.error}\n\nFile has ${contentLines.length} lines. First 40 lines:\n${snippet}${truncNote}`,
+          start
+        )
+      }
+
+      const writeVerdict = getHardEngine().evaluate({
+        type: 'file_write',
+        path: filePath,
+        content: result.newContent,
+        size: Buffer.byteLength(result.newContent),
+      })
+      if (!writeVerdict.allowed) {
+        return this.blocked('local::file_edit', writeVerdict.reason, start)
+      }
+
+      await writeFile(filePath, result.newContent, 'utf-8')
+
+      // Build summary from match details
+      const tierSummary = result.matchDetails
+        .map(d => `  Block ${d.blockIndex + 1}: ${d.matchTier}${d.similarity ? ` (${(d.similarity * 100).toFixed(0)}%)` : ''}`)
+        .join('\n')
+
+      return {
+        toolKey: 'local::file_edit',
+        success: true,
+        content: `File edited successfully: ${filePath} (${result.appliedCount}/${result.totalBlocks} blocks applied, ${Buffer.byteLength(result.newContent)} bytes total)\n\nMatch details:\n${tierSummary}`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::file_edit', this.errMsg(err), start)
+    }
+  }
+
+  // ─── Apply Patch (unified-diff multi-file edits) ─────────────────────────
+
+  private async applyPatch(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const diffText = String(args.diff ?? '')
+    const start = Date.now()
+
+    if (!diffText.trim()) {
+      return this.error('local::apply_patch', 'diff content is required', start)
+    }
+
+    try {
+      const operations = parsePatchOperations(diffText)
+
+      if (operations.length === 0) {
+        return this.error('local::apply_patch', 'Could not parse any patch operations from the diff', start)
+      }
+
+      const results: string[] = []
+      let errors = 0
+
+      for (const op of operations) {
+        const filePath = resolve(op.path)
+
+        if (op.type === 'delete') {
+          const verdict = getHardEngine().evaluate({ type: 'file_write', path: filePath, content: '', size: 0 })
+          if (!verdict.allowed) {
+            results.push(`BLOCKED: ${op.path} — ${verdict.reason}`)
+            errors++
+            continue
+          }
+          try {
+            await unlink(filePath)
+            results.push(`Deleted: ${op.path}`)
+          } catch (err) {
+            results.push(`Error deleting ${op.path}: ${this.errMsg(err)}`)
+            errors++
+          }
+          continue
+        }
+
+        if (op.type === 'add') {
+          const content = op.content ?? ''
+          const verdict = getHardEngine().evaluate({
+            type: 'file_write', path: filePath, content, size: Buffer.byteLength(content),
+          })
+          if (!verdict.allowed) {
+            results.push(`BLOCKED: ${op.path} — ${verdict.reason}`)
+            errors++
+            continue
+          }
+          try {
+            await mkdir(dirname(filePath), { recursive: true })
+            await writeFile(filePath, content, 'utf-8')
+            results.push(`Created: ${op.path} (${Buffer.byteLength(content)} bytes)`)
+          } catch (err) {
+            results.push(`Error creating ${op.path}: ${this.errMsg(err)}`)
+            errors++
+          }
+          continue
+        }
+
+        // type === 'update'
+        const readVerdict = getHardEngine().evaluate({ type: 'file_read', path: filePath })
+        if (!readVerdict.allowed) {
+          results.push(`BLOCKED: ${op.path} — ${readVerdict.reason}`)
+          errors++
+          continue
+        }
+
+        try {
+          const fileContent = await readFile(filePath, 'utf-8')
+          this.storeBackup(filePath, fileContent)
+
+          // Convert hunks to DiffBlocks for the diff strategy
+          const blocks: DiffBlock[] = (op.hunks ?? []).map(hunk => ({
+            searchContent: hunk.contextLines.join('\n'),
+            replaceContent: hunk.replacementLines.join('\n'),
+          }))
+
+          const result = getDiffStrategy().applyDiff(fileContent, blocks)
+          if (!result.success) {
+            results.push(`Failed: ${op.path} — ${result.error}`)
+            errors++
+            continue
+          }
+
+          const writeVerdict = getHardEngine().evaluate({
+            type: 'file_write', path: filePath, content: result.newContent, size: Buffer.byteLength(result.newContent),
+          })
+          if (!writeVerdict.allowed) {
+            results.push(`BLOCKED: ${op.path} write — ${writeVerdict.reason}`)
+            errors++
+            continue
+          }
+
+          await writeFile(filePath, result.newContent, 'utf-8')
+          results.push(`Updated: ${op.path} (${blocks.length} hunk(s) applied)`)
+        } catch (err) {
+          results.push(`Error updating ${op.path}: ${this.errMsg(err)}`)
+          errors++
+        }
+      }
+
+      const summary = errors > 0
+        ? `Patch applied with ${errors} error(s):\n\n${results.join('\n')}`
+        : `Patch applied successfully:\n\n${results.join('\n')}`
+
+      return {
+        toolKey: 'local::apply_patch',
+        success: errors === 0,
+        content: summary,
+        isError: errors > 0,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::apply_patch', this.errMsg(err), start)
+    }
   }
 
   // ─── File Backup System ──────────────────────────────

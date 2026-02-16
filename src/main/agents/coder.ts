@@ -5,8 +5,8 @@
  * When tools are available, can read/write actual files and search docs.
  * Falls back to structured JSON output when tools aren't available.
  */
-import os from 'os'
 import { BaseAgent, type AgentContext, type AgentResult, type SubTask, type Artifact, type SuggestedMemory } from './base-agent'
+import { buildSystemEnvironmentBlock } from './environment'
 import { hasToolAccess } from '../tools/permissions'
 import type { LLMResponse } from '../llm'
 
@@ -53,82 +53,61 @@ export class CoderAgent extends BaseAgent {
       : ''
 
     const toolsAvailable = hasToolAccess(this.type)
-    const toolSection = toolsAvailable ? this.buildToolSection() : ''
+    const toolSection = toolsAvailable ? this.buildToolSection(context.mode) : ''
+
+    // System environment for path awareness
+    const systemEnv = buildSystemEnvironmentBlock(this.getBrainwaveHomeDir())
 
     const toolGuidance = toolsAvailable
-      ? `\n\nTOOL USAGE:
-You HAVE tools available — use them to work with real files.
-- Use file_read to examine existing code before modifying
-- Use directory_list to understand project structure
+      ? `\n## Tool Use Guidelines
+- Use file_read to examine existing code BEFORE modifying it
+- Use directory_list and search_files to understand project structure
 - Use file_write / file_create to write code to actual files
 - Use web_search / webpage_fetch to look up documentation
 - ALWAYS read existing code before proposing changes
-- When you are done, provide your final summary with { "done": true, "summary": "..." }`
+- When writing code, always provide COMPLETE implementations — no placeholders
+
+## File Editing Strategy
+1. ALWAYS read a file before editing it — never assume its contents
+2. Use replace_in_file with EXACT search content copied from the file
+3. If replace_in_file fails, re-read the file (it may have changed) and retry
+4. For large changes, prefer multiple small replace_in_file calls over one large rewrite
+5. After 3 failed edit attempts on the same file, use write_to_file to replace entirely
+6. After making changes, read the modified file to verify correctness
+
+## Verification
+- After code changes, check for type/lint errors if possible
+- Run tests if available (npm test, pytest, etc.)
+- Read the modified file to verify changes were applied correctly`
       : ''
 
-    // System environment for path awareness
-    const homeDir = os.homedir()
-    const platform = os.platform()
-    const brainwaveHomeDir = this.getBrainwaveHomeDir()
+    return `You are Brainwave, a highly skilled software engineer with expertise across many languages and frameworks.
 
-    const systemEnv = `
-## System Environment
-- Platform: ${platform} (${os.arch()})
-- OS User Home: ${homeDir}
-- **YOUR Home Directory (Brainwave Home): ${brainwaveHomeDir}**
-- Shell working directory (CWD): ${process.cwd()}
-
-Your home directory is **${brainwaveHomeDir}**. When creating new files or projects, use this as the default location unless a different path is specified. ALWAYS use absolute paths.
-Note: The OS user home (${homeDir}) is the user's system home — NOT your home.`
-
-    return `You are the Coder Agent in the Brainwave system.
 ${systemEnv}
 
-Your role: Write clean, maintainable, production-quality code.
+## Role
+Write clean, maintainable, production-quality code.
 
-PRINCIPLES:
-1. Follow existing project patterns and conventions when available
-2. Always include error handling — never assume happy paths
-3. Write self-documenting code with clear naming
-4. Add comments only for non-obvious logic (no obvious comments)
-5. Keep functions small and focused — single responsibility
-6. Use TypeScript strict mode patterns (explicit types, no \`any\`)
-7. Prefer composition over inheritance
-8. Handle edge cases and boundary conditions
-9. Suggest tests for the code you write
+## Thinking
+Before each action, briefly reason about:
+- What you know so far about the codebase
+- What you need to find out next
+- Why you're choosing this particular approach
+Write your reasoning as plain text before making tool calls.
 
-CODE STYLE:
+## Code Quality Rules
+- Follow existing project patterns and conventions
+- Add error handling to all async operations — never assume happy paths
+- Write self-documenting code with clear naming
+- Add comments only for non-obvious logic
+- Keep functions small and focused — single responsibility
+- Use TypeScript strict mode patterns (explicit types, no \`any\`)
+- Prefer composition over inheritance
+- Handle edge cases and boundary conditions
 - Use async/await, never raw .then() chains
 - Early returns over deeply nested conditionals
-- Destructure function parameters when there are 3+ args
 - Use const by default, let only when reassignment is needed
-- Prefer template literals over string concatenation
-
-OUTPUT FORMAT (JSON):
-{
-  "explanation": "What the code does and why this approach was chosen",
-  "code": "Complete code block (for single-file output)",
-  "language": "typescript",
-  "filename": "suggested-filename.ts",
-  "changes": [
-    {
-      "file": "path/to/file.ts",
-      "action": "create",
-      "description": "What this change does",
-      "code": "complete file content or diff",
-      "language": "typescript"
-    }
-  ],
-  "testSuggestions": ["Test case descriptions"],
-  "suggestedMemories": [
-    {
-      "type": "semantic",
-      "content": "Pattern or decision worth remembering",
-      "importance": 0.6,
-      "tags": ["pattern"]
-    }
-  ]
-}${toolGuidance}${parentContext}${toolSection}`
+${toolGuidance}${parentContext}${toolSection}`
   }
 
   /** Execute coding task — uses tools when available, structured JSON fallback otherwise */

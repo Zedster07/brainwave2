@@ -57,7 +57,8 @@ const DEFAULT_SAFETY_RULES: SafetyRules = {
     blocked_operations: [
       { pattern: 'rm -rf /', reason: 'Recursive root deletion' },
       { pattern: 'del /s /q C:\\', reason: 'Recursive system deletion' },
-      { pattern: 'format', reason: 'Disk format' },
+      { pattern: 'format C:', reason: 'Disk format' },
+      { pattern: 'format D:', reason: 'Disk format' },
     ],
     max_file_size_mb: 100,
     max_files_per_operation: 50,

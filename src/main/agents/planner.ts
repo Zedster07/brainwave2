@@ -7,8 +7,8 @@
  * Outputs a user-visible task list for progress tracking.
  */
 import { randomUUID } from 'crypto'
-import * as os from 'os'
 import { BaseAgent, type AgentContext, type AgentResult, type SubTask, type TaskPlan } from './base-agent'
+import { buildSystemEnvironmentBlock } from './environment'
 import type { AgentType } from './event-bus'
 import type { LLMResponse } from '../llm'
 
@@ -36,39 +36,27 @@ export class PlannerAgent extends BaseAgent {
   readonly description = 'Decomposes complex tasks into executable sub-task DAGs with project context awareness'
 
   protected getSystemPrompt(context: AgentContext): string {
-    const toolSection = this.buildToolSection()
+    const toolSection = this.buildToolSection(context.mode)
 
     // Gather real system context so the planner never guesses paths
-    const homeDir = os.homedir()
-    const username = os.userInfo().username
-    const platform = os.platform()
     const brainwaveHomeDir = this.getBrainwaveHomeDir()
-    const desktopPath = platform === 'win32'
-      ? `${homeDir}\\Desktop`
-      : `${homeDir}/Desktop`
-    const documentsPath = platform === 'win32'
-      ? `${homeDir}\\Documents`
-      : `${homeDir}/Documents`
+    const systemEnv = buildSystemEnvironmentBlock(brainwaveHomeDir)
 
-    return `You are the Planner Agent in the Brainwave system.
+    return `You are Brainwave, an expert software architect and project planner. You decompose complex tasks into clear, executable plans of sub-tasks, maximizing parallelism and identifying dependencies.
 
-## System Environment
-- Platform: ${platform} (${os.arch()})
-- Username: ${username}
-- OS User Home: ${homeDir}
-- **YOUR Home Directory (Brainwave Home): ${brainwaveHomeDir}**
-- Desktop: ${desktopPath}
-- Documents: ${documentsPath}
-- Shell working directory (CWD): ${process.cwd()}
+${systemEnv}
 
 ALWAYS use these REAL paths when exploring files/directories during reconnaissance.
 On Windows, use backslash paths (e.g. "C:\\Users\\...") or forward slashes.
 NEVER guess paths like "/workspace/" — use directory_list with the real paths above.
 
-Your home directory is **${brainwaveHomeDir}**. When the user asks to create a project, store files, or asks "what's your home directory?", the answer is ${brainwaveHomeDir}.
-Note: The OS user home (${homeDir}) is the user's system home — NOT your home.
-
-Your role: Decompose tasks into a clear, executable plan of sub-tasks.
+## Thinking
+Before acting, reason through:
+- What is the user actually asking for? What is the end goal?
+- What files/structure do I need to examine to plan accurately?
+- How can I break this into independent, parallelizable steps?
+- What are the dependencies between steps?
+- Which agent type is best suited for each step?
 
 ## RECONNAISSANCE
 Before creating your plan, you have access to tools (file_read, directory_list) to explore the project structure.
@@ -106,10 +94,14 @@ Read at most 3-5 files to get enough context, then produce your plan.
 - Never make circular dependencies
 
 ## OUTPUT FORMAT
-When you have finished reconnaissance and are ready to plan, respond with:
-{ "done": true, "summary": "<JSON plan>" }
+When you have finished reconnaissance and are ready to plan, signal completion:
+<attempt_completion>
+<result>
+<JSON plan>
+</result>
+</attempt_completion>
 
-The JSON plan inside summary must be:
+The JSON plan inside the result must be:
 {
   "complexity": "simple",
   "reasoning": "Brief explanation of the decomposition strategy",
@@ -185,6 +177,11 @@ The JSON plan inside summary must be:
     // @ts-expect-error — raw may be undefined if tool-based path succeeded
     const rawResponse = raw ?? { tokensIn: result.tokensIn, tokensOut: result.tokensOut, finishReason: 'stop', model: result.model, content: outputStr }
 
+    // Guard: ensure parsed output has valid subtasks array
+    if (!parsed?.subtasks || !Array.isArray(parsed.subtasks) || parsed.subtasks.length === 0) {
+      throw new Error(`Planner output missing valid subtasks array. Got: ${JSON.stringify(parsed).slice(0, 200)}`)
+    }
+
     const plan: TaskPlan = {
       id: `plan_${randomUUID().slice(0, 8)}`,
       taskId,
@@ -200,7 +197,7 @@ The JSON plan inside summary must be:
         // Store the human-readable title for the task list
         title: st.title ?? st.description,
       })),
-      estimatedComplexity: parsed.complexity,
+      estimatedComplexity: parsed.complexity ?? 'medium',
       requiredAgents: [...new Set(parsed.subtasks.map((st) => st.agent))],
     }
 

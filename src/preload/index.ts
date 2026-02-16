@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type StreamChunk, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession, type NotificationPayload, type TaskLiveState } from '@shared/types'
+import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type StreamChunk, type FollowupQuestion, type ApprovalRequest, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession, type NotificationPayload, type TaskLiveState, type CheckpointInfo, type ModeInfo, type InstructionInfo, type ContextUsageInfo, type ToolCallInfo } from '@shared/types'
 
 const api: BrainwaveAPI = {
   // ─── Window Controls ───
@@ -49,6 +49,52 @@ const api: BrainwaveAPI = {
     const handler = (_event: Electron.IpcRendererEvent, chunk: StreamChunk) => callback(chunk)
     ipcRenderer.on(IPC_CHANNELS.AGENT_STREAM_CHUNK, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_STREAM_CHUNK, handler)
+  },
+
+  // ─── Agent Follow-up Questions ───
+  onAskUser: (callback: (question: FollowupQuestion) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, question: FollowupQuestion) => callback(question)
+    ipcRenderer.on(IPC_CHANNELS.AGENT_ASK_USER, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_ASK_USER, handler)
+  },
+
+  respondToAgent: (questionId: string, response: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_USER_RESPONSE, questionId, response) as Promise<void>,
+
+  // ─── Tool Approval ───
+  onApprovalNeeded: (callback: (request: ApprovalRequest) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, request: ApprovalRequest) => callback(request)
+    ipcRenderer.on(IPC_CHANNELS.AGENT_APPROVAL_NEEDED, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_APPROVAL_NEEDED, handler)
+  },
+
+  respondToApproval: (approvalId: string, approved: boolean, feedback?: string, reason?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_APPROVAL_RESPONSE, approvalId, approved, feedback, reason) as Promise<void>,
+
+  // ─── Checkpoints ───
+  getCheckpoints: (taskId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_GET_CHECKPOINTS, taskId) as Promise<CheckpointInfo[]>,
+
+  rollbackToCheckpoint: (taskId: string, checkpointId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_ROLLBACK_CHECKPOINT, taskId, checkpointId) as Promise<{ commitHash: string; step: number }>,
+
+  onCheckpointCreated: (callback: (checkpoint: CheckpointInfo) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, checkpoint: CheckpointInfo) => callback(checkpoint)
+    ipcRenderer.on(IPC_CHANNELS.AGENT_CHECKPOINT_CREATED, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_CHECKPOINT_CREATED, handler)
+  },
+
+  // ─── Context Usage & Tool Call Info ───
+  onContextUsage: (callback: (usage: ContextUsageInfo) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, usage: ContextUsageInfo) => callback(usage)
+    ipcRenderer.on(IPC_CHANNELS.AGENT_CONTEXT_USAGE, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_CONTEXT_USAGE, handler)
+  },
+
+  onToolCallInfo: (callback: (info: ToolCallInfo) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, info: ToolCallInfo) => callback(info)
+    ipcRenderer.on(IPC_CHANNELS.AGENT_TOOL_CALL_INFO, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_TOOL_CALL_INFO, handler)
   },
 
   // ─── Notifications (main → renderer) ───
@@ -322,6 +368,9 @@ const api: BrainwaveAPI = {
   mcpImportServers: (json: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.MCP_IMPORT_SERVERS, json),
 
+  mcpReload: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_RELOAD),
+
   // ─── Speech-to-Text ───
   transcribeAudio: (audioBuffer: ArrayBuffer, mimeType: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.STT_TRANSCRIBE, audioBuffer, mimeType),
@@ -344,6 +393,23 @@ const api: BrainwaveAPI = {
 
   pluginDisable: (id: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.PLUGIN_DISABLE, id),
+
+  // ─── Modes ───
+  getModes: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MODES_LIST) as Promise<ModeInfo[]>,
+
+  getMode: (slug: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MODES_GET, slug) as Promise<ModeInfo | null>,
+
+  // ─── Custom Instructions (Phase 12) ───
+  getInstructions: (workDir: string, mode?: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.INSTRUCTIONS_LIST, workDir, mode) as Promise<InstructionInfo[]>,
+
+  getInstructionContent: (filePath: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.INSTRUCTIONS_GET_CONTENT, filePath) as Promise<string | null>,
+
+  saveInstructionContent: (filePath: string, content: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.INSTRUCTIONS_SAVE_CONTENT, filePath, content) as Promise<boolean>,
 }
 
 // Expose typed API to renderer

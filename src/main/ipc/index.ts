@@ -20,6 +20,9 @@ import { getEventBus } from '../agents/event-bus'
 import { getMemoryManager, exportAllMemories, importAllMemories } from '../memory'
 import { getPeopleStore } from '../memory/people'
 import { getCalibrationTracker } from '../agents/calibration'
+import { getCheckpointService } from '../agents/checkpoint-service'
+import { getModeRegistry } from '../modes'
+import { getInstructionManager } from '../instructions'
 import { getPromptRegistry } from '../prompts'
 import { getProceduralStore } from '../memory/procedural'
 import { getProspectiveStore } from '../memory/prospective'
@@ -247,7 +250,7 @@ export function registerIpcHandlers(): void {
   orchestrator.setExecutor((subTask, context) => agentPool.executeTask(subTask, context))
 
   ipcMain.handle(IPC_CHANNELS.AGENT_SUBMIT_TASK, async (_event, task: TaskSubmission) => {
-    const record = await orchestrator.submitTask(task.prompt, task.priority ?? 'normal', task.sessionId, task.images)
+    const record = await orchestrator.submitTask(task.prompt, task.priority ?? 'normal', task.sessionId, task.images, task.mode)
     return { taskId: record.id }
   })
 
@@ -471,6 +474,37 @@ export function registerIpcHandlers(): void {
     })
   })
 
+  // Structured tool-call-info → renderer (rich tool cards with args, duration, preview)
+  eventBus.onEvent('agent:tool-call-info', (data) => {
+    forwardToRenderer(IPC_CHANNELS.AGENT_TOOL_CALL_INFO, {
+      taskId: data.taskId,
+      agentType: data.agentType,
+      step: data.step,
+      tool: data.tool,
+      toolName: data.toolName,
+      args: data.args,
+      success: data.success,
+      summary: data.summary,
+      duration: data.duration,
+      resultPreview: data.resultPreview,
+      timestamp: Date.now(),
+    })
+  })
+
+  // Context usage → renderer (context window indicator bar)
+  eventBus.onEvent('agent:context-usage', (data) => {
+    forwardToRenderer(IPC_CHANNELS.AGENT_CONTEXT_USAGE, {
+      taskId: data.taskId,
+      agentType: data.agentType,
+      tokensUsed: data.tokensUsed,
+      budgetTotal: data.budgetTotal,
+      usagePercent: data.usagePercent,
+      messageCount: data.messageCount,
+      condensations: data.condensations,
+      step: data.step,
+    })
+  })
+
   // Escalation events — agent retries exhausted
   eventBus.onEvent('task:escalation', (data) => forwardToRenderer(IPC_CHANNELS.AGENT_LOG, {
     id: `log_${Date.now()}`, taskId: data.taskId, agentId: data.agent, agentType: data.agent,
@@ -503,6 +537,59 @@ export function registerIpcHandlers(): void {
       isDone: true,
       fullText: data.fullText,
     })
+  })
+
+  // Agent follow-up questions — forward to renderer, listen for responses
+  eventBus.onEvent('agent:ask-user', (data) => {
+    forwardToRenderer(IPC_CHANNELS.AGENT_ASK_USER, {
+      questionId: data.questionId,
+      question: data.question,
+      options: data.options,
+    })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_USER_RESPONSE, (_event, questionId: string, response: string) => {
+    eventBus.emitEvent('agent:user-response', { questionId, response })
+  })
+
+  // Agent tool approval — forward to renderer, listen for responses
+  eventBus.onEvent('agent:approval-needed', (data) => {
+    forwardToRenderer(IPC_CHANNELS.AGENT_APPROVAL_NEEDED, {
+      approvalId: data.approvalId,
+      taskId: data.taskId,
+      agentType: data.agentType,
+      tool: data.tool,
+      args: data.args,
+      summary: data.summary,
+      diffPreview: data.diffPreview,
+      safetyLevel: data.safetyLevel,
+    })
+  })
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_APPROVAL_RESPONSE, (_event, approvalId: string, approved: boolean, feedback?: string, reason?: string) => {
+    eventBus.emitEvent('agent:approval-response', { approvalId, approved, feedback, reason })
+  })
+
+  // ─── Checkpoints ───
+  const checkpointService = getCheckpointService()
+
+  eventBus.onEvent('agent:checkpoint', (data) => {
+    forwardToRenderer(IPC_CHANNELS.AGENT_CHECKPOINT_CREATED, data)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_GET_CHECKPOINTS, async (_event, taskId: string) => {
+    return checkpointService.getCheckpoints(taskId)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_ROLLBACK_CHECKPOINT, async (_event, taskId: string, checkpointId: string) => {
+    const result = await checkpointService.rollbackToCheckpoint(process.cwd(), taskId, checkpointId)
+    eventBus.emitEvent('agent:rollback', {
+      taskId,
+      checkpointId,
+      commitHash: result.commitHash,
+      rolledBackToStep: result.step,
+    })
+    return result
   })
 
   // ─── Memory (wired to MemoryManager) ───
@@ -992,6 +1079,10 @@ export function registerIpcHandlers(): void {
     return importMcpServersFromJson(json, mcpRegistry)
   })
 
+  ipcMain.handle(IPC_CHANNELS.MCP_RELOAD, async () => {
+    return mcpRegistry.reload()
+  })
+
   // ─── Scheduler ───
   const scheduler = getScheduler()
 
@@ -1132,5 +1223,60 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC_CHANNELS.DAILY_PULSE_GET, async (_event, section: string) => {
     return fetchDailyPulseSection(section as any)
+  })
+
+  // ─── Modes ───
+
+  ipcMain.handle(IPC_CHANNELS.MODES_LIST, async () => {
+    return getModeRegistry().getAll().map((m) => ({
+      slug: m.slug,
+      name: m.name,
+      description: m.description,
+      agentType: m.agentType,
+      icon: m.icon,
+      builtIn: m.builtIn,
+    }))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MODES_GET, async (_event, slug: string) => {
+    const m = getModeRegistry().get(slug)
+    return m
+      ? { slug: m.slug, name: m.name, description: m.description, agentType: m.agentType, icon: m.icon, builtIn: m.builtIn }
+      : null
+  })
+
+  // ─── Custom Instructions (Phase 12) ───
+
+  ipcMain.handle(IPC_CHANNELS.INSTRUCTIONS_LIST, async (_event, workDir: string, mode?: string) => {
+    const instructions = await getInstructionManager().getInstructions({ workDir, mode })
+    return instructions.map((i) => ({
+      origin: i.origin,
+      filePath: i.filePath,
+      content: i.content,
+    }))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.INSTRUCTIONS_GET_CONTENT, async (_event, filePath: string) => {
+    try {
+      const { readFileSync } = require('fs')
+      return readFileSync(filePath, 'utf-8')
+    } catch {
+      return null
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.INSTRUCTIONS_SAVE_CONTENT, async (_event, filePath: string, content: string) => {
+    try {
+      const fs = require('fs')
+      const path = require('path')
+      fs.mkdirSync(path.dirname(filePath), { recursive: true })
+      fs.writeFileSync(filePath, content, 'utf-8')
+      // Clear instruction cache so next agent call picks up the new content
+      getInstructionManager().clear()
+      return true
+    } catch (err) {
+      console.error('[IPC] Failed to save instruction file:', err)
+      return false
+    }
   })
 }

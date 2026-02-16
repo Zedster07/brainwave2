@@ -11,6 +11,7 @@ export type {
   LLMResponse,
   AgentModelConfig,
   ModelMode,
+  ConversationMessage,
 } from './types'
 export type { RetryOptions, CircuitState, CircuitBreakerOptions } from './retry'
 export {

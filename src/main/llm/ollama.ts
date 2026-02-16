@@ -51,8 +51,13 @@ export class OllamaProvider implements LLMAdapter {
       })
     }
 
-    // Build user message — multimodal content array if images are present
-    if (request.images && request.images.length > 0) {
+    // Multi-turn conversation: use full message history if provided
+    if (request.messages && request.messages.length > 0) {
+      for (const msg of request.messages) {
+        messages.push({ role: msg.role, content: msg.content })
+      }
+    } else if (request.images && request.images.length > 0) {
+      // Build user message — multimodal content array if images are present
       const contentParts: OpenAI.Chat.ChatCompletionContentPart[] = [
         { type: 'text', text: request.user },
         ...request.images.map((img) => ({
@@ -112,8 +117,13 @@ export class OllamaProvider implements LLMAdapter {
       })
     }
 
-    // Build user message — multimodal content array if images are present
-    if (request.images && request.images.length > 0) {
+    // Multi-turn conversation: use full message history if provided
+    if (request.messages && request.messages.length > 0) {
+      for (const msg of request.messages) {
+        messages.push({ role: msg.role, content: msg.content })
+      }
+    } else if (request.images && request.images.length > 0) {
+      // Build user message — multimodal content array if images are present
       const contentParts: OpenAI.Chat.ChatCompletionContentPart[] = [
         { type: 'text', text: request.user },
         ...request.images.map((img) => ({

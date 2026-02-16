@@ -8,11 +8,23 @@
 
 // ─── Core Interfaces ────────────────────────────────────────
 
+/** A single message in a multi-turn conversation */
+export interface ConversationMessage {
+  role: 'user' | 'assistant'
+  content: string
+}
+
 export interface LLMRequest {
   model?: string
   system: string
   user: string
   context?: string
+  /**
+   * Multi-turn conversation history — if provided, replaces the single
+   * `user` field with a full message array. The `user` field is ignored
+   * when `messages` is set.
+   */
+  messages?: ConversationMessage[]
   temperature?: number  // default 0.7
   maxTokens?: number    // omit = model's max output (unlimited)
   responseFormat?: 'text' | 'json'

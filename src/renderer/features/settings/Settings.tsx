@@ -1,15 +1,16 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2, Globe, ArrowRightLeft, FilePlus2, FolderTree, RotateCcw, Sun } from 'lucide-react'
+import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2, Globe, ArrowRightLeft, FilePlus2, FolderTree, RotateCcw, Sun, ShieldCheck } from 'lucide-react'
 import { ModelSelector } from '../../components/ModelSelector'
 import type { PluginInfoData, McpServerConfigInfo, McpServerStatusInfo } from '@shared/types'
 
-type SettingsTab = 'general' | 'models' | 'rules' | 'storage' | 'plugins' | 'tools' | 'daily-pulse'
+type SettingsTab = 'general' | 'models' | 'rules' | 'storage' | 'plugins' | 'tools' | 'daily-pulse' | 'approval'
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Key }[] = [
   { id: 'general', label: 'General', icon: SettingsIcon },
   { id: 'models', label: 'AI Models', icon: Cpu },
   { id: 'daily-pulse', label: 'Daily Pulse', icon: Sun },
   { id: 'rules', label: 'Rules Engine', icon: Shield },
+  { id: 'approval', label: 'Approval', icon: ShieldCheck },
   { id: 'storage', label: 'Storage', icon: Database },
   { id: 'plugins', label: 'Plugins', icon: Plug },
   { id: 'tools', label: 'Tools', icon: Wrench },
@@ -57,6 +58,7 @@ export function Settings() {
         {activeTab === 'storage' && <StorageSettings />}
         {activeTab === 'plugins' && <PluginSettings />}
         {activeTab === 'tools' && <ToolsSettings />}
+        {activeTab === 'approval' && <ApprovalSettings />}
       </div>
     </div>
   )
@@ -1990,6 +1992,130 @@ function ToolsSettings() {
             </div>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Toggle Switch ───
+
+function ToggleSwitch({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+        checked ? 'bg-accent' : 'bg-white/[0.12]'
+      }`}
+    >
+      <span
+        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+          checked ? 'translate-x-4' : 'translate-x-0.5'
+        }`}
+      />
+    </button>
+  )
+}
+
+// ─── Approval Settings ───
+
+type ApprovalMode = 'autonomous' | 'auto-approve-reads' | 'approve-all'
+
+interface ApprovalSettingsData {
+  mode: ApprovalMode
+  autoApproveReads: boolean
+  autoApproveWrites: boolean
+  autoApproveExecute: boolean
+  autoApproveMcp: boolean
+}
+
+const DEFAULT_APPROVAL: ApprovalSettingsData = {
+  mode: 'autonomous',
+  autoApproveReads: true,
+  autoApproveWrites: false,
+  autoApproveExecute: false,
+  autoApproveMcp: true,
+}
+
+const MODES: { value: ApprovalMode; label: string; description: string }[] = [
+  { value: 'autonomous', label: 'Autonomous', description: 'Execute all tools without asking — fastest, current default behavior' },
+  { value: 'auto-approve-reads', label: 'Auto-Approve Reads', description: 'Auto-approve read-only tools, ask for writes and shell commands' },
+  { value: 'approve-all', label: 'Approve All', description: 'Require approval for every tool call — most cautious' },
+]
+
+function ApprovalSettings() {
+  const [settings, setSettings] = useSetting<ApprovalSettingsData>('approval_settings', DEFAULT_APPROVAL)
+  const data = settings ?? DEFAULT_APPROVAL
+
+  const update = (patch: Partial<ApprovalSettingsData>) => {
+    setSettings({ ...data, ...patch })
+  }
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h3 className="text-sm font-semibold text-white mb-1">Tool Approval Mode</h3>
+        <p className="text-xs text-gray-500 mb-4">
+          Control when the agent asks for your permission before executing tools.
+        </p>
+
+        <div className="space-y-2">
+          {MODES.map((m) => (
+            <label
+              key={m.value}
+              className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                data.mode === m.value
+                  ? 'border-accent/40 bg-accent/5'
+                  : 'border-white/[0.06] hover:border-white/[0.12] bg-white/[0.02]'
+              }`}
+            >
+              <input
+                type="radio"
+                name="approval-mode"
+                value={m.value}
+                checked={data.mode === m.value}
+                onChange={() => update({ mode: m.value })}
+                className="mt-0.5 accent-accent"
+              />
+              <div>
+                <p className="text-sm text-white font-medium">{m.label}</p>
+                <p className="text-xs text-gray-500 mt-0.5">{m.description}</p>
+              </div>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {data.mode === 'auto-approve-reads' && (
+        <div>
+          <h3 className="text-sm font-semibold text-white mb-1">Category Overrides</h3>
+          <p className="text-xs text-gray-500 mb-4">
+            Fine-tune which categories are auto-approved in "Auto-Approve Reads" mode.
+          </p>
+          <div className="space-y-3">
+            <SettingRow label="File Reads" description="read_file, list_files, search_files, list_code_definition_names">
+              <ToggleSwitch checked={data.autoApproveReads} onChange={(v) => update({ autoApproveReads: v })} />
+            </SettingRow>
+            <SettingRow label="File Writes" description="write_to_file, replace_in_file, apply_patch, create_directory">
+              <ToggleSwitch checked={data.autoApproveWrites} onChange={(v) => update({ autoApproveWrites: v })} />
+            </SettingRow>
+            <SettingRow label="Shell Commands" description="shell_execute, execute_command">
+              <ToggleSwitch checked={data.autoApproveExecute} onChange={(v) => update({ autoApproveExecute: v })} />
+            </SettingRow>
+            <SettingRow label="MCP Tools" description="External tools from MCP servers">
+              <ToggleSwitch checked={data.autoApproveMcp} onChange={(v) => update({ autoApproveMcp: v })} />
+            </SettingRow>
+          </div>
+        </div>
+      )}
+
+      <div className="p-3 rounded-lg border border-white/[0.06] bg-white/[0.02]">
+        <p className="text-xs text-gray-500">
+          <strong className="text-gray-400">Note:</strong> Dangerous operations (file_delete, file_move) always require approval unless in Autonomous mode.
+          The agent will wait up to 5 minutes for your response before auto-rejecting.
+        </p>
       </div>
     </div>
   )

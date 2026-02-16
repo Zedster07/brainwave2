@@ -14,6 +14,7 @@
 import { randomUUID } from 'crypto'
 import os from 'os'
 import { BaseAgent, type AgentContext, type AgentResult, type SubTask, type TaskPlan } from './base-agent'
+import { buildSystemEnvironmentBlock } from './environment'
 import { PlannerAgent } from './planner'
 import { getEventBus, type AgentType } from './event-bus'
 import { getDatabase } from '../db/database'
@@ -29,6 +30,7 @@ import { getMcpRegistry } from '../mcp'
 import type { ImageAttachment } from '@shared/types'
 import { Blackboard } from './blackboard'
 import { createTaskToken, cancelTaskToken } from './cancellation'
+import { getModeRegistry, resolveToolGroups, modeAllowsMcp } from '../modes'
 
 // ─── Task Record (stored in DB) ────────────────────────────
 
@@ -44,6 +46,8 @@ export interface TaskRecord {
   completedAt?: number
   images?: ImageAttachment[]
   sessionId?: string
+  /** Mode slug — when set, bypasses triage and routes directly to the mode's agent */
+  mode?: string
 }
 
 // ─── Triage Classification ─────────────────────────────────
@@ -136,13 +140,11 @@ export class Orchestrator extends BaseAgent {
 
   protected getSystemPrompt(_context: AgentContext): string {
     const brainwaveHomeDir = this.getBrainwaveHomeDir()
-    const homeDir = os.homedir()
+    const systemEnv = buildSystemEnvironmentBlock(brainwaveHomeDir)
 
     return `You are the Orchestrator — the central intelligence of the Brainwave system.
 
-Your home directory (Brainwave Home): **${brainwaveHomeDir}**
-This is where you create projects, store files, and work by default.
-The user's OS home is ${homeDir} — that is NOT your home directory.
+${systemEnv}
 
 Your responsibilities:
 1. Analyze incoming tasks to understand their nature and complexity
@@ -416,7 +418,7 @@ FINAL CHECK — before outputting, verify:
   }
 
   /** Main entry point — submit a user task */
-  async submitTask(prompt: string, priority: 'low' | 'normal' | 'high' = 'normal', sessionId?: string, images?: ImageAttachment[]): Promise<TaskRecord> {
+  async submitTask(prompt: string, priority: 'low' | 'normal' | 'high' = 'normal', sessionId?: string, images?: ImageAttachment[], mode?: string): Promise<TaskRecord> {
     const taskId = randomUUID()
     const task: TaskRecord = {
       id: taskId,
@@ -426,6 +428,7 @@ FINAL CHECK — before outputting, verify:
       createdAt: Date.now(),
       images,
       sessionId,
+      mode,
     }
 
     this.activeTasks.set(taskId, task)
@@ -623,11 +626,30 @@ FINAL CHECK — before outputting, verify:
       this.db.run(`UPDATE tasks SET status = 'planning' WHERE id = ?`, task.id)
       this.bus.emitEvent('task:planning', { taskId: task.id })
 
-      const triageContext: AgentContext = { taskId: task.id, relevantMemories, conversationHistory, images: task.images, cancellationToken }
-      const triage = await this.triage(task.prompt, triageContext, relevantMemories, conversationHistory)
+      let triage: TriageResult
 
-      // 1b. Apply code-level routing guards (prompts are suggestions; guards are law)
-      this.applyTriageGuards(triage, task.prompt)
+      // Mode override — bypass LLM triage when user explicitly selected a mode
+      const modeConfig = task.mode ? getModeRegistry().get(task.mode) : undefined
+      if (modeConfig && modeConfig.agentType !== 'orchestrator') {
+        console.log(`[Orchestrator] Mode "${modeConfig.slug}" selected — skipping triage → direct/${modeConfig.agentType}`)
+        triage = {
+          lane: 'direct',
+          agent: modeConfig.agentType,
+          reasoning: `User selected mode "${modeConfig.name}" — routing directly to ${modeConfig.agentType}`,
+          toolingNeeds: {
+            webSearch: modeConfig.toolGroups.includes('search') || modeConfig.toolGroups.includes('browser'),
+            fileSystem: modeConfig.toolGroups.includes('read') || modeConfig.toolGroups.includes('edit'),
+            shellCommand: modeConfig.toolGroups.includes('command'),
+          },
+        }
+      } else {
+        const triageContext: AgentContext = { taskId: task.id, relevantMemories, conversationHistory, images: task.images, cancellationToken }
+        triage = await this.triage(task.prompt, triageContext, relevantMemories, conversationHistory)
+
+        // 1b. Apply code-level routing guards (prompts are suggestions; guards are law)
+        // Skip guards when mode is explicitly set — user's choice takes priority
+        this.applyTriageGuards(triage, task.prompt)
+      }
 
       // 2. Route based on triage lane
       console.log(`[Orchestrator] Routing task ${task.id} to lane: ${triage.lane}${triage.agent ? ` (agent: ${triage.agent})` : ''}`)
@@ -708,7 +730,7 @@ FINAL CHECK — before outputting, verify:
           ? `\n\nConversation so far:\n${conversationHistory.map((msg) => `${msg.role === 'user' ? 'User' : 'You'}: ${msg.content}`).join('\n')}`
           : ''
 
-        const response = await adapter.complete({
+        const streamRequest = {
           system: `You are Brainwave — a personal AI assistant with a warm, genuine, human personality.
 
 CRITICAL RULES:
@@ -734,8 +756,38 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
           temperature: 0.7,
           maxTokens: 1024,
           images: task.images?.map((img) => ({ data: img.data, mimeType: img.mimeType })),
+        }
+
+        // Stream the conversational response for real-time display
+        let accumulated = ''
+        let isFirst = true
+        try {
+          for await (const chunk of adapter.stream(streamRequest)) {
+            accumulated += chunk
+            this.bus.emitEvent('agent:stream-chunk', {
+              taskId: task.id,
+              agentType: 'orchestrator' as const,
+              chunk,
+              isFirst,
+            })
+            isFirst = false
+          }
+        } catch (streamErr: unknown) {
+          // If streaming fails but we got some content, use it
+          if (accumulated.length === 0) {
+            // Fallback to non-streaming complete()
+            console.warn('[Orchestrator] Stream failed, falling back to complete():', streamErr)
+            const fallbackResponse = await adapter.complete(streamRequest)
+            accumulated = fallbackResponse.content
+          }
+        }
+        // Emit stream end
+        this.bus.emitEvent('agent:stream-end', {
+          taskId: task.id,
+          agentType: 'orchestrator' as const,
+          fullText: accumulated,
         })
-        reply = response.content
+        reply = accumulated
       } catch (err) {
         console.warn('[Orchestrator] Memory-aware conversational reply failed, using triage reply:', err)
       }
@@ -1217,6 +1269,7 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
           blackboard: blackboardHandle,
           toolingNeeds: (task as any)._toolingNeeds,
           cancellationToken,
+          mode: task.mode,
         })
 
         results.set(subTask.id, result)

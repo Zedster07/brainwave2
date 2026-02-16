@@ -26,14 +26,24 @@ export class ReplicateProvider implements LLMAdapter {
 
     const model = request.model ?? this.defaultModel
 
+    // Build prompt — multi-turn messages or single user prompt
+    let prompt: string
+    if (request.messages && request.messages.length > 0) {
+      prompt = request.messages
+        .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+        .join('\n\n')
+    } else {
+      prompt = request.context
+        ? `<context>\n${request.context}\n</context>\n\n${request.user}`
+        : request.user
+    }
+
     try {
       const output = await withRetry(
         () => this.client.run(model as `${string}/${string}`, {
           input: {
             system_prompt: request.system,
-            prompt: request.context
-              ? `<context>\n${request.context}\n</context>\n\n${request.user}`
-              : request.user,
+            prompt,
             temperature: request.temperature ?? 0.7,
             ...(request.maxTokens ? { max_tokens: request.maxTokens } : {}),
           },
@@ -61,12 +71,22 @@ export class ReplicateProvider implements LLMAdapter {
   async *stream(request: LLMRequest): AsyncIterable<string> {
     const model = request.model ?? this.defaultModel
 
+    // Build prompt — multi-turn messages or single user prompt
+    let prompt: string
+    if (request.messages && request.messages.length > 0) {
+      prompt = request.messages
+        .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+        .join('\n\n')
+    } else {
+      prompt = request.context
+        ? `<context>\n${request.context}\n</context>\n\n${request.user}`
+        : request.user
+    }
+
     const stream = this.client.stream(model as `${string}/${string}`, {
       input: {
         system_prompt: request.system,
-        prompt: request.context
-          ? `<context>\n${request.context}\n</context>\n\n${request.user}`
-          : request.user,
+        prompt,
         temperature: request.temperature ?? 0.7,
         ...(request.maxTokens ? { max_tokens: request.maxTokens } : {}),
       },

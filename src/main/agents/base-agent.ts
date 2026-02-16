@@ -4,27 +4,50 @@
  * Provides the think → act → report cycle, confidence tracking,
  * LLM access, event bus integration, memory context, and optional
  * agentic tool loop (executeWithTools) that any agent can opt into.
+ *
+ * Uses XML tool protocol: the LLM embeds tool calls as XML blocks
+ * in its natural-language response, and signals completion with
+ * <attempt_completion>. Multi-turn conversation history is maintained
+ * via ConversationManager.
  */
 import os from 'os'
 import { randomUUID } from 'crypto'
 import { readFile as fsReadFile } from 'fs/promises'
 import { LLMFactory } from '../llm'
-import type { LLMRequest, LLMResponse, AgentModelConfig } from '../llm'
+import type { LLMRequest, LLMResponse, AgentModelConfig, ConversationMessage } from '../llm'
 import { getEventBus, type AgentType } from './event-bus'
 import { getDatabase } from '../db/database'
 import { getSoftEngine } from '../rules'
 import { getPromptRegistry } from '../prompts'
-import { countTokens, estimateRequestTokens, calculateBudget, formatTokenCount, type TokenBudget } from '../llm/token-counter'
-import { compactContext, estimateFileRegistryTokens, estimateActionLogTokens, buildCompactionNotice, type FileRegistryEntry, type ToolResultEntry } from './context-compactor'
+import { calculateBudget, formatTokenCount, countTokens } from '../llm/token-counter'
+import { type FileRegistryEntry, compactContext, buildCompactionNotice } from './context-compactor'
+import { FileContextTracker } from './file-context-tracker'
 import { calculateCost, formatCost } from '../llm/pricing'
 import { getMcpRegistry } from '../mcp'
 import { getLocalToolProvider } from '../tools'
-import { getAgentPermissions, filterToolsForAgent, canAgentCallTool, hasToolAccess } from '../tools/permissions'
+import { getAgentPermissions, filterToolsForAgent, filterToolsForMode, canAgentCallTool, hasToolAccess } from '../tools/permissions'
+import { getModeRegistry, type ModeConfig } from '../modes'
 import type { McpTool, McpToolCallResult } from '../mcp/types'
 import type { ImageAttachment } from '@shared/types'
 import type { BlackboardHandle } from './blackboard'
-import { canDelegate, canDelegateAtDepth, buildDelegationToolDescription } from './delegation'
+import { canDelegate, canDelegateAtDepth, buildDelegationToolDescription, buildParallelDelegationToolDescription, type DelegationContext } from './delegation'
 import { type CancellationToken, CancellationError } from './cancellation'
+import { requiresApproval, requestApproval, classifyToolSafety, type ApprovalSettings, getDefaultApprovalSettings } from '../tools/approval'
+import { parseAssistantMessage, xmlToolToLocalCall, registerToolName } from './xml-parser'
+import { StreamingXmlParser, type StreamingFeedResult } from './streaming-xml-parser'
+import { ConversationManager, formatToolResult, formatSystemNotice } from './conversation-manager'
+import { getCheckpointService, type CheckpointEntry } from './checkpoint-service'
+import { detectWorkspace, getEnvironmentDetails, getCompactEnvironmentDetails, buildSystemEnvironmentBlock } from './environment'
+import { getInstructionManager } from '../instructions'
+import {
+  ToolRepetitionDetector,
+  createMistakeCounters,
+  recordFileError,
+  buildDiffFallbackMessage,
+  GRACE_RETRY_THRESHOLD,
+  MAX_GENERAL_MISTAKES,
+  type MistakeCounters,
+} from './tool-repetition-detector'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -67,12 +90,20 @@ export interface AgentContext {
   blackboard?: BlackboardHandle
   /** Injected by AgentPool — allows agents to spawn sub-agents */
   delegateFn?: (agentType: AgentType, task: string) => Promise<AgentResult>
+  /** Injected by AgentPool — allows agents to spawn multiple sub-agents in parallel */
+  parallelDelegateFn?: (tasks: Array<{ agent: AgentType; task: string }>) => Promise<AgentResult[]>
   /** Current delegation depth (0 = top-level, incremented per delegation) */
   delegationDepth?: number
+  /** Context from parent agent (Boomerang pattern) */
+  delegationContext?: DelegationContext
   /** Tooling needs from triage — tells agents what capabilities to use */
   toolingNeeds?: ToolingNeeds
   /** Cancellation token — checked every iteration to support user abort */
   cancellationToken?: CancellationToken
+  /** Resolved working directory for this task (defaults to detectWorkspace() result) */
+  workDir?: string
+  /** Active mode slug — when set, tool filtering uses mode-based rules instead of agent defaults */
+  mode?: string
 }
 
 export interface AgentResult {
@@ -278,6 +309,23 @@ export abstract class BaseAgent {
   }
 
   /**
+   * Get approval settings — loaded from SQLite settings or defaults.
+   * The user configures this in Settings → Approval tab.
+   */
+  protected getApprovalSettings(): ApprovalSettings {
+    try {
+      const db = getDatabase()
+      const row = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'approval_settings')
+      if (row?.value) {
+        return { ...getDefaultApprovalSettings(), ...JSON.parse(row.value) }
+      }
+    } catch {
+      // Fall through to defaults
+    }
+    return getDefaultApprovalSettings()
+  }
+
+  /**
    * Detect narration — when the LLM outputs prose instead of a JSON tool call.
    * Returns true if the content looks like natural language explanation rather
    * than a JSON object. This is used by the anti-narration system to redirect
@@ -345,6 +393,194 @@ export abstract class BaseAgent {
     const response = await adapter.complete(request)
 
     console.log(`[${this.type}] think() ← ${response.tokensIn}+${response.tokensOut} tokens | finish=${response.finishReason} | response=${response.content.slice(0, 200)}...`)
+
+    return response
+  }
+
+  /**
+   * Think with multi-turn conversation history.
+   *
+   * Instead of a single user prompt, sends the full conversation array
+   * (managed by ConversationManager) via the `messages` field in LLMRequest.
+   * The system prompt and memory context are still set normally.
+   *
+   * This is the primary method used by the agentic tool loop (executeWithTools).
+   * The LLM sees the entire conversation history and responds naturally with
+   * prose + XML tool blocks.
+   */
+  protected async thinkWithHistory(
+    messages: ConversationMessage[],
+    context: AgentContext,
+    overrides?: { temperature?: number; maxTokens?: number },
+    /** Pre-loaded custom instruction block (Phase 12) — injected between system prompt and constraints */
+    instructionBlock?: string
+  ): Promise<LLMResponse> {
+    const adapter = LLMFactory.getForAgent(this.type)
+    const modelConfig = LLMFactory.getAgentConfig(this.type)
+
+    const systemPrompt = this.getSystemPrompt(context)
+
+    // Register/update prompt in the registry for version tracking
+    const registry = getPromptRegistry()
+    const promptName = `${this.type}-system`
+    if (!registry.has(promptName)) {
+      registry.register(promptName, 'v1', () => systemPrompt)
+    }
+    this.lastPromptVersion = registry.getVersion(promptName)?.version
+
+    // Inject soft rules as constraints
+    const constraintBlock = getSoftEngine().buildConstraintBlock(this.type)
+
+    // Build memory context string
+    const memoryContext = context.relevantMemories?.length
+      ? `\n\nRELEVANT MEMORIES:\n${context.relevantMemories.join('\n---\n')}`
+      : ''
+
+    const request: LLMRequest = {
+      model: modelConfig?.model,
+      system: systemPrompt + (instructionBlock ?? '') + constraintBlock,
+      user: '', // ignored when messages is set
+      messages,
+      context: memoryContext || undefined,
+      temperature: overrides?.temperature ?? modelConfig?.temperature ?? 0.7,
+      maxTokens: overrides?.maxTokens ?? modelConfig?.maxTokens,
+      // No responseFormat — let the model respond naturally (prose + XML tool blocks)
+      signal: context.cancellationToken?.signal,
+    }
+
+    const msgCount = messages.length
+    const lastMsg = messages[msgCount - 1]
+    const lastPreview = lastMsg ? `${lastMsg.role}: ${lastMsg.content.slice(0, 100)}...` : '(empty)'
+    console.log(`[${this.type}] thinkWithHistory() → model=${request.model} | msgs=${msgCount} | last=${lastPreview}`)
+
+    const response = await adapter.complete(request)
+
+    console.log(`[${this.type}] thinkWithHistory() ← ${response.tokensIn}+${response.tokensOut} tokens | finish=${response.finishReason} | response=${response.content.slice(0, 200)}...`)
+
+    return response
+  }
+
+  /**
+   * Stream with multi-turn conversation history.
+   *
+   * Like thinkWithHistory() but uses `adapter.stream()` instead of `complete()`.
+   * Yields tokens as they arrive while accumulating the full response.
+   * Returns an LLMResponse-compatible object at the end with the full content
+   * and estimated token counts.
+   *
+   * The caller (executeWithTools) uses this to:
+   * 1. Feed chunks through StreamingXmlParser for live tool detection
+   * 2. Emit `agent:stream-chunk` events so the frontend can render live text
+   * 3. Get the final full response for conversation history
+   */
+  protected async streamWithHistory(
+    messages: ConversationMessage[],
+    context: AgentContext,
+    overrides?: { temperature?: number; maxTokens?: number },
+    onChunk?: (chunk: string, accumulated: string) => void,
+    /** Pre-loaded custom instruction block (Phase 12) — injected between system prompt and constraints */
+    instructionBlock?: string
+  ): Promise<LLMResponse> {
+    const adapter = LLMFactory.getForAgent(this.type)
+    const modelConfig = LLMFactory.getAgentConfig(this.type)
+
+    const systemPrompt = this.getSystemPrompt(context)
+
+    // Register/update prompt in the registry for version tracking
+    const registry = getPromptRegistry()
+    const promptName = `${this.type}-system`
+    if (!registry.has(promptName)) {
+      registry.register(promptName, 'v1', () => systemPrompt)
+    }
+    this.lastPromptVersion = registry.getVersion(promptName)?.version
+
+    // Inject soft rules as constraints
+    const constraintBlock = getSoftEngine().buildConstraintBlock(this.type)
+
+    // Build memory context string
+    const memoryContext = context.relevantMemories?.length
+      ? `\n\nRELEVANT MEMORIES:\n${context.relevantMemories.join('\n---\n')}`
+      : ''
+
+    const request: LLMRequest = {
+      model: modelConfig?.model,
+      system: systemPrompt + (instructionBlock ?? '') + constraintBlock,
+      user: '', // ignored when messages is set
+      messages,
+      context: memoryContext || undefined,
+      temperature: overrides?.temperature ?? modelConfig?.temperature ?? 0.7,
+      maxTokens: overrides?.maxTokens ?? modelConfig?.maxTokens,
+      signal: context.cancellationToken?.signal,
+    }
+
+    const msgCount = messages.length
+    const lastMsg = messages[msgCount - 1]
+    const lastPreview = lastMsg ? `${lastMsg.role}: ${lastMsg.content.slice(0, 100)}...` : '(empty)'
+    console.log(`[${this.type}] streamWithHistory() → model=${request.model} | msgs=${msgCount} | last=${lastPreview}`)
+
+    let accumulated = ''
+    let isFirst = true
+
+    // Retry with exponential backoff on transient stream failures
+    const MAX_STREAM_RETRIES = 3
+    for (let streamAttempt = 0; streamAttempt <= MAX_STREAM_RETRIES; streamAttempt++) {
+      try {
+        for await (const chunk of adapter.stream(request)) {
+          accumulated += chunk
+          if (onChunk) onChunk(chunk, accumulated)
+
+          // Emit stream chunk event for the IPC → renderer pipeline
+          this.bus.emitEvent('agent:stream-chunk', {
+            taskId: context.taskId,
+            agentType: this.type,
+            chunk,
+            isFirst,
+          })
+          isFirst = false
+        }
+        break // success — exit retry loop
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase()
+        const isRetryable = ['rate_limit', 'rate limit', '429', 'timeout', 'etimedout', 'econnreset',
+          'econnrefused', 'socket hang up', '502', '503', '504', 'overloaded', 'capacity'].some(p => errMsg.includes(p))
+
+        if (accumulated.length > 0) {
+          // Got partial content — use it rather than retrying
+          console.warn(`[${this.type}] streamWithHistory() stream error after ${accumulated.length} chars, using partial content:`, err)
+          break
+        } else if (isRetryable && streamAttempt < MAX_STREAM_RETRIES) {
+          const delay = Math.min(1000 * Math.pow(2, streamAttempt), 30000)
+          console.warn(`[${this.type}] streamWithHistory() retryable error (attempt ${streamAttempt + 1}/${MAX_STREAM_RETRIES}), retrying in ${delay}ms:`, err)
+          await new Promise(resolve => setTimeout(resolve, delay))
+          isFirst = true
+          continue
+        } else {
+          throw err
+        }
+      }
+    }
+
+    // Emit stream end event
+    this.bus.emitEvent('agent:stream-end', {
+      taskId: context.taskId,
+      agentType: this.type,
+      fullText: accumulated,
+    })
+
+    // Estimate token counts post-hoc (stream doesn't return usage metadata)
+    const systemTokens = countTokens(request.system + (request.context ?? ''))
+    const messagesTokens = messages.reduce((sum, m) => sum + countTokens(m.content), 0)
+    const outputTokens = countTokens(accumulated)
+
+    const response: LLMResponse = {
+      content: accumulated,
+      model: request.model ?? modelConfig?.model ?? 'unknown',
+      tokensIn: systemTokens + messagesTokens,
+      tokensOut: outputTokens,
+      finishReason: 'stop',
+    }
+
+    console.log(`[${this.type}] streamWithHistory() ← ~${response.tokensIn}+${response.tokensOut} tokens (estimated) | streamed ${accumulated.length} chars`)
 
     return response
   }
@@ -458,15 +694,26 @@ export abstract class BaseAgent {
    * Agents that want tool access should call this from getSystemPrompt()
    * and append the result. Executor has its own elaborate version.
    */
-  protected buildToolSection(): string {
+  protected buildToolSection(mode?: string): string {
     if (!hasToolAccess(this.type)) return ''
 
     const registry = getMcpRegistry()
     const localProvider = getLocalToolProvider()
     const allTools = [...localProvider.getTools(), ...registry.getAllTools()]
-    const allowed = filterToolsForAgent(this.type, allTools)
+
+    // When a mode is active, use mode-based filtering; otherwise fall back to agent type filtering
+    const modeConfig = mode ? getModeRegistry().get(mode) : undefined
+    const allowed = modeConfig
+      ? filterToolsForMode(modeConfig, allTools)
+      : filterToolsForAgent(this.type, allTools)
 
     if (allowed.length === 0) return ''
+
+    // Register MCP tool names with the XML parser for runtime recognition
+    for (const t of allowed) {
+      const shortName = t.key.split('::').pop()
+      if (shortName) registerToolName(shortName)
+    }
 
     const lines = allowed.map((t) => {
       const schema = t.inputSchema as { properties?: Record<string, unknown> }
@@ -477,11 +724,19 @@ export abstract class BaseAgent {
     const permConfig = getAgentPermissions(this.type)
     const maxSteps = permConfig.maxSteps ?? 5
 
-    // Include delegation tool if this agent can delegate
+    // Include delegation tools if this agent can delegate
     const delegationDesc = buildDelegationToolDescription(this.type)
-    const delegationSection = delegationDesc
-      ? `\n\n## Agent Delegation\nYou can delegate sub-tasks to specialist agents:\n${delegationDesc}\n\nCall it like any other tool:\n{ "tool": "delegate_to_agent", "args": { "agent": "<type>", "task": "<description>" } }`
-      : ''
+    const parallelDesc = buildParallelDelegationToolDescription(this.type)
+    let delegationSection = ''
+    if (delegationDesc || parallelDesc) {
+      delegationSection = '\n\n## Agent Delegation\nYou can delegate sub-tasks to specialist agents:\n'
+      if (delegationDesc) {
+        delegationSection += `${delegationDesc}\n\nCall it like any other tool:\n<delegate_to_agent>\n<agent>agent_type</agent>\n<task>description of the sub-task</task>\n</delegate_to_agent>\n`
+      }
+      if (parallelDesc) {
+        delegationSection += `\n${parallelDesc}\n\nFor parallel tasks, provide a JSON array:\n<use_subagents>\n<tasks>\n[\n  { "agent": "researcher", "task": "Research OAuth2 best practices" },\n  { "agent": "coder", "task": "Implement the login component" }\n]\n</tasks>\n</use_subagents>\n\nUse use_subagents when tasks are independent and can run concurrently.\nUse delegate_to_agent when you need one result before proceeding.`
+      }
+    }
 
     return `
 
@@ -489,31 +744,80 @@ export abstract class BaseAgent {
 ${lines.join('\n')}
 
 ## Tool Call Protocol
-To call a tool, respond with ONLY a JSON object:
-{ "tool": "<tool_key>", "args": { ... } }
+To call a tool, include an XML tool block in your response:
 
-- tool_key format is "serverId::toolName" (e.g. "local::file_read", "local::web_search", or "abc123::search")
-- args must match the tool's input schema
-- You can call ONE tool per response — NEVER output multiple tool calls
-- Your entire response MUST be a single JSON object — NO text before or after it
-- After seeing the tool result, decide: call another tool OR provide your final answer
-- You have a maximum of ${maxSteps} tool calls per task
+<tool_name>
+<param1>value1</param1>
+<param2>value2</param2>
+</tool_name>
+
+### Examples
+
+Reading a file:
+<read_file>
+<path>/absolute/path/to/file.ts</path>
+</read_file>
+
+Writing a file:
+<write_to_file>
+<path>/absolute/path/to/file.ts</path>
+<content>
+file content here
+</content>
+</write_to_file>
+
+Editing a file (search and replace):
+<replace_in_file>
+<path>/absolute/path/to/file.ts</path>
+<diff>
+<<<<<<< SEARCH
+old code to find
+=======
+new code to replace with
+>>>>>>> REPLACE
+</diff>
+</replace_in_file>
+
+Running a command:
+<execute_command>
+<command>npm run build</command>
+</execute_command>
+
+### Rules
+- tool_key format is "serverId::toolName" — use the EXACT key from the tool list above
+- You can include ONE tool call per response for write/execute operations
+- You MAY include MULTIPLE read-only tool calls (file_read, directory_list, search_files) in a single response — they run in parallel
+- You MAY include reasoning/explanation text before the tool block
+- After seeing the tool result, decide: call another tool OR signal completion
+- ${maxSteps} tool calls is a soft limit. For complex tasks you may use more, but aim for efficiency
 - For file paths, always use absolute paths
 ${delegationSection}
 
-When the task is FULLY complete and you have the final answer, respond with:
-{ "done": true, "summary": "your final answer here" }
+## Completion Signal
+When the task is FULLY complete, signal completion:
 
-Do NOT respond with plain text. You MUST always output a JSON object.`
+<attempt_completion>
+<result>
+Your final answer / summary here
+</result>
+</attempt_completion>
+
+Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
   }
 
   /**
-   * Execute a task using the agentic tool loop.
+   * Execute a task using the agentic tool loop (XML protocol + multi-turn conversation).
    *
-   * This is the shared multi-step loop: think → parse tool call → execute → repeat.
-   * Any agent can call this from their execute() override when they need tool access.
-   * Tool access is gated by the permission system — agents can only call tools
-   * they're allowed to use.
+   * Architecture:
+   * 1. Build initial task prompt as first user message
+   * 2. Send conversation history via thinkWithHistory()
+   * 3. Parse assistant response with XML parser (tool blocks + prose + completion)
+   * 4. Execute tool calls, add results as user messages
+   * 5. Repeat until <attempt_completion> or limits reached
+   *
+   * The LLM responds naturally with prose reasoning + XML tool blocks.
+   * No anti-narration or JSON format enforcement is needed.
+   * Tool access is gated by the permission system.
    *
    * If no tools are available (tier=none or no tools discovered), falls back
    * to a single think() call and returns the text result.
@@ -529,8 +833,12 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
     const localProvider = getLocalToolProvider()
 
     // Get only the tools this agent is allowed to use
+    // When a mode is active, use mode-based filtering; otherwise fall back to agent type
     const allTools = [...localProvider.getTools(), ...registry.getAllTools()]
-    const allowedTools = filterToolsForAgent(this.type, allTools)
+    const modeConfig = context.mode ? getModeRegistry().get(context.mode) : undefined
+    const allowedTools = modeConfig
+      ? filterToolsForMode(modeConfig, allTools)
+      : filterToolsForAgent(this.type, allTools)
 
     // If no tools available, fall back to single LLM call
     if (allowedTools.length === 0) {
@@ -560,70 +868,56 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
     const artifacts: Artifact[] = []
     const toolResults: Array<{ tool: string; success: boolean; content: string }> = []
 
-    // No hard step cap — agents run until done, timed out, or stuck in a loop
+    // Loop detection & safety constants
     const TIMEOUT_MS = permConfig.timeoutMs ?? 5 * 60 * 1000
-    const MAX_LOOP_REPEATS = 3 // same tool+args repeated this many times = loop
-    const MAX_TOOL_FREQUENCY = 8 // same tool name (any args) called this many times = stuck
-    const MAX_CONSECUTIVE_SAME = 5 // same tool called N times in a row (different args) = stuck
-    const ABSOLUTE_MAX_STEPS = 25 // safety valve — reduced from 50, should never be reached
-    let corrections = 0
-    const MAX_CORRECTIONS = 2
+    const MAX_LOOP_REPEATS = 3
+    const MAX_TOOL_FREQUENCY = 8
+    const MAX_CONSECUTIVE_SAME = 5
+    const ABSOLUTE_MAX_STEPS = 100
+    const SOFT_WARNING_STEP = 50
     const toolCallHistory: Array<{ tool: string; argsHash: string }> = []
-    const toolFrequency: Map<string, number> = new Map() // track per-tool call count
-    let stuckWarningGiven = false // soft-loop warning before hard break
-    let compactionCount = 0 // how many times we've compacted this run
-    let compactionNotice = '' // injected after compaction
+    const toolFrequency: Map<string, number> = new Map()
+    let stuckWarningGiven = false
 
-    // ── File registry: tracks files we've read for smart dedup & structured prompts ──
-    let fileRegistry = new Map<string, FileRegistryEntry>()
+    // Phase 6: Enhanced error recovery
+    const repetitionDetector = new ToolRepetitionDetector(3)
+    const mistakes: MistakeCounters = createMistakeCounters()
+
+    // File registry for smart dedup & content tracking
+    const fileRegistry = new Map<string, FileRegistryEntry>()
     const normPath = (p: string) => p.replace(/\\/g, '/').toLowerCase()
     const getReadPath = (args: Record<string, unknown>): string | null =>
       (args.path as string) ?? (args.file_path as string) ?? null
 
-    /**
-     * Build a structured history block that separates FILE CONTENTS from ACTION LOG.
-     * This makes it much easier for the model to find and reference file content
-     * instead of hunting through a linear step dump.
-     */
-    const buildHistoryBlock = (): string => {
-      let block = ''
+    // File context tracker for staleness detection & environment reporting
+    const fileTracker = new FileContextTracker()
+    let condensationPending = false // flag set when condense tool is called
 
-      // FILES section — deduplicated file contents in one clear place
-      if (fileRegistry.size > 0) {
-        block += `== FILES IN MEMORY (${fileRegistry.size} file${fileRegistry.size > 1 ? 's' : ''}) — do NOT re-read ==\n`
-        for (const [filePath, data] of fileRegistry) {
-          block += `\n--- ${filePath} (step ${data.step}) ---\n${data.content}\n`
-        }
-        block += '\n'
-      }
+    // Checkpoint service for undo/rollback (Phase 9)
+    const checkpointService = getCheckpointService()
+    // Resolve working directory: explicit context > detectWorkspace() > cwd
+    const workDir = context.workDir
+      ?? detectWorkspace(task.description, context.parentTask, this.getBrainwaveHomeDir())
 
-      // Compact action log — file reads reference FILES section, other results show preview
-      block += `== ACTION LOG (${toolResults.length} actions) ==\n`
-      for (let i = 0; i < toolResults.length; i++) {
-        const t = toolResults[i]
-        const tName = t.tool.split('::').pop() ?? t.tool
-        if (['file_read', 'read_file'].includes(tName) && t.success && !t.content.startsWith('ALREADY')) {
-          block += `  ${i + 1}. ${tName} → OK (see FILES section above)\n`
-        } else if (t.content.startsWith('ALREADY READ')) {
-          block += `  ${i + 1}. ${tName} → SKIPPED (duplicate)\n`
-        } else if (tName === 'shell_execute' || tName === 'file_edit' || tName === 'file_write' || tName === 'file_create') {
-          const preview = t.content.split('\n')[0].slice(0, 200)
-          block += `  ${i + 1}. ${tName} → ${t.success ? 'OK' : 'FAIL'}: ${preview}\n`
-        } else {
-          const preview = t.content.split('\n').slice(0, 3).join(' ').slice(0, 200)
-          block += `  ${i + 1}. ${tName} → ${t.success ? 'OK' : 'FAIL'}: ${preview}\n`
-        }
-      }
+    // .brainwaveignore — load ignore patterns for file access blocking (Phase 12)
+    const instructionMgr = getInstructionManager()
+    const ignoreMatcher = await instructionMgr.getIgnoreMatcher(workDir)
 
-      return block
-    }
+    // Custom instructions — load once for the entire loop (Phase 12)
+    const customInstructionBlock = await instructionMgr.buildBlock({
+      workDir,
+      mode: context.mode,
+    })
 
+    // Initialize conversation manager with model's context budget
     const contextLimit = calculateBudget(model, 0).contextLimit
+    const conversation = new ConversationManager(contextLimit, 8_000)
+
     console.log(`[${this.type}] executeWithTools | taskId=${context.taskId} | model=${model} | tools=${allowedTools.length} | timeout=${Math.round(TIMEOUT_MS / 1000)}s | contextLimit=${formatTokenCount(contextLimit)}`)
     console.log(`[${this.type}] Task: "${task.description.slice(0, 200)}"`)
 
     try {
-      // Build context from prior subtask results
+      // ── Build initial context ──
       let priorContext = ''
       if (context.siblingResults && context.siblingResults.size > 0) {
         const priorLines: string[] = []
@@ -644,10 +938,8 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         ? `\nORIGINAL USER REQUEST: "${context.parentTask}"\n`
         : ''
 
-      // Inject recent conversation history so agents can resolve references like "try again"
       let historyContext = ''
       if (context.conversationHistory && context.conversationHistory.length > 0) {
-        // Keep last 6 messages (3 exchanges) — pass full content since we're well within context limits
         const recent = context.conversationHistory.slice(-6)
         const lines = recent.map((msg) =>
           `${msg.role === 'user' ? 'User' : 'Brainwave'}: ${msg.content}`
@@ -655,7 +947,6 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         historyContext = `\n\nRECENT CONVERSATION (use this to understand references like "try again", "do that", etc.):\n${lines}\n`
       }
 
-      // Inject shared blackboard context from other agents
       let blackboardContext = ''
       if (context.blackboard) {
         blackboardContext = context.blackboard.board.formatForPrompt(
@@ -665,85 +956,33 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         )
       }
 
-      let currentPrompt =
-        `TASK: ${task.description}\n${parentContext}${historyContext}${priorContext}${blackboardContext}\n` +
-        `Respond with a JSON tool call to begin working on this task. ` +
-        `For file/directory operations, ALWAYS use local:: tools (e.g. local::file_read, local::file_write, local::create_directory). ` +
-        `Do NOT respond with text. You MUST output a JSON object.`
+      // ── Planning guidance ──
+      // Phase 13: Removed auto-call to sequential_thinking MCP tool.
+      // The model is encouraged to reason in prose before tool calls instead.
+      // If the model wants to plan, it can call sequential_thinking itself.
 
-      // ── Step 0: Forced sequential-thinking planning phase ──
-      // Find the sequential_thinking MCP tool and call it automatically
-      // so every agent "thinks before acting"
-      let planningContext = ''
-      const seqThinkTool = registry.getAllTools().find(
-        t => t.name === 'sequential_thinking' || t.name === 'sequentialthinking'
-      )
-      if (seqThinkTool) {
-        try {
-          console.log(`[${this.type}] Step 0: Auto-calling sequential_thinking for task planning`)
-          this.bus.emitEvent('agent:acting', {
-            agentType: this.type,
-            taskId: context.taskId,
-            action: 'Planning with sequential thinking...',
-          })
+      // ── Build initial user message with environment details ──
+      const envDetails = await getEnvironmentDetails({
+        workDir,
+        brainwaveHomeDir: this.getBrainwaveHomeDir(),
+        contextLimitTokens: contextLimit,
+        fileTracker,
+        includeTree: true,
+        treeMaxDepth: 3,
+        treeMaxEntries: 200,
+      })
 
-          const planThought =
-            `Analyze this task and create a step-by-step plan before taking action.\n\n` +
-            `Task: ${task.description}\n\n` +
-            (parentContext ? `Original user request context: ${context.parentTask}\n\n` : '') +
-            (context.toolingNeeds?.webSearch || context.toolingNeeds?.httpRequest
-              ? `This is a SEARCH/RESEARCH task. You MUST coordinate two tool sources:\n` +
-                `- brave_web_search: Use for DISCOVERY (finding URLs, getting search result summaries)\n` +
-                `- Bright Data MCP (scrape_as_markdown, scrape_batch): Use for EXTRACTION (getting full page content from URLs)\n` +
-                `Plan a workflow that uses brave_web_search first to find the best URLs, then Bright Data to extract detailed content.\n` +
-                `NEVER call the same search tool more than 4-5 times. If results are poor, STOP and report what you found.\n\n`
-              : '') +
-            `Consider:\n` +
-            `1. What is the user actually asking for?\n` +
-            `2. What tools would be most effective?\n` +
-            `3. What is the most efficient sequence of tool calls?\n` +
-            `4. What could go wrong and how to handle it?\n` +
-            `5. When should I stop and report results?`
+      const initialMessage =
+        `TASK: ${task.description}\n${parentContext}${historyContext}${priorContext}${blackboardContext}\n${envDetails}\n` +
+        `Begin working on this task. Use the XML tool protocol to call tools.\n` +
+        `For file/directory operations, use local:: tools (e.g. local::file_read, local::file_write, local::create_directory).\n` +
+        `When done, use <attempt_completion> to signal completion with your final answer.`
 
-          const thinkResult = await registry.callTool(seqThinkTool.key, {
-            thought: planThought,
-            nextThoughtNeeded: false,
-            thoughtNumber: 1,
-            totalThoughts: 1,
-          })
-
-          if (thinkResult.success && thinkResult.content) {
-            planningContext = `\n\n== PLANNING ANALYSIS (from sequential thinking) ==\n${thinkResult.content}\n`
-            console.log(`[${this.type}] Step 0: sequential_thinking completed (${thinkResult.duration}ms)`)
-          }
-
-          this.bus.emitEvent('agent:tool-result', {
-            agentType: this.type,
-            taskId: context.taskId,
-            tool: seqThinkTool.key,
-            success: thinkResult.success,
-            summary: 'Task planning completed',
-            step: 0,
-          })
-        } catch (err) {
-          console.warn(`[${this.type}] Step 0: sequential_thinking failed, continuing without planning:`, err)
-        }
-      } else {
-        console.warn(`[${this.type}] sequential_thinking MCP tool not found — skipping planning phase`)
-      }
-
-      // Inject planning context into the initial prompt
-      if (planningContext) {
-        currentPrompt =
-          `TASK: ${task.description}\n${parentContext}${historyContext}${priorContext}${blackboardContext}${planningContext}\n` +
-          `Use the planning analysis above to guide your approach. ` +
-          `For file/directory operations, ALWAYS use local:: tools (e.g. local::file_read, local::file_write, local::create_directory). ` +
-          `Respond with a JSON tool call to begin working on this task. ` +
-          `Do NOT respond with text. You MUST output a JSON object.`
-      }
+      conversation.addMessage('user', initialMessage)
 
       let step = 0
       let loopDetected = false
+
       while (step < ABSOLUTE_MAX_STEPS) {
         step++
 
@@ -767,7 +1006,7 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
           )
         }
 
-        // Check overall timeout
+        // ── Timeout check ──
         if (Date.now() - startTime > TIMEOUT_MS) {
           const anySuccess = toolResults.some((t) => t.success)
           this.bus.emitEvent('agent:error', {
@@ -793,91 +1032,83 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
           action: `Step ${step}: ${step === 1 ? 'Analyzing task...' : 'Deciding next action...'}`,
         })
 
-        // ── Token budget check & auto-compaction ──
-        if (step > 1 && fileRegistry.size > 0) {
-          const promptEstimate = countTokens(currentPrompt) + countTokens(this.getSystemPrompt(context))
-          const budget = calculateBudget(model, promptEstimate)
+        // ── Handle voluntary condensation (condense tool was called) ──
+        if (condensationPending) {
+          condensationPending = false
+          console.log(`[${this.type}] Step ${step}: Condense tool triggered — performing LLM condensation`)
+          await this.performCondensation(conversation, context, fileRegistry, fileTracker)
+        }
 
-          if (budget.shouldCompact && compactionCount < 3) {
-            const tokensToFree = Math.ceil(budget.currentUsage * 0.3) // try to free 30%
-            console.log(
-              `[${this.type}] Step ${step}: Context at ${(budget.usageRatio * 100).toFixed(0)}% (${formatTokenCount(budget.currentUsage)}/${formatTokenCount(budget.inputBudget)}) — compacting...`
-            )
+        // ── Token budget check & proactive condensation ──
+        if (step > 1 && conversation.isNearBudget(0.75)) {
+          const usagePct = (conversation.getUsageRatio() * 100).toFixed(0)
+          console.log(
+            `[${this.type}] Step ${step}: Conversation at ${usagePct}% of budget (${formatTokenCount(conversation.getTokenCount())}) — triggering LLM condensation`
+          )
+          await this.performCondensation(conversation, context, fileRegistry, fileTracker)
 
-            const compactionResult = compactContext(
-              fileRegistry,
-              toolResults,
-              tokensToFree,
-              step
-            )
-
+          // If still over budget after LLM condensation, apply heuristic compaction on file registry
+          if (conversation.isNearBudget(0.90)) {
+            const targetFree = Math.floor(conversation.getTokenCount() * 0.25)
+            const compactionResult = compactContext(fileRegistry, toolResults, targetFree, step)
             if (compactionResult.tokensFreed > 0) {
-              fileRegistry = compactionResult.fileRegistry
-              toolResults.length = 0
-              toolResults.push(...compactionResult.toolResults)
-              compactionCount++
-              compactionNotice = buildCompactionNotice(compactionResult)
-
-              console.log(
-                `[${this.type}] Compaction #${compactionCount}: freed ${formatTokenCount(compactionResult.tokensFreed)} tokens (level ${compactionResult.levelApplied})`
-              )
-
-              this.bus.emitEvent('agent:acting', {
-                agentType: this.type,
-                taskId: context.taskId,
-                action: `Context compacted: freed ${formatTokenCount(compactionResult.tokensFreed)} tokens`,
-              })
-
-              // Rebuild prompt with compacted context
-              let latestBlackboard = ''
-              if (context.blackboard) {
-                latestBlackboard = context.blackboard.board.formatForPrompt(
-                  context.blackboard.planId, this.type, context.taskId
-                )
+              // Update file registry with compacted version
+              fileRegistry.clear()
+              for (const [k, v] of compactionResult.fileRegistry) {
+                fileRegistry.set(k, v)
               }
-
-              currentPrompt =
-                `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
-                buildHistoryBlock() + '\n' +
-                compactionNotice +
-                (latestBlackboard ? `== SHARED CONTEXT FROM OTHER AGENTS ==${latestBlackboard}\n\n` : '') +
-                `== INSTRUCTIONS ==\n` +
-                `Continue working until the task is complete.\n` +
-                `CRITICAL RULES:\n` +
-                `- All files you've read are in the FILES IN MEMORY section above. Reference them DIRECTLY — do NOT re-read.\n` +
-                `- For file/directory operations, ALWAYS use local:: tools.\n` +
-                `- DO NOT ask the user for permission. Just DO IT.\n`
+              conversation.addSystemNotice(buildCompactionNotice(compactionResult))
+              console.log(`[${this.type}] Heuristic file compaction: ${compactionResult.summary}`)
             }
-          } else if (step % 5 === 0) {
-            // Periodic budget logging (every 5 steps)
-            console.log(
-              `[${this.type}] Step ${step}: Token budget: ${formatTokenCount(budget.currentUsage)}/${formatTokenCount(budget.inputBudget)} (${(budget.usageRatio * 100).toFixed(0)}%) | files=${fileRegistry.size} | actions=${toolResults.length}`
-            )
           }
         }
 
-        const response = await this.think(currentPrompt, context, {
-          temperature: modelConfig?.temperature ?? 0.1,
-          maxTokens: modelConfig?.maxTokens,
-          responseFormat: 'json',
-        })
+        // ── LLM call with streaming conversation history ──
+        // Uses adapter.stream() instead of adapter.complete() so tokens are
+        // emitted to the frontend in real-time via agent:stream-chunk events.
+        const response = await this.streamWithHistory(
+          conversation.getMessages(),
+          context,
+          {
+            temperature: modelConfig?.temperature ?? 0.1,
+            maxTokens: modelConfig?.maxTokens,
+          },
+          undefined, // onChunk — handled internally by streamWithHistory via bus events
+          customInstructionBlock || undefined,
+        )
 
         totalTokensIn += response.tokensIn
         totalTokensOut += response.tokensOut
         model = response.model
 
-        // Check for done signal
-        const doneSignal = this.parseDoneSignal(response.content)
-        if (doneSignal) {
-          console.log(`[${this.type}] Done signal at step ${step}: "${doneSignal.slice(0, 200)}..."`)
+        // Add assistant response to conversation
+        conversation.addMessage('assistant', response.content)
+
+        // ── Parse response with XML parser ──
+        const parsed = parseAssistantMessage(response.content)
+
+        // Extract reasoning text for UI display
+        if (parsed.textContent) {
+          const reasoning = parsed.textContent.slice(0, 200).replace(/\n+/g, ' ').trim()
+          if (reasoning.length > 10) {
+            this.bus.emitEvent('agent:acting', {
+              agentType: this.type,
+              taskId: context.taskId,
+              action: `💭 ${reasoning.slice(0, 150)}`,
+            })
+          }
+        }
+
+        // ── Check for completion signal ──
+        if (parsed.completionResult) {
+          console.log(`[${this.type}] Completion at step ${step}: "${parsed.completionResult.slice(0, 200)}..."`)
           const anySuccess = toolResults.some((t) => t.success)
 
-          // Write final summary to blackboard for downstream agents
           if (context.blackboard) {
             context.blackboard.board.write(
               context.blackboard.planId,
               'final-summary',
-              doneSignal,
+              parsed.completionResult,
               this.type,
               context.taskId
             )
@@ -894,558 +1125,817 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
 
           return this.buildToolResult(
             anySuccess ? 'success' : (toolResults.length > 0 ? 'partial' : 'success'),
-            doneSignal,
+            parsed.completionResult,
             anySuccess ? 0.9 : 0.7,
             totalTokensIn, totalTokensOut, model, startTime, artifacts
           )
         }
 
-        // Parse tool call
-        const toolCall = this.parseToolCall(response.content)
-
-        if (!toolCall) {
-          // ── Anti-narration: detect prose output and redirect without burning corrections ──
-          if (this.isNarration(response.content) && corrections === 0) {
-            console.warn(`[${this.type}] Step ${step}: Anti-narration triggered — LLM output prose instead of JSON tool call`)
-            this.bus.emitEvent('agent:acting', {
-              agentType: this.type,
-              taskId: context.taskId,
-              action: `Anti-narration: redirecting to tool call format`,
-            })
-            currentPrompt =
-              `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
-              (toolResults.length > 0 ? buildHistoryBlock() + '\n' : '') +
-              `== CRITICAL: WRONG OUTPUT FORMAT ==\n` +
-              `You just responded with plain text/prose instead of a JSON tool call.\n` +
-              `Your narration has been DISCARDED. The user will NOT see it.\n\n` +
-              `You are in TOOL MODE. You MUST respond with ONE of these JSON formats:\n\n` +
-              `1. To call a tool:\n{ "tool": "local::file_read", "args": { "path": "/some/file" } }\n\n` +
-              `2. To signal completion:\n{ "done": true, "summary": "your final answer here" }\n\n` +
-              `If you have enough information to answer the question, use format 2.\n` +
-              `If you need more data, use format 1 to call a tool.\n` +
-              `DO NOT output any text outside a JSON object.`
-            continue
-          }
-
-          console.warn(`[${this.type}] Step ${step}: No tool call or done signal. Raw: ${response.content.slice(0, 200)}`)
-          if (corrections < MAX_CORRECTIONS) {
-            corrections++
-            this.bus.emitEvent('agent:acting', {
-              agentType: this.type,
-              taskId: context.taskId,
-              action: `Sending correction ${corrections}/${MAX_CORRECTIONS}`,
-            })
-            currentPrompt =
-              `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
-              (toolResults.length > 0
-                ? buildHistoryBlock() + '\n'
-                : '') +
-              `== ERROR: INVALID RESPONSE FORMAT ==\n` +
-              `Your last response was not a valid tool call or completion signal.\n` +
-              `You responded with: ${response.content.slice(0, 200)}\n\n` +
-              `You MUST respond with EXACTLY one of these JSON formats:\n\n` +
-              `To call a tool:\n{ "tool": "local::file_read", "args": { "path": "/some/file" } }\n\n` +
-              `To signal task completion:\n{ "done": true, "summary": "your final answer here" }\n\n` +
-              `IMPORTANT: For file/directory operations, use local:: tools (local::file_read, local::file_write, local::file_create, local::create_directory, etc.).\n` +
-              `Do NOT include any text outside the JSON object.`
-            continue
-          }
-
-          // Too many corrections — one last attempt: brute-force extract a tool call
-          // from ALL balanced JSON objects in the response. This catches the case where
-          // the model emits prose + CSS snippets + a valid tool-call JSON at the end.
-          for (const candidate of this.extractAllJsonObjects(response.content)) {
-            try {
-              const parsed = JSON.parse(candidate)
-              if (parsed.tool && typeof parsed.tool === 'string') {
-                console.log(`[${this.type}] Rescued tool call from invalid-format response: ${parsed.tool}`)
-                // Don't return — execute this tool call by assigning it and continuing
-                // We need to re-parse, so just set currentPrompt to re-trigger with a note
-                // Actually, simpler: just inject it back into the loop
-                const rescuedCall = { tool: parsed.tool as string, args: (parsed.args as Record<string, unknown>) ?? {} }
-                const rescuedPerm = canAgentCallTool(this.type, rescuedCall.tool)
-                if (rescuedPerm.allowed) {
-                  corrections = 0 // reset so the loop can continue
-                  // Push a synthetic history entry noting the rescue
-                  toolResults.push({
-                    tool: 'system',
-                    success: true,
-                    content: `Extracted tool call "${rescuedCall.tool}" from mixed prose+JSON response`,
-                  })
-                  // We can't easily re-enter the tool execution part of the loop from here,
-                  // so rebuild the prompt with the rescued tool call as instruction
-                  currentPrompt =
-                    `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
-                    buildHistoryBlock() + '\n' +
-                    `== RECOVERED TOOL CALL ==\n` +
-                    `Your previous response contained a valid tool call but was wrapped in prose.\n` +
-                    `The tool call was: ${JSON.stringify(rescuedCall)}\n` +
-                    `Please re-emit ONLY this JSON (no surrounding text):\n` +
-                    `{ "tool": "${rescuedCall.tool}", "args": ${JSON.stringify(rescuedCall.args)} }`
-                  break // break out of the !toolCall block to continue the main while loop
-                }
-              }
-            } catch { /* not valid JSON, try next */ }
-          }
-          // If we broke out with a rescued call, corrections was reset to 0 — continue the loop
-          if (corrections === 0) continue
-
-          // Truly no tool call found — treat response as final
+        // ── Check for JSON done signal (backward compatibility) ──
+        const jsonDoneSignal = this.parseDoneSignal(response.content)
+        if (jsonDoneSignal) {
+          console.log(`[${this.type}] JSON done signal at step ${step} (legacy): "${jsonDoneSignal.slice(0, 200)}..."`)
           const anySuccess = toolResults.some((t) => t.success)
+
+          if (context.blackboard) {
+            context.blackboard.board.write(
+              context.blackboard.planId,
+              'final-summary',
+              jsonDoneSignal,
+              this.type,
+              context.taskId
+            )
+          }
+
           this.bus.emitEvent('agent:completed', {
             agentType: this.type,
             taskId: context.taskId,
-            confidence: anySuccess ? 0.85 : 0.7,
+            confidence: anySuccess ? 0.9 : 0.7,
             tokensIn: totalTokensIn,
             tokensOut: totalTokensOut,
             toolsCalled: toolResults.map((t) => t.tool),
           })
+
           return this.buildToolResult(
             anySuccess ? 'success' : (toolResults.length > 0 ? 'partial' : 'success'),
-            response.content,
-            anySuccess ? 0.85 : 0.7,
+            jsonDoneSignal,
+            anySuccess ? 0.9 : 0.7,
             totalTokensIn, totalTokensOut, model, startTime, artifacts
           )
         }
 
-        // ── Permission check ──
-        const perm = canAgentCallTool(this.type, toolCall.tool)
-        if (!perm.allowed) {
-          console.warn(`[${this.type}] BLOCKED tool call: ${toolCall.tool} — ${perm.reason}`)
-          toolResults.push({
-            tool: toolCall.tool,
-            success: false,
-            content: `PERMISSION DENIED: ${perm.reason}`,
-          })
-          currentPrompt =
-            `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
-            buildHistoryBlock() + '\n' +
-            `== PERMISSION DENIED ==\n` +
-            `You tried to call "${toolCall.tool}" but you don't have permission.\n` +
-            `Reason: ${perm.reason}\n` +
-            `Try using a local:: tool instead (e.g. local::file_read, local::file_write) which have NO path restrictions, or signal completion if you can answer without it.`
-          continue
-        }
+        // ── Process XML tool calls ──
+        if (parsed.toolUses.length > 0) {
+          const READ_OP_NAMES = new Set(['file_read', 'directory_list', 'read_file', 'read_multiple_files', 'search_files', 'list_code_definition_names'])
 
-        // ── Duplicate read interception (path-based, not just exact args) ──
-        const argsHash = JSON.stringify(toolCall.args ?? {})
-        const toolBaseName = toolCall.tool.split('::').pop() ?? toolCall.tool
-        const callSig = `${toolCall.tool}:${argsHash}`
+          // ── Phase 13: Parallel read operations ──
+          // If the model emitted multiple tool calls and they are ALL read-only,
+          // execute them in parallel to reduce wall-clock time.
+          if (parsed.toolUses.length > 1) {
+            const allCalls = parsed.toolUses.map(xu => xmlToolToLocalCall(xu))
+            const allReadOnly = allCalls.every(c => READ_OP_NAMES.has(c.tool.split('::').pop() ?? c.tool))
 
-        const isReadOp = ['file_read', 'directory_list', 'read_file', 'read_multiple_files'].includes(toolBaseName)
-        if (isReadOp) {
-          const readPath = getReadPath(toolCall.args)
-          const normalizedRead = readPath ? normPath(readPath) : null
-          const cachedFile = normalizedRead ? fileRegistry.get(normalizedRead) : null
+            if (allReadOnly) {
+              console.log(`[${this.type}] Step ${step}: Parallel read batch (${allCalls.length} tools)`)
+              const batchResults = await Promise.all(allCalls.map(async (tc) => {
+                const baseName = tc.tool.split('::').pop() ?? tc.tool
+                const perm = canAgentCallTool(this.type, tc.tool)
+                if (!perm.allowed) {
+                  return { tool: tc.tool, success: false, content: `PERMISSION DENIED: ${perm.reason}` }
+                }
+                // Check .brainwaveignore
+                if (ignoreMatcher.hasPatterns) {
+                  const tp = getReadPath(tc.args)
+                  if (tp && ignoreMatcher.isIgnored(tp)) {
+                    return { tool: tc.tool, success: false, content: `ACCESS BLOCKED: "${tp}" excluded by .brainwaveignore` }
+                  }
+                }
+                // Check cache
+                const rp = getReadPath(tc.args)
+                const nr = rp ? normPath(rp) : null
+                const cached = nr ? fileRegistry.get(nr) : null
+                if (cached) {
+                  return { tool: tc.tool, success: true, content: cached.content }
+                }
+                // Execute
+                const res = tc.tool.startsWith('local::')
+                  ? await localProvider.callTool(tc.tool.split('::')[1], tc.args)
+                  : await registry.callTool(tc.tool, tc.args)
+                // Cache result
+                if (res.success && rp) {
+                  fileRegistry.set(normPath(rp), { content: res.content, step })
+                  fileTracker.trackFileRead(rp, step)
+                }
+                return { tool: tc.tool, success: res.success, content: res.content }
+              }))
 
-          // If we already have this file in the registry, serve from cache (transparent cache hit)
-          if (cachedFile) {
-            // If the model is requesting a line range, extract it from the full cached content
-            const startLine = toolCall.args.start_line as number | undefined
-            const endLine = toolCall.args.end_line as number | undefined
-            let excerpt = cachedFile.content
-            if (startLine || endLine) {
-              const lines = cachedFile.content.split('\n')
-              const s = Math.max(0, (startLine ?? 1) - 1)
-              const e = Math.min(lines.length, endLine ?? lines.length)
-              excerpt = `[Lines ${s + 1}-${e} of ${lines.length} total]\n` + lines.slice(s, e).join('\n')
+              // Add all results to conversation and tracking
+              for (const br of batchResults) {
+                toolResults.push(br)
+                toolCallHistory.push({ tool: br.tool, argsHash: JSON.stringify({}) })
+                const freq = (toolFrequency.get(br.tool.split('::').pop() ?? br.tool) ?? 0) + 1
+                toolFrequency.set(br.tool.split('::').pop() ?? br.tool, freq)
+                const brSummary = br.success ? `Read ${br.content.split('\n').length} lines` : br.content.slice(0, 100)
+                this.bus.emitEvent('agent:tool-result', {
+                  agentType: this.type,
+                  taskId: context.taskId,
+                  tool: br.tool,
+                  success: br.success,
+                  summary: brSummary,
+                  step,
+                })
+                this.emitToolCallInfo({
+                  taskId: context.taskId, step, tool: br.tool,
+                  args: {}, success: br.success, summary: brSummary,
+                  resultPreview: br.content.slice(0, 300),
+                })
+              }
+              conversation.addToolResults(batchResults)
+              continue
             }
-
-            console.log(`[${this.type}] Step ${step}: Cache hit — serving "${readPath}" from registry (step ${cachedFile.step})`)
-            // Return the ACTUAL content so the model can verify edits and see current state
-            toolResults.push({
-              tool: toolCall.tool,
-              success: true,
-              content: excerpt,
-            })
-            toolCallHistory.push({ tool: toolCall.tool, argsHash })
-
-            this.bus.emitEvent('agent:tool-result', {
-              agentType: this.type,
-              taskId: context.taskId,
-              tool: toolCall.tool,
-              success: true,
-              summary: `Read from cache (${cachedFile.content.split('\n').length} lines)`,
-              step,
-            })
-            // Normal continuation — no scary blocking messages
-            continue
           }
 
-          // Fallback: exact args match for non-file reads (directory_list, etc.)
-          const priorResult = toolResults.find(t =>
-            t.tool === toolCall.tool && t.success &&
-            toolCallHistory.some(h => `${h.tool}:${h.argsHash}` === callSig)
-          )
-          if (priorResult) {
-            console.log(`[${this.type}] Step ${step}: Cache hit — exact match for ${toolBaseName}`)
-            // Return the actual cached content for transparency
-            toolResults.push({
-              tool: toolCall.tool,
-              success: true,
-              content: priorResult.content,
-            })
-            toolCallHistory.push({ tool: toolCall.tool, argsHash })
+          // Process the FIRST tool call (one tool per turn for non-read ops)
+          const xmlToolUse = parsed.toolUses[0]
+          const localCall = xmlToolToLocalCall(xmlToolUse)
+          const toolCall = localCall
 
-            this.bus.emitEvent('agent:tool-result', {
-              agentType: this.type,
-              taskId: context.taskId,
-              tool: toolCall.tool,
-              success: true,
-              summary: `Read from cache`,
-              step,
-            })
-            // Normal continuation — no blocking messages
-            continue
-          }
-        }
+          const toolBaseName = toolCall.tool.split('::').pop() ?? toolCall.tool
+          const argsHash = JSON.stringify(toolCall.args ?? {})
+          const callSig = `${toolCall.tool}:${argsHash}`
+          const isReadOp = ['file_read', 'directory_list', 'read_file', 'read_multiple_files'].includes(toolBaseName)
 
-        // ── Loop detection (multi-strategy) ──
-        toolCallHistory.push({ tool: toolCall.tool, argsHash })
-
-        // Update per-tool frequency
-        const freq = (toolFrequency.get(toolBaseName) ?? 0) + 1
-        toolFrequency.set(toolBaseName, freq)
-
-        // Strategy 1: Exact match — same tool + identical args N times
-        const exactRepeatCount = toolCallHistory.filter(h => `${h.tool}:${h.argsHash}` === callSig).length
-        if (exactRepeatCount >= MAX_LOOP_REPEATS) {
-          loopDetected = true
-          console.warn(`[${this.type}] Loop detected (exact match): "${toolBaseName}" called ${exactRepeatCount}× with identical args`)
-          break
-        }
-
-        // Strategy 2: Per-tool frequency — same tool name called too many times total
-        if (freq >= MAX_TOOL_FREQUENCY) {
-          if (!stuckWarningGiven) {
-            stuckWarningGiven = true
-            console.warn(`[${this.type}] Stuck warning: "${toolBaseName}" called ${freq} times total — injecting warning`)
-            // Don't execute this call — instead warn the agent
+          // ── Permission check ──
+          const perm = canAgentCallTool(this.type, toolCall.tool)
+          if (!perm.allowed) {
+            console.warn(`[${this.type}] BLOCKED tool call: ${toolCall.tool} — ${perm.reason}`)
             toolResults.push({
               tool: toolCall.tool,
               success: false,
-              content: `STUCK DETECTION: You have called "${toolBaseName}" ${freq} times. You may be looping. Consider whether the task is already complete and signal { "done": true, "summary": "..." }, or try a completely different approach.`,
+              content: `PERMISSION DENIED: ${perm.reason}`,
             })
-            this.bus.emitEvent('agent:tool-result', {
-              agentType: this.type,
-              taskId: context.taskId,
-              tool: toolCall.tool,
-              success: false,
-              summary: `Stuck warning: "${toolBaseName}" called ${freq}× — should change approach`,
-              step,
-            })
-            currentPrompt =
-              `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
-              buildHistoryBlock() + '\n' +
-              `== ⚠️ HIGH TOOL USAGE ==\n` +
-              `You have called "${toolBaseName}" ${freq} times. Check if you're making progress.\n` +
-              `If the task is done, signal completion: { "done": true, "summary": "..." }\n` +
-              `If not done, try a different approach or tool.`
+            conversation.addToolResult(toolCall.tool, false, `PERMISSION DENIED: ${perm.reason}\nTry using a local:: tool instead.`)
             continue
           }
-          // Already warned — hard break
-          loopDetected = true
-          console.warn(`[${this.type}] Loop detected (frequency): "${toolBaseName}" called ${freq}× — already warned, breaking`)
-          break
-        }
 
-        // Strategy 3: Consecutive same-tool — same tool N times in a row with different args
-        if (toolCallHistory.length >= MAX_CONSECUTIVE_SAME) {
-          const lastN = toolCallHistory.slice(-MAX_CONSECUTIVE_SAME)
-          const allSameTool = lastN.every(h => h.tool === toolCall.tool)
-          if (allSameTool) {
-            if (!stuckWarningGiven) {
-              stuckWarningGiven = true
-              console.warn(`[${this.type}] Stuck warning: "${toolBaseName}" called ${MAX_CONSECUTIVE_SAME}× consecutively — injecting warning`)
-              // Don't execute — warn first
-              toolResults.push({
-                tool: toolCall.tool,
-                success: false,
-                content: `STUCK DETECTION: You have called "${toolBaseName}" ${MAX_CONSECUTIVE_SAME} times in a row. You are stuck in a loop. STOP and either try a completely different approach or signal completion.`,
-              })
+          // ── .brainwaveignore check (Phase 12) ──
+          if (ignoreMatcher.hasPatterns) {
+            const targetPath = getReadPath(toolCall.args)
+            if (targetPath && ignoreMatcher.isIgnored(targetPath)) {
+              const msg = `ACCESS BLOCKED: "${targetPath}" is excluded by .brainwaveignore. Choose a different file or ask the user to update the ignore rules.`
+              console.warn(`[${this.type}] IGNORED file: ${targetPath}`)
+              toolResults.push({ tool: toolCall.tool, success: false, content: msg })
+              conversation.addToolResult(toolCall.tool, false, msg)
+              continue
+            }
+          }
+
+          // ── Duplicate read interception ──
+          if (isReadOp) {
+            const readPath = getReadPath(toolCall.args)
+            const normalizedRead = readPath ? normPath(readPath) : null
+            const cachedFile = normalizedRead ? fileRegistry.get(normalizedRead) : null
+
+            if (cachedFile) {
+              let excerpt = cachedFile.content
+              const startLine = toolCall.args.start_line as number | undefined
+              const endLine = toolCall.args.end_line as number | undefined
+              if (startLine || endLine) {
+                const lines = cachedFile.content.split('\n')
+                const s = Math.max(0, (startLine ?? 1) - 1)
+                const e = Math.min(lines.length, endLine ?? lines.length)
+                excerpt = `[Lines ${s + 1}-${e} of ${lines.length} total]\n` + lines.slice(s, e).join('\n')
+              }
+
+              console.log(`[${this.type}] Step ${step}: Cache hit — serving "${readPath}" from registry`)
+              toolResults.push({ tool: toolCall.tool, success: true, content: excerpt })
+              toolCallHistory.push({ tool: toolCall.tool, argsHash })
+              conversation.addToolResult(toolCall.tool, true, excerpt)
+
+              // Cache hits count towards loop detection
+              const cacheFreq = (toolFrequency.get(toolBaseName) ?? 0) + 1
+              toolFrequency.set(toolBaseName, cacheFreq)
+              if (cacheFreq >= MAX_TOOL_FREQUENCY) {
+                console.warn(`[${this.type}] Loop detected (cache hit frequency): "${toolBaseName}" called ${cacheFreq}×`)
+                loopDetected = true
+                break
+              }
+
+              const cacheSummary = `Read from cache (${cachedFile.content.split('\n').length} lines)`
               this.bus.emitEvent('agent:tool-result', {
                 agentType: this.type,
                 taskId: context.taskId,
                 tool: toolCall.tool,
-                success: false,
-                summary: `Stuck warning: ${toolBaseName} called ${MAX_CONSECUTIVE_SAME}× consecutively`,
+                success: true,
+                summary: cacheSummary,
                 step,
               })
-              currentPrompt =
-                `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
-                buildHistoryBlock() + '\n' +
-                `== ⚠️ STUCK DETECTION ==\n` +
-                `You called "${toolBaseName}" ${MAX_CONSECUTIVE_SAME} times in a row. You are looping.\n` +
-                `STOP calling "${toolBaseName}" and either:\n` +
-                `1. Try a COMPLETELY DIFFERENT tool\n` +
-                `2. Signal completion: { "done": true, "summary": "what you found so far" }\n\n` +
-                `Do NOT call "${toolBaseName}" again.`
+              this.emitToolCallInfo({
+                taskId: context.taskId, step, tool: toolCall.tool,
+                args: toolCall.args, success: true, summary: cacheSummary,
+                duration: 0, resultPreview: excerpt.slice(0, 300),
+              })
               continue
             }
-            // Already warned — hard break
+          }
+
+          // ── Loop detection (4 strategies) ──
+          toolCallHistory.push({ tool: toolCall.tool, argsHash })
+          const freq = (toolFrequency.get(toolBaseName) ?? 0) + 1
+          toolFrequency.set(toolBaseName, freq)
+
+          // Strategy 0: ToolRepetitionDetector (consecutive identical, stable-serialized)
+          const repCheck = repetitionDetector.check({ tool: toolCall.tool, args: toolCall.args ?? {} })
+          if (repCheck.isRepetition) {
             loopDetected = true
-            console.warn(`[${this.type}] Loop detected (consecutive): "${toolBaseName}" called ${MAX_CONSECUTIVE_SAME}× in a row — already warned, breaking`)
+            console.warn(`[${this.type}] Loop detected (repetition detector): "${toolBaseName}" called ${repCheck.count}× consecutively with identical args`)
             break
           }
-        }
 
-        // ── Handle delegation tool call ──
-        if (toolCall.tool === 'delegate_to_agent') {
-          const targetAgent = toolCall.args?.agent as AgentType | undefined
-          const delegatedTask = toolCall.args?.task as string | undefined
+          // Strategy 1: Exact match (history-wide)
+          const exactRepeatCount = toolCallHistory.filter(h => `${h.tool}:${h.argsHash}` === callSig).length
+          if (exactRepeatCount >= MAX_LOOP_REPEATS) {
+            loopDetected = true
+            console.warn(`[${this.type}] Loop detected (exact match): "${toolBaseName}" called ${exactRepeatCount}× with identical args`)
+            break
+          }
 
-          if (!targetAgent || !delegatedTask) {
-            toolResults.push({
-              tool: 'delegate_to_agent',
-              success: false,
-              content: 'INVALID ARGS: "delegate_to_agent" requires { "agent": "<type>", "task": "<description>" }',
-            })
-          } else if (!context.delegateFn) {
-            toolResults.push({
-              tool: 'delegate_to_agent',
-              success: false,
-              content: 'DELEGATION UNAVAILABLE: No delegation handler is available in this execution context.',
-            })
-          } else if (!canDelegateAtDepth(context.delegationDepth ?? 0)) {
-            toolResults.push({
-              tool: 'delegate_to_agent',
-              success: false,
-              content: `DELEGATION DEPTH EXCEEDED: Maximum delegation depth reached. Complete the task with your own capabilities.`,
-            })
-          } else {
-            const delegationPerm = canDelegate(this.type, targetAgent)
-            if (!delegationPerm.allowed) {
-              toolResults.push({
-                tool: 'delegate_to_agent',
-                success: false,
-                content: `DELEGATION DENIED: ${delegationPerm.reason}`,
-              })
+          // Strategy 2: Per-tool frequency
+          if (freq >= MAX_TOOL_FREQUENCY) {
+            if (!stuckWarningGiven) {
+              stuckWarningGiven = true
+              console.warn(`[${this.type}] Stuck warning: "${toolBaseName}" called ${freq} times`)
+              toolResults.push({ tool: toolCall.tool, success: false, content: `STUCK DETECTION: You called "${toolBaseName}" ${freq} times.` })
+              conversation.addSystemNotice(
+                `You have called "${toolBaseName}" ${freq} times. You may be looping.\n` +
+                `Consider signaling completion with <attempt_completion> or try a completely different approach.`
+              )
+              continue
+            }
+            loopDetected = true
+            console.warn(`[${this.type}] Loop detected (frequency): "${toolBaseName}" called ${freq}×`)
+            break
+          }
+
+          // Strategy 3: Consecutive same-tool
+          if (toolCallHistory.length >= MAX_CONSECUTIVE_SAME) {
+            const lastN = toolCallHistory.slice(-MAX_CONSECUTIVE_SAME)
+            const allSameTool = lastN.every(h => h.tool === toolCall.tool)
+            if (allSameTool) {
+              if (!stuckWarningGiven) {
+                stuckWarningGiven = true
+                console.warn(`[${this.type}] Stuck warning: "${toolBaseName}" called ${MAX_CONSECUTIVE_SAME}× consecutively`)
+                toolResults.push({ tool: toolCall.tool, success: false, content: `STUCK: "${toolBaseName}" called ${MAX_CONSECUTIVE_SAME}× in a row.` })
+                conversation.addSystemNotice(
+                  `You called "${toolBaseName}" ${MAX_CONSECUTIVE_SAME} times in a row. You are stuck.\n` +
+                  `STOP and signal completion with <attempt_completion> or try a completely different tool.`
+                )
+                continue
+              }
+              loopDetected = true
+              console.warn(`[${this.type}] Loop detected (consecutive): "${toolBaseName}" called ${MAX_CONSECUTIVE_SAME}× in a row`)
+              break
+            }
+          }
+
+          // General mistake limit check
+          if (mistakes.general >= MAX_GENERAL_MISTAKES) {
+            loopDetected = true
+            console.warn(`[${this.type}] Too many general mistakes (${mistakes.general}) — terminating loop`)
+            break
+          }
+
+          // ── Handle delegation tool call ──
+          if (toolCall.tool === 'delegate_to_agent' || xmlToolUse.tool === 'delegate_to_agent') {
+            const targetAgent = (toolCall.args?.agent ?? xmlToolUse.params.agent) as AgentType | undefined
+            const delegatedTask = (toolCall.args?.task ?? xmlToolUse.params.task) as string | undefined
+
+            if (!targetAgent || !delegatedTask) {
+              toolResults.push({ tool: 'delegate_to_agent', success: false, content: 'INVALID ARGS: requires agent and task parameters' })
+              conversation.addToolResult('delegate_to_agent', false, 'INVALID ARGS: requires agent and task parameters')
+            } else if (!context.delegateFn) {
+              toolResults.push({ tool: 'delegate_to_agent', success: false, content: 'DELEGATION UNAVAILABLE in this context' })
+              conversation.addToolResult('delegate_to_agent', false, 'DELEGATION UNAVAILABLE in this context')
+            } else if (!canDelegateAtDepth(context.delegationDepth ?? 0)) {
+              toolResults.push({ tool: 'delegate_to_agent', success: false, content: 'DELEGATION DEPTH EXCEEDED' })
+              conversation.addToolResult('delegate_to_agent', false, 'DELEGATION DEPTH EXCEEDED — complete the task yourself')
             } else {
-              console.log(`[${this.type}] Step ${step}: Delegating to ${targetAgent}: "${delegatedTask.slice(0, 150)}"`)
-
-              this.bus.emitEvent('agent:acting', {
-                agentType: this.type,
-                taskId: context.taskId,
-                action: `Delegating to ${targetAgent} (step ${step})`,
-              })
-
-              try {
-                const delegationResult = await context.delegateFn(targetAgent, delegatedTask)
-                const outputStr = typeof delegationResult.output === 'string'
-                  ? delegationResult.output
-                  : JSON.stringify(delegationResult.output)
-
-                toolResults.push({
-                  tool: `delegate_to_agent:${targetAgent}`,
-                  success: delegationResult.status === 'success' || delegationResult.status === 'partial',
-                  content: outputStr,
+              const delegationPerm = canDelegate(this.type, targetAgent)
+              if (!delegationPerm.allowed) {
+                toolResults.push({ tool: 'delegate_to_agent', success: false, content: `DELEGATION DENIED: ${delegationPerm.reason}` })
+                conversation.addToolResult('delegate_to_agent', false, `DELEGATION DENIED: ${delegationPerm.reason}`)
+              } else {
+                console.log(`[${this.type}] Step ${step}: Delegating to ${targetAgent}: "${delegatedTask.slice(0, 150)}"`)
+                this.bus.emitEvent('agent:acting', {
+                  agentType: this.type,
+                  taskId: context.taskId,
+                  action: `Delegating to ${targetAgent} (step ${step})`,
                 })
 
-                totalTokensIn += delegationResult.tokensIn
-                totalTokensOut += delegationResult.tokensOut
+                try {
+                  const delegationResult = await context.delegateFn(targetAgent, delegatedTask)
+                  const outputStr = typeof delegationResult.output === 'string'
+                    ? delegationResult.output
+                    : JSON.stringify(delegationResult.output)
+                  const delegSuccess = delegationResult.status === 'success' || delegationResult.status === 'partial'
 
-                // Write delegated result to blackboard
-                if (context.blackboard && (delegationResult.status === 'success' || delegationResult.status === 'partial')) {
+                  toolResults.push({ tool: `delegate_to_agent:${targetAgent}`, success: delegSuccess, content: outputStr })
+                  totalTokensIn += delegationResult.tokensIn
+                  totalTokensOut += delegationResult.tokensOut
+
+                  conversation.addToolResult(`delegate_to_agent:${targetAgent}`, delegSuccess, outputStr)
+
+                  if (context.blackboard && delegSuccess) {
+                    context.blackboard.board.write(
+                      context.blackboard.planId,
+                      `delegated-${targetAgent}-result`,
+                      outputStr,
+                      this.type,
+                      context.taskId
+                    )
+                  }
+
+                  artifacts.push({
+                    type: 'json',
+                    name: `delegation-${targetAgent}-step${step}`,
+                    content: JSON.stringify({
+                      agent: targetAgent,
+                      status: delegationResult.status,
+                      confidence: delegationResult.confidence,
+                      output: outputStr,
+                    }, null, 2),
+                  })
+                } catch (err) {
+                  const errMsg = `DELEGATION FAILED: ${err instanceof Error ? err.message : String(err)}`
+                  toolResults.push({ tool: `delegate_to_agent:${targetAgent}`, success: false, content: errMsg })
+                  conversation.addToolResult(`delegate_to_agent:${targetAgent}`, false, errMsg)
+                }
+              }
+            }
+
+            const delegSummary = toolResults[toolResults.length - 1].success
+              ? `Delegated to ${targetAgent ?? 'agent'} — completed`
+              : `Delegation to ${targetAgent ?? 'agent'} failed`
+            this.bus.emitEvent('agent:tool-result', {
+              agentType: this.type,
+              taskId: context.taskId,
+              tool: toolResults[toolResults.length - 1].tool,
+              success: toolResults[toolResults.length - 1].success,
+              summary: delegSummary,
+              step,
+            })
+            this.emitToolCallInfo({
+              taskId: context.taskId, step,
+              tool: toolResults[toolResults.length - 1].tool,
+              args: toolCall.args, success: toolResults[toolResults.length - 1].success,
+              summary: delegSummary,
+              resultPreview: toolResults[toolResults.length - 1].content.slice(0, 300),
+            })
+            continue
+          }
+
+          // ── Handle parallel delegation (use_subagents) ──
+          if (toolCall.tool === 'use_subagents' || xmlToolUse.tool === 'use_subagents') {
+            const tasksRaw = toolCall.args?.tasks ?? xmlToolUse.params.tasks
+            let parsedTasks: Array<{ agent: string; task: string }> = []
+
+            // Parse tasks from JSON string or array
+            try {
+              if (typeof tasksRaw === 'string') {
+                parsedTasks = JSON.parse(tasksRaw)
+              } else if (Array.isArray(tasksRaw)) {
+                parsedTasks = tasksRaw as Array<{ agent: string; task: string }>
+              }
+            } catch {
+              toolResults.push({ tool: 'use_subagents', success: false, content: 'INVALID ARGS: tasks must be a valid JSON array of { agent, task } objects' })
+              conversation.addToolResult('use_subagents', false, 'INVALID ARGS: tasks must be a valid JSON array of { agent, task } objects')
+              continue
+            }
+
+            if (!Array.isArray(parsedTasks) || parsedTasks.length === 0) {
+              toolResults.push({ tool: 'use_subagents', success: false, content: 'INVALID ARGS: tasks must be a non-empty array' })
+              conversation.addToolResult('use_subagents', false, 'INVALID ARGS: tasks must be a non-empty array')
+              continue
+            }
+
+            if (!context.parallelDelegateFn) {
+              toolResults.push({ tool: 'use_subagents', success: false, content: 'PARALLEL DELEGATION UNAVAILABLE in this context' })
+              conversation.addToolResult('use_subagents', false, 'PARALLEL DELEGATION UNAVAILABLE in this context')
+              continue
+            }
+
+            if (!canDelegateAtDepth(context.delegationDepth ?? 0)) {
+              toolResults.push({ tool: 'use_subagents', success: false, content: 'DELEGATION DEPTH EXCEEDED' })
+              conversation.addToolResult('use_subagents', false, 'DELEGATION DEPTH EXCEEDED — complete the tasks yourself')
+              continue
+            }
+
+            // Validate each task's agent permission
+            const validatedTasks: Array<{ agent: AgentType; task: string }> = []
+            const rejections: string[] = []
+            for (const t of parsedTasks.slice(0, 5)) { // Cap at 5
+              const perm = canDelegate(this.type, t.agent as AgentType)
+              if (!perm.allowed) {
+                rejections.push(`"${t.agent}": ${perm.reason}`)
+              } else {
+                validatedTasks.push({ agent: t.agent as AgentType, task: t.task })
+              }
+            }
+
+            if (validatedTasks.length === 0) {
+              const msg = `ALL DELEGATIONS DENIED:\n${rejections.join('\n')}`
+              toolResults.push({ tool: 'use_subagents', success: false, content: msg })
+              conversation.addToolResult('use_subagents', false, msg)
+              continue
+            }
+
+            console.log(`[${this.type}] Step ${step}: Parallel delegation → ${validatedTasks.length} sub-agents: ${validatedTasks.map(t => t.agent).join(', ')}`)
+            this.bus.emitEvent('agent:acting', {
+              agentType: this.type,
+              taskId: context.taskId,
+              action: `Parallel delegation: ${validatedTasks.length} sub-agents (step ${step})`,
+            })
+
+            try {
+              const results = await context.parallelDelegateFn(validatedTasks)
+
+              // Build combined result
+              const resultParts: string[] = []
+              let allSuccess = true
+              for (let i = 0; i < results.length; i++) {
+                const r = results[i]
+                const t = validatedTasks[i]
+                const outputStr = typeof r.output === 'string' ? r.output : JSON.stringify(r.output)
+                const ok = r.status === 'success' || r.status === 'partial'
+                if (!ok) allSuccess = false
+
+                totalTokensIn += r.tokensIn
+                totalTokensOut += r.tokensOut
+
+                resultParts.push(
+                  `--- Sub-agent: ${t.agent} (${r.status}) ---\n` +
+                  `Task: ${t.task}\n` +
+                  `Result:\n${outputStr}`
+                )
+
+                if (context.blackboard && ok) {
                   context.blackboard.board.write(
                     context.blackboard.planId,
-                    `delegated-${targetAgent}-result`,
+                    `parallel-${t.agent}-${i}-result`,
                     outputStr,
                     this.type,
                     context.taskId
                   )
                 }
-
-                artifacts.push({
-                  type: 'json',
-                  name: `delegation-${targetAgent}-step${step}`,
-                  content: JSON.stringify({
-                    agent: targetAgent,
-                    status: delegationResult.status,
-                    confidence: delegationResult.confidence,
-                    output: outputStr,
-                  }, null, 2),
-                })
-              } catch (err) {
-                toolResults.push({
-                  tool: `delegate_to_agent:${targetAgent}`,
-                  success: false,
-                  content: `DELEGATION FAILED: ${err instanceof Error ? err.message : String(err)}`,
-                })
               }
+
+              const combinedResult = resultParts.join('\n\n')
+              toolResults.push({ tool: 'use_subagents', success: allSuccess, content: combinedResult })
+              conversation.addToolResult('use_subagents', allSuccess, combinedResult)
+
+              if (rejections.length > 0) {
+                conversation.addSystemNotice(`Note: ${rejections.length} sub-task(s) were skipped due to permission rules:\n${rejections.join('\n')}`)
+              }
+
+              artifacts.push({
+                type: 'json',
+                name: `parallel-delegation-step${step}`,
+                content: JSON.stringify({
+                  tasks: validatedTasks.map((t, i) => ({
+                    agent: t.agent,
+                    task: t.task,
+                    status: results[i].status,
+                    confidence: results[i].confidence,
+                  })),
+                  allSuccess,
+                  rejections,
+                }, null, 2),
+              })
+            } catch (err) {
+              const errMsg = `PARALLEL DELEGATION FAILED: ${err instanceof Error ? err.message : String(err)}`
+              toolResults.push({ tool: 'use_subagents', success: false, content: errMsg })
+              conversation.addToolResult('use_subagents', false, errMsg)
+            }
+
+            const parSummary = toolResults[toolResults.length - 1].success
+              ? `Parallel delegation (${validatedTasks.length} agents) — completed`
+              : `Parallel delegation failed`
+            this.bus.emitEvent('agent:tool-result', {
+              agentType: this.type,
+              taskId: context.taskId,
+              tool: 'use_subagents',
+              success: toolResults[toolResults.length - 1].success,
+              summary: parSummary,
+              step,
+            })
+            this.emitToolCallInfo({
+              taskId: context.taskId, step, tool: 'use_subagents',
+              args: toolCall.args, success: toolResults[toolResults.length - 1].success,
+              summary: parSummary,
+              resultPreview: toolResults[toolResults.length - 1].content.slice(0, 300),
+            })
+            continue
+          }
+
+          // ── Execute the tool ──
+          // ── Approval gate (between permission check and execution) ──
+          const approvalSettings: ApprovalSettings = this.getApprovalSettings()
+          const mcpAutoApproved = registry.isToolAutoApproved(toolCall.tool)
+          if (requiresApproval(toolCall.tool, approvalSettings, mcpAutoApproved)) {
+            console.log(`[${this.type}] Step ${step}: Approval required for ${toolCall.tool}`)
+
+            const approval = await requestApproval(
+              context.taskId,
+              this.type,
+              toolCall.tool,
+              toolCall.args,
+            )
+
+            if (!approval.approved) {
+              const rejectMsg = `The user rejected this operation.${approval.reason ? ` Reason: ${approval.reason}` : ''}`
+              toolResults.push({ tool: toolCall.tool, success: false, content: rejectMsg })
+              conversation.addToolResult(toolCall.tool, false, rejectMsg)
+
+              // If user provided feedback, inject it so the model can adapt
+              if (approval.feedback) {
+                conversation.addMessage('user', approval.feedback)
+              }
+
+              const rejectSummary = `Rejected by user${approval.reason ? `: ${approval.reason}` : ''}`
+              this.bus.emitEvent('agent:tool-result', {
+                agentType: this.type,
+                taskId: context.taskId,
+                tool: toolCall.tool,
+                success: false,
+                summary: rejectSummary,
+                step,
+              })
+              this.emitToolCallInfo({
+                taskId: context.taskId, step, tool: toolCall.tool,
+                args: toolCall.args, success: false, summary: rejectSummary,
+                duration: 0,
+              })
+              continue
+            }
+
+            // If user provided feedback alongside approval, inject it
+            if (approval.feedback) {
+              conversation.addMessage('user', approval.feedback)
             }
           }
 
-          // Emit delegation result for live streaming to UI
-          const delegEventResult = toolResults[toolResults.length - 1]
-          const delegAgent = targetAgent ?? 'agent'
-          const delegSummary = delegEventResult.success
-            ? `Delegated to ${delegAgent} — completed`
-            : `Delegation to ${delegAgent} failed`
-          this.bus.emitEvent('agent:tool-result', {
-            agentType: this.type,
-            taskId: context.taskId,
-            tool: delegEventResult.tool,
-            success: delegEventResult.success,
-            summary: delegSummary,
-            step,
+          console.log(`[${this.type}] Step ${step}: Calling ${toolCall.tool} args=${JSON.stringify(toolCall.args).slice(0, 200)}`)
+
+          const toolStartTime = Date.now()
+          const result = toolCall.tool.startsWith('local::')
+            ? await localProvider.callTool(toolCall.tool.split('::')[1], toolCall.args)
+            : await registry.callTool(toolCall.tool, toolCall.args)
+          const toolDuration = Date.now() - toolStartTime
+
+          console.log(`[${this.type}] Step ${step}: ${toolCall.tool} → ${result.success ? 'SUCCESS' : 'FAILED'} (${toolDuration}ms) | ${result.content.slice(0, 200)}`)
+
+          toolResults.push({
+            tool: toolCall.tool,
+            success: result.success,
+            content: result.content,
           })
 
-          // Build context for next iteration after delegation
-          let delegBlackboard = ''
-          if (context.blackboard) {
-            delegBlackboard = context.blackboard.board.formatForPrompt(
-              context.blackboard.planId, this.type, context.taskId
+          // Add tool result to conversation
+          conversation.addToolResult(toolCall.tool, result.success, result.content)
+
+          // ── Progressive diff fallback for edit failures ──
+          if (!result.success && ['file_edit', 'apply_patch'].includes(toolBaseName)) {
+            const editPath = getReadPath(toolCall.args) ?? 'unknown'
+            const errCount = recordFileError(mistakes, 'diff', editPath)
+            mistakes.general++
+
+            // Re-read the file from registry or disk and provide progressive guidance
+            const cached = fileRegistry.get(normPath(editPath))
+            if (cached) {
+              const fallbackMsg = buildDiffFallbackMessage(editPath, errCount, cached.content)
+              conversation.addSystemNotice(fallbackMsg)
+              console.log(`[${this.type}] Diff fallback (attempt ${errCount}) for ${editPath}`)
+            }
+          } else if (!result.success) {
+            mistakes.general++
+          }
+
+          // Auto-write successful results to blackboard
+          if (result.success && context.blackboard) {
+            const toolShortName = toolCall.tool.split('::').pop() ?? toolCall.tool
+            context.blackboard.board.write(
+              context.blackboard.planId,
+              `${toolShortName}-result`,
+              result.content,
+              this.type,
+              context.taskId
             )
           }
 
-          const lastDelegResult = toolResults[toolResults.length - 1]
-          currentPrompt =
-            `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
-            buildHistoryBlock() + '\n' +
-            (delegBlackboard ? `== SHARED CONTEXT FROM OTHER AGENTS ==${delegBlackboard}\n\n` : '') +
-            `== INSTRUCTIONS ==\n` +
-            `Continue working until the task is complete.\n` +
-            (lastDelegResult.success
-              ? `The delegation to ${targetAgent ?? 'agent'} succeeded. Analyze the result:\n` +
-                `- If the task is FULLY complete, respond with: { "done": true, "summary": "your answer" }\n` +
-                `- If NOT complete, call another tool or delegate again.`
-              : `The delegation FAILED. Try a different approach:\n` +
-                `- Use your own tools instead, or try a different agent.\n` +
-                `Respond with a new tool call JSON.`)
+          artifacts.push({
+            type: 'json',
+            name: `tool-result-${toolCall.tool.split('::').pop()}-step${step}`,
+            content: JSON.stringify(result, null, 2),
+          })
+
+          // Emit tool-result for live streaming to UI
+          const mainSummary = this.summarizeForUI(toolCall.tool, toolCall.args, result)
+          this.bus.emitEvent('agent:tool-result', {
+            agentType: this.type,
+            taskId: context.taskId,
+            tool: toolCall.tool,
+            success: result.success,
+            summary: mainSummary,
+            step,
+          })
+          this.emitToolCallInfo({
+            taskId: context.taskId, step, tool: toolCall.tool,
+            args: toolCall.args, success: result.success, summary: mainSummary,
+            duration: toolDuration,
+            resultPreview: result.content.slice(0, 300),
+          })
+
+          // Update file registry for dedup
+          if (result.success) {
+            if (isReadOp) {
+              const readPath = getReadPath(toolCall.args)
+              if (readPath) {
+                const hasRange = toolCall.args.start_line || toolCall.args.end_line
+                const existing = fileRegistry.get(normPath(readPath))
+                if (!existing || !hasRange) {
+                  fileRegistry.set(normPath(readPath), { content: result.content, step })
+                }
+                fileTracker.trackFileRead(readPath, step)
+              }
+            }
+
+            // After file writes: refresh registry with new content
+            const isWriteOp = ['file_edit', 'file_write', 'file_create'].includes(toolBaseName)
+            if (isWriteOp) {
+              const writePath = getReadPath(toolCall.args)
+              if (writePath) {
+                try {
+                  const freshContent = await fsReadFile(writePath, 'utf-8')
+                  fileRegistry.set(normPath(writePath), { content: freshContent, step })
+                } catch (err) {
+                  fileRegistry.delete(normPath(writePath))
+                }
+                fileTracker.trackFileEdit(writePath, step)
+
+                // Phase 9: Checkpoint after write operations
+                try {
+                  const checkpoint = await checkpointService.createCheckpoint(
+                    workDir,
+                    context.taskId,
+                    step,
+                    toolBaseName,
+                    writePath,
+                  )
+                  if (checkpoint) {
+                    this.bus.emitEvent('agent:checkpoint', {
+                      taskId: context.taskId,
+                      checkpointId: checkpoint.id,
+                      step,
+                      tool: toolBaseName,
+                      filePath: writePath,
+                      commitHash: checkpoint.commitHash,
+                    })
+                  }
+                } catch (cpErr) {
+                  console.warn(`[${this.type}] Checkpoint failed (non-fatal):`, cpErr instanceof Error ? cpErr.message : cpErr)
+                }
+              }
+            }
+
+            // Detect shell commands that read file contents (cat, type, head, tail, less)
+            if (toolBaseName === 'shell_execute') {
+              const cmd = String(toolCall.args.command ?? '').trim()
+              // Match: cat/type/head/tail/less followed by a filepath (with optional flags)
+              // Rejects piped/chained commands (|, &, ;, >) to avoid false positives
+              const readCmdMatch = cmd.match(/^(?:cat|type|less|more)\s+(?:-[a-zA-Z0-9]+\s+)*"?([^"|\n&;>]+?)"?\s*$/i)
+                ?? cmd.match(/^(?:head|tail)\s+(?:-[a-zA-Z0-9]+\s+)*"?([^"|\n&;>]+?)"?\s*$/i)
+              if (readCmdMatch && result.content && !result.content.startsWith('Error:')) {
+                const readPath = readCmdMatch[1].trim()
+                if (readPath && !readPath.startsWith('-')) {
+                  fileRegistry.set(normPath(readPath), { content: result.content, step })
+                  fileTracker.trackFileRead(readPath, step)
+                }
+              }
+            }
+          }
+
+          // ── Wire condense tool to actual LLM condensation ──
+          if (toolBaseName === 'condense') {
+            condensationPending = true
+          }
+
+          // ── Periodic context usage notice (every 5 steps) ──
+          if (step > 0 && step % 5 === 0) {
+            const ctxSummary = conversation.getContextSummary()
+            const staleFiles = fileTracker.getStaleFiles()
+            let notice = `Context usage: ${ctxSummary.usagePercent}% (${formatTokenCount(ctxSummary.tokensUsed)} / ${formatTokenCount(ctxSummary.budgetTotal)} tokens) | ${ctxSummary.messageCount} messages`
+            if (staleFiles.length > 0) {
+              notice += `\n⚠️ Stale files (modified externally since last read): ${staleFiles.join(', ')}`
+            }
+            if (ctxSummary.condensations > 0) {
+              notice += `\nCondensation count: ${ctxSummary.condensations}`
+            }
+            conversation.addSystemNotice(notice)
+
+            // Emit context usage event for renderer's context window indicator
+            this.bus.emitEvent('agent:context-usage', {
+              taskId: context.taskId,
+              agentType: this.type,
+              tokensUsed: ctxSummary.tokensUsed,
+              budgetTotal: ctxSummary.budgetTotal,
+              usagePercent: ctxSummary.usagePercent,
+              messageCount: ctxSummary.messageCount,
+              condensations: ctxSummary.condensations,
+              step,
+            })
+          }
+
+          // ── Phase 13: Soft warning at step 50 ──
+          if (step === SOFT_WARNING_STEP) {
+            conversation.addSystemNotice(
+              `⚠️ You have used ${step} of ${ABSOLUTE_MAX_STEPS} tool calls. ` +
+              `Consider wrapping up soon. If the task is complete, use <attempt_completion>. ` +
+              `If you need more steps, you can continue but be efficient.`
+            )
+          }
+
           continue
         }
 
-        // ── Execute the tool ──
-        console.log(`[${this.type}] Step ${step}: Calling ${toolCall.tool} args=${JSON.stringify(toolCall.args).slice(0, 200)}`)
+        // ── No tool call and no completion — try JSON tool call fallback ──
+        const jsonToolCall = this.parseToolCall(response.content)
+        if (jsonToolCall) {
+          console.log(`[${this.type}] Step ${step}: Parsed JSON tool call (legacy): ${jsonToolCall.tool}`)
+          // Re-inject as a nudge to use XML format, but also execute it
+          const toolBaseName = jsonToolCall.tool.split('::').pop() ?? jsonToolCall.tool
+          const perm = canAgentCallTool(this.type, jsonToolCall.tool)
 
-        // Extract reasoning from the model response (prose before the JSON tool call)
-        const reasoning = this.extractReasoning(response.content)
-        if (reasoning) {
-          this.bus.emitEvent('agent:acting', {
-            agentType: this.type,
-            taskId: context.taskId,
-            action: `💭 ${reasoning}`,
-          })
-        }
+          if (perm.allowed) {
+            const jsonStartTime = Date.now()
+            const result = jsonToolCall.tool.startsWith('local::')
+              ? await localProvider.callTool(jsonToolCall.tool.split('::')[1], jsonToolCall.args)
+              : await registry.callTool(jsonToolCall.tool, jsonToolCall.args)
+            const jsonDuration = Date.now() - jsonStartTime
 
-        const result = toolCall.tool.startsWith('local::')
-          ? await localProvider.callTool(toolCall.tool.split('::')[1], toolCall.args)
-          : await registry.callTool(toolCall.tool, toolCall.args)
+            toolResults.push({ tool: jsonToolCall.tool, success: result.success, content: result.content })
+            conversation.addToolResult(jsonToolCall.tool, result.success,
+              result.content + '\n\nNote: Please use the XML tool format for future tool calls. Example:\n<read_file>\n<path>/path/to/file</path>\n</read_file>')
 
-        console.log(`[${this.type}] Step ${step}: ${toolCall.tool} → ${result.success ? 'SUCCESS' : 'FAILED'} | ${result.content.slice(0, 200)}`)
-
-        toolResults.push({
-          tool: toolCall.tool,
-          success: result.success,
-          content: result.content,
-        })
-
-        // Auto-write successful tool results to the shared blackboard
-        if (result.success && context.blackboard) {
-          const toolShortName = toolCall.tool.split('::').pop() ?? toolCall.tool
-          context.blackboard.board.write(
-            context.blackboard.planId,
-            `${toolShortName}-result`,
-            result.content,
-            this.type,
-            context.taskId
-          )
-        }
-
-        artifacts.push({
-          type: 'json',
-          name: `tool-result-${toolCall.tool.split('::').pop()}-step${step}`,
-          content: JSON.stringify(result, null, 2),
-        })
-
-        // Emit tool-result for live streaming to UI
-        this.bus.emitEvent('agent:tool-result', {
-          agentType: this.type,
-          taskId: context.taskId,
-          tool: toolCall.tool,
-          success: result.success,
-          summary: this.summarizeForUI(toolCall.tool, toolCall.args, result),
-          step,
-        })
-
-        // Update file registry for smart dedup and structured prompts
-        if (result.success) {
-          if (isReadOp) {
-            const readPath = getReadPath(toolCall.args)
-            if (readPath) {
-              const hasRange = toolCall.args.start_line || toolCall.args.end_line
-              const existing = fileRegistry.get(normPath(readPath))
-              // Store full reads; only store range reads if we don't have the full file yet
-              if (!existing || !hasRange) {
-                fileRegistry.set(normPath(readPath), { content: result.content, step })
+            // Update file registry
+            if (result.success) {
+              const isReadOp = ['file_read', 'directory_list', 'read_file'].includes(toolBaseName)
+              if (isReadOp) {
+                const readPath = getReadPath(jsonToolCall.args)
+                if (readPath) fileRegistry.set(normPath(readPath), { content: result.content, step })
               }
             }
-          }
 
-          // ── After file_edit/file_write/file_create: refresh registry with new content ──
-          // This prevents the dedup system from serving stale content after edits
-          const isWriteOp = ['file_edit', 'file_write', 'file_create'].includes(toolBaseName)
-          if (isWriteOp) {
-            const writePath = getReadPath(toolCall.args)
-            if (writePath) {
-              try {
-                const freshContent = await fsReadFile(writePath, 'utf-8')
-                fileRegistry.set(normPath(writePath), { content: freshContent, step })
-                console.log(`[${this.type}] Step ${step}: Registry refreshed for "${writePath}" after ${toolBaseName}`)
-              } catch (err) {
-                // If we can't re-read (e.g. file_delete edge case), evict stale entry
-                fileRegistry.delete(normPath(writePath))
-                console.warn(`[${this.type}] Step ${step}: Could not refresh registry for "${writePath}":`, err)
-              }
-            }
-          }
-
-          // Detect `type "file"` shell commands as implicit file reads
-          if (toolBaseName === 'shell_execute') {
-            const cmd = String(toolCall.args.command ?? '')
-            const typeMatch = cmd.match(/^type\s+"?([^"]+)"?$/i)
-            if (typeMatch) {
-              fileRegistry.set(normPath(typeMatch[1].trim()), { content: result.content, step })
-            }
+            const jsonSummary = this.summarizeForUI(jsonToolCall.tool, jsonToolCall.args, result)
+            this.bus.emitEvent('agent:tool-result', {
+              agentType: this.type,
+              taskId: context.taskId,
+              tool: jsonToolCall.tool,
+              success: result.success,
+              summary: jsonSummary,
+              step,
+            })
+            this.emitToolCallInfo({
+              taskId: context.taskId, step, tool: jsonToolCall.tool,
+              args: jsonToolCall.args, success: result.success, summary: jsonSummary,
+              duration: jsonDuration,
+              resultPreview: result.content.slice(0, 300),
+            })
+            continue
           }
         }
 
-        // Refresh blackboard context (other agents may have written since we started)
-        let latestBlackboard = ''
-        if (context.blackboard) {
-          latestBlackboard = context.blackboard.board.formatForPrompt(
-            context.blackboard.planId,
-            this.type,
-            context.taskId
-          )
+        // ── Pure prose response (no tool call, no completion) ──
+        // Grace retry pattern: first N are soft nudges, then escalate
+        if (step < ABSOLUTE_MAX_STEPS - 1) {
+          mistakes.noToolUse++
+          const isEscalated = mistakes.noToolUse > GRACE_RETRY_THRESHOLD
+
+          if (isEscalated) {
+            mistakes.general++
+            console.log(`[${this.type}] Step ${step}: No tool use (${mistakes.noToolUse}x, escalated). general=${mistakes.general}`)
+            conversation.addMessage('user',
+              `WARNING: You have responded ${mistakes.noToolUse} times without using a tool or signalling completion.\n` +
+              `You MUST either:\n` +
+              `1. Use an XML tool block to take action (e.g. <read_file><path>...</path></read_file>)\n` +
+              `2. Signal completion: <attempt_completion><result>Your answer</result></attempt_completion>\n\n` +
+              `Do NOT respond with only prose. If you are stuck, use attempt_completion to report what you know.`
+            )
+          } else {
+            console.log(`[${this.type}] Step ${step}: No tool use (${mistakes.noToolUse}x, grace). Nudging.`)
+            conversation.addMessage('user',
+              `Your response didn't include a tool call or completion signal.\n` +
+              `If you need to take action, use an XML tool block (e.g. <read_file><path>...</path></read_file>).\n` +
+              `If the task is complete, signal completion:\n<attempt_completion>\n<result>\nYour answer here\n</result>\n</attempt_completion>`
+            )
+          }
+          continue
         }
 
-        currentPrompt =
-          `TASK: ${task.description}\n${parentContext}${historyContext}\n` +
-          buildHistoryBlock() + '\n' +
-          (latestBlackboard ? `== SHARED CONTEXT FROM OTHER AGENTS ==${latestBlackboard}\n\n` : '') +
-          `== INSTRUCTIONS ==\n` +
-          `Continue working until the task is complete.\n` +
-          `CRITICAL RULES:\n` +
-          `- All files you've read are in the FILES IN MEMORY section above. Reference them DIRECTLY — do NOT re-read.\n` +
-          `- For file/directory operations, ALWAYS use local:: tools (local::file_read, local::file_write, local::file_create, local::create_directory, etc.).\n` +
-          `- DO NOT ask the user for permission. DO NOT say "would you like me to...". Just DO IT.\n` +
-          `- To MODIFY a file, call local::file_edit with the old_string/new_string NOW. The file content is in FILES IN MEMORY.\n\n` +
-          (result.success
-            ? `The last tool call succeeded. Analyze the result:\n` +
-              `- If the task is FULLY complete, respond with: { "done": true, "summary": "your answer" }\n` +
-              `- If NOT complete, call another tool NOW. Do NOT stop to explain.`
-            : `The last tool call FAILED. Try a DIFFERENT approach immediately:\n` +
-              `- Different tool, different arguments, different strategy.\n` +
-              `Respond with a new tool call JSON.`)
+        // Last step — treat the response as the final answer
+        const anySuccess = toolResults.some((t) => t.success)
+        return this.buildToolResult(
+          anySuccess ? 'success' : 'partial',
+          parsed.textContent || response.content,
+          anySuccess ? 0.7 : 0.5,
+          totalTokensIn, totalTokensOut, model, startTime, artifacts
+        )
       }
 
-      // Loop detected or safety-valve hit — request a summary
+      // ── Loop detected or safety-valve hit ──
       const stopReason = loopDetected
-        ? `Loop detected — you kept calling the same tool(s) repeatedly without making progress.`
+        ? `Loop detected — you kept calling the same tool(s) repeatedly.`
         : `Safety limit reached (${ABSOLUTE_MAX_STEPS} steps).`
 
-      // Build a compact recap — just tool names and outcomes, not full content
       const compactRecap = toolResults.slice(-10).map((t, i) => {
         const tName = t.tool.split('::').pop() ?? t.tool
         const firstLine = t.content.split('\n')[0].slice(0, 100)
@@ -1456,12 +1946,11 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         `Original task: ${task.description}\n\n` +
         `${stopReason} Here's what happened (${toolResults.length} steps, last 10):\n` +
         compactRecap +
-        `\n\nIMPORTANT: You have NO more tool calls. Do NOT output any JSON or tool calls.\n` +
+        `\n\nIMPORTANT: You have NO more tool calls. Do NOT output any tool calls.\n` +
         `Write a SHORT, DIRECT answer for the user (3-5 sentences max):\n` +
         `- What you found or accomplished\n` +
-        `- What specific edit/fix is still needed (be precise: which file, which line, what change)\n\n` +
-        `CRITICAL: Do NOT ask the user questions. Do NOT say "Would you like me to...", "Shall I...", "Let me know if...", or "If you'd like me to...".\n` +
-        `Be concise. State facts. No JSON. No tool calls.`
+        `- What specific edit/fix is still needed (be precise)\n\n` +
+        `CRITICAL: Do NOT ask the user questions. Be concise. State facts.`
 
       const summaryResponse = await this.think(summaryPrompt, context, {
         temperature: 0.3,
@@ -1471,13 +1960,13 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
       totalTokensIn += summaryResponse.tokensIn
       totalTokensOut += summaryResponse.tokensOut
 
-      // Strip any lingering tool-call JSON the model may have sneaked in
       let summaryText = summaryResponse.content
+      // Strip any lingering tool-call JSON
       const toolCallMatch = summaryText.match(/\{\s*"tool"\s*:/)
       if (toolCallMatch && toolCallMatch.index !== undefined) {
         summaryText = summaryText.slice(0, toolCallMatch.index).trim()
         if (!summaryText) {
-          summaryText = 'The task could not be fully completed within the available steps. Please try again or break the task into smaller steps.'
+          summaryText = 'The task could not be fully completed within the available steps. Please try again or break it into smaller steps.'
         }
       }
 
@@ -1499,15 +1988,13 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
         totalTokensIn, totalTokensOut, model, startTime, artifacts
       )
     } catch (err) {
-      // Handle cancellation gracefully — not a real error
+      // Handle cancellation gracefully
       if (CancellationError.is(err) || (err instanceof Error && err.name === 'AbortError')) {
         console.log(`[${this.type}] Aborted (cancellation)`)
         const anySuccess = toolResults.some((t) => t.success)
         return this.buildToolResult(
           anySuccess ? 'partial' : 'failed',
-          anySuccess
-            ? 'Task cancelled. Partial results available.'
-            : 'Task cancelled by user.',
+          anySuccess ? 'Task cancelled. Partial results available.' : 'Task cancelled by user.',
           anySuccess ? 0.4 : 0.1,
           totalTokensIn, totalTokensOut, model, startTime, artifacts
         )
@@ -1742,6 +2229,35 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
   }
 
   /**
+   * Emit structured tool-call-info for the UI to render rich tool cards.
+   * Called alongside agent:tool-result at every tool execution point.
+   */
+  protected emitToolCallInfo(opts: {
+    taskId: string
+    step: number
+    tool: string
+    args: Record<string, unknown>
+    success: boolean
+    summary: string
+    duration?: number
+    resultPreview?: string
+  }): void {
+    const toolName = opts.tool.split('::').pop() ?? opts.tool
+    this.bus.emitEvent('agent:tool-call-info', {
+      taskId: opts.taskId,
+      agentType: this.type,
+      step: opts.step,
+      tool: opts.tool,
+      toolName,
+      args: opts.args,
+      success: opts.success,
+      summary: opts.summary,
+      duration: opts.duration,
+      resultPreview: opts.resultPreview,
+    })
+  }
+
+  /**
    * Create a clean, human-readable 1-line summary for a tool result.
    * This is what the user sees in the live activity feed — NOT the raw content.
    */
@@ -1827,6 +2343,107 @@ Do NOT respond with plain text. You MUST always output a JSON object.`
     if (bytes < 1024) return `${bytes} bytes`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  // ─── Context Condensation (Phase 5) ─────────────────────
+
+  /**
+   * Perform LLM-powered conversation condensation.
+   *
+   * Takes old messages from the conversation, sends them to the LLM for
+   * summarization, and replaces them with a concise summary + folded file
+   * context (function/class signatures). This preserves semantic meaning
+   * while freeing token budget for continued work.
+   *
+   * Falls back to the existing sliding-window trim if LLM call fails.
+   */
+  private async performCondensation(
+    conversation: ConversationManager,
+    context: AgentContext,
+    fileRegistry: Map<string, FileRegistryEntry>,
+    fileTracker: FileContextTracker,
+  ): Promise<void> {
+    const { toSummarize } = conversation.getMessagesToCondense(4)
+    if (toSummarize.length < 3) return // not enough messages to condense
+
+    // Generate folded file context from tracked files
+    const foldedContext = this.buildFoldedFileContext(fileRegistry)
+
+    // Build summarization prompt from messages to condense
+    const messagesText = toSummarize.map(m =>
+      `[${m.role.toUpperCase()}]: ${m.content.slice(0, 4000)}` // cap per message to avoid huge prompt
+    ).join('\n\n---\n\n')
+
+    const summaryPrompt =
+      `Summarize the following conversation between an AI coding assistant and the tools it used. Preserve:\n` +
+      `- All file paths mentioned and their relevance\n` +
+      `- All code changes made (what was changed and why)\n` +
+      `- Current task progress and remaining work\n` +
+      `- Any errors encountered and how they were resolved\n` +
+      `- Key decisions and their rationale\n\n` +
+      `Be concise but thorough. DO NOT call any tools. Return ONLY a text summary.\n\n` +
+      `--- CONVERSATION TO SUMMARIZE (${toSummarize.length} messages) ---\n\n${messagesText}`
+
+    try {
+      const adapter = LLMFactory.getForAgent(this.type)
+      const modelConfig = LLMFactory.getAgentConfig(this.type)
+
+      const response = await adapter.complete({
+        model: modelConfig?.model,
+        system: 'You are a precise conversation summarizer. Extract key facts, decisions, and progress concisely. Never call tools.',
+        user: summaryPrompt,
+        temperature: 0.1,
+        maxTokens: 2000,
+      })
+
+      conversation.applyCondensation(response.content, foldedContext)
+
+      const ctxAfter = conversation.getContextSummary()
+      console.log(
+        `[${this.type}] LLM condensation complete — ${toSummarize.length} messages summarized, ` +
+        `context now at ${ctxAfter.usagePercent}% (${formatTokenCount(ctxAfter.tokensUsed)})`
+      )
+
+      this.bus.emitEvent('agent:acting', {
+        agentType: this.type,
+        taskId: context.taskId,
+        action: `🗜️ Context condensed (${toSummarize.length} messages → summary, ${ctxAfter.usagePercent}% used)`,
+      })
+    } catch (err) {
+      console.warn(`[${this.type}] LLM condensation failed, relying on auto-trim fallback:`, err)
+      // The existing ConversationManager.trim() will handle overflow on next addMessage
+    }
+  }
+
+  /**
+   * Build folded file context from the file registry.
+   *
+   * Extracts function/class/type signatures from cached file contents
+   * to preserve structural awareness after condensation. The LLM retains
+   * knowledge of the codebase structure without needing full file contents.
+   *
+   * Regex-based extraction (no tree-sitter dependency).
+   */
+  private buildFoldedFileContext(fileRegistry: Map<string, FileRegistryEntry>): string {
+    if (fileRegistry.size === 0) return ''
+
+    const sections: string[] = []
+
+    for (const [path, entry] of fileRegistry) {
+      const lines = entry.content.split('\n')
+      // Extract definition lines — function, class, interface, type, export signatures
+      const sigLines = lines.filter(line =>
+        /^\s*(export\s+)?(default\s+)?(abstract\s+)?(async\s+)?(function|class|interface|type|const|let|enum|def |struct |impl |trait |pub\s+(fn|struct|enum|trait))\s/.test(line)
+      ).slice(0, 25) // cap at 25 definitions per file
+
+      if (sigLines.length > 0) {
+        const shortPath = path.replace(/\\/g, '/')
+        sections.push(`<file-summary path="${shortPath}">\n${sigLines.join('\n')}\n</file-summary>`)
+      }
+    }
+
+    // Cap total folded context at 30k chars
+    return sections.join('\n').slice(0, 30_000)
   }
 
   /** Build an AgentResult from tool execution */

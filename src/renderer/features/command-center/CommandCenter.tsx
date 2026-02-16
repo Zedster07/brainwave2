@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Send, Sparkles, Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, Ban, Plus, MessageSquare, Trash2, Pencil, PanelLeftClose, PanelLeft, Mic, MicOff, Volume2, VolumeX, Paperclip, X, ImageIcon, Bot } from 'lucide-react'
+import { Send, Sparkles, Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, Ban, Plus, MessageSquare, Trash2, Pencil, PanelLeftClose, PanelLeft, Mic, MicOff, Volume2, VolumeX, Paperclip, X, ImageIcon, Bot, ShieldCheck, ShieldX, Undo2 } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
 import { useVoice } from '../../hooks/useVoice'
-import type { TaskUpdate, TaskStatus, ChatSession, TaskLiveState, ImageAttachment, TaskListItem, TaskListItemStatus } from '@shared/types'
+import { ToolCallCard, type ToolCallCardData } from './ToolCallCard'
+import { ContextIndicator, type ContextUsageData } from './ContextIndicator'
+import type { TaskUpdate, TaskStatus, ChatSession, TaskLiveState, ImageAttachment, TaskListItem, TaskListItemStatus, StreamChunk, FollowupQuestion, ApprovalRequest, CheckpointInfo, ModeInfo, ContextUsageInfo, ToolCallInfo } from '@shared/types'
 
 interface LiveTask {
   id: string
@@ -16,6 +18,18 @@ interface LiveTask {
   error?: string
   timestamp: number
   taskList?: TaskListItem[]
+  /** Live streaming text from LLM — accumulated as chunks arrive */
+  streamingText?: string
+  /** Pending follow-up question from agent */
+  followupQuestion?: FollowupQuestion
+  /** Pending approval request from agent */
+  approvalRequest?: ApprovalRequest
+  /** Checkpoints created during this task */
+  checkpoints?: CheckpointInfo[]
+  /** Structured tool call data for rich tool cards */
+  toolCalls?: ToolCallCardData[]
+  /** Latest context usage info for this task */
+  contextUsage?: ContextUsageData
 }
 
 export function CommandCenter() {
@@ -35,6 +49,10 @@ export function CommandCenter() {
   // Image attachments
   const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  // Modes
+  const [modes, setModes] = useState<ModeInfo[]>([])
+  const [selectedMode, setSelectedMode] = useState<string | undefined>(undefined)
   const MAX_IMAGES = 5
   const MAX_IMAGE_SIZE = 4 * 1024 * 1024 // 4MB per image
 
@@ -118,6 +136,11 @@ export function CommandCenter() {
       }
     }).catch(console.error)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load available modes on mount
+  useEffect(() => {
+    window.brainwave.getModes().then(setModes).catch(console.error)
+  }, [])
 
   // Listen for sessions created by scheduled jobs (from main process)
   useEffect(() => {
@@ -225,6 +248,153 @@ export function CommandCenter() {
     return unsubscribe
   }, [])
 
+  // Subscribe to streaming LLM chunks for real-time text display
+  useEffect(() => {
+    const unsubscribe = window.brainwave.onStreamChunk((chunk: StreamChunk) => {
+      setTasks((prev) =>
+        prev.map((t) => {
+          if (t.id !== chunk.taskId) return t
+          if (chunk.isDone) {
+            // Stream finished — clear streaming text (final result comes via onTaskUpdate)
+            return { ...t, streamingText: undefined }
+          }
+          return {
+            ...t,
+            streamingText: chunk.isFirst ? chunk.chunk : (t.streamingText ?? '') + chunk.chunk,
+          }
+        })
+      )
+      scrollToBottom()
+    })
+    return unsubscribe
+  }, [scrollToBottom])
+
+  // Subscribe to agent follow-up questions
+  useEffect(() => {
+    const unsubscribe = window.brainwave.onAskUser((question: FollowupQuestion) => {
+      // Find the active task and attach the question to it
+      setTasks((prev) => {
+        const activeIdx = prev.findIndex(t => t.status === 'executing' || t.status === 'planning')
+        if (activeIdx === -1) return prev
+        const updated = [...prev]
+        updated[activeIdx] = { ...updated[activeIdx], followupQuestion: question }
+        return updated
+      })
+      scrollToBottom()
+    })
+    return unsubscribe
+  }, [scrollToBottom])
+
+  const handleFollowupResponse = useCallback(async (questionId: string, response: string) => {
+    try {
+      await window.brainwave.respondToAgent(questionId, response)
+      // Clear the question from UI
+      setTasks((prev) =>
+        prev.map((t) => t.followupQuestion?.questionId === questionId
+          ? { ...t, followupQuestion: undefined }
+          : t
+        )
+      )
+    } catch (err) {
+      console.error('[CommandCenter] Failed to respond to agent:', err)
+    }
+  }, [])
+
+  // Subscribe to tool approval requests
+  useEffect(() => {
+    const unsubscribe = window.brainwave.onApprovalNeeded((request: ApprovalRequest) => {
+      setTasks((prev) => {
+        const activeIdx = prev.findIndex(t => t.status === 'executing' || t.status === 'planning')
+        if (activeIdx === -1) return prev
+        const updated = [...prev]
+        updated[activeIdx] = { ...updated[activeIdx], approvalRequest: request }
+        return updated
+      })
+      scrollToBottom()
+    })
+    return unsubscribe
+  }, [scrollToBottom])
+
+  // Subscribe to checkpoint creation events
+  useEffect(() => {
+    const unsubscribe = window.brainwave.onCheckpointCreated((checkpoint: CheckpointInfo) => {
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === checkpoint.taskId
+            ? { ...t, checkpoints: [...(t.checkpoints ?? []), checkpoint] }
+            : t
+        )
+      )
+    })
+    return unsubscribe
+  }, [])
+
+  // Subscribe to structured tool call info (rich tool cards)
+  useEffect(() => {
+    const unsubscribe = window.brainwave.onToolCallInfo((info: ToolCallInfo) => {
+      const cardData: ToolCallCardData = {
+        taskId: info.taskId,
+        agentType: info.agentType,
+        step: info.step,
+        tool: info.tool,
+        toolName: info.toolName,
+        args: info.args,
+        success: info.success,
+        summary: info.summary,
+        duration: info.duration,
+        resultPreview: info.resultPreview,
+        timestamp: info.timestamp ?? Date.now(),
+      }
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === info.taskId
+            ? { ...t, toolCalls: [...(t.toolCalls ?? []), cardData] }
+            : t
+        )
+      )
+    })
+    return unsubscribe
+  }, [])
+
+  // Subscribe to context usage updates (context window indicator)
+  useEffect(() => {
+    const unsubscribe = window.brainwave.onContextUsage((usage: ContextUsageInfo) => {
+      const usageData: ContextUsageData = {
+        taskId: usage.taskId,
+        agentType: usage.agentType,
+        tokensUsed: usage.tokensUsed,
+        budgetTotal: usage.budgetTotal,
+        usagePercent: usage.usagePercent,
+        messageCount: usage.messageCount,
+        condensations: usage.condensations,
+        step: usage.step,
+      }
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === usage.taskId
+            ? { ...t, contextUsage: usageData }
+            : t
+        )
+      )
+    })
+    return unsubscribe
+  }, [])
+
+  const handleApprovalResponse = useCallback(async (approvalId: string, approved: boolean, feedback?: string, reason?: string) => {
+    try {
+      await window.brainwave.respondToApproval(approvalId, approved, feedback, reason)
+      // Clear the approval request from UI
+      setTasks((prev) =>
+        prev.map((t) => t.approvalRequest?.approvalId === approvalId
+          ? { ...t, approvalRequest: undefined }
+          : t
+        )
+      )
+    } catch (err) {
+      console.error('[CommandCenter] Failed to respond to approval:', err)
+    }
+  }, [])
+
   const handleNewChat = useCallback(async () => {
     // Create a new session immediately, switch to it
     try {
@@ -280,6 +450,7 @@ export function CommandCenter() {
         priority: 'normal',
         sessionId,
         images,
+        mode: selectedMode,
       })
 
       setTasks((prev) => [
@@ -541,7 +712,7 @@ export function CommandCenter() {
                 ) : (
                   <div className="space-y-2">
                     {tasks.map((task) => (
-                      <TaskCard key={task.id} task={task} onCancel={handleCancel} />
+                      <TaskCard key={task.id} task={task} onCancel={handleCancel} onFollowupResponse={handleFollowupResponse} onApprovalResponse={handleApprovalResponse} />
                     ))}
                   </div>
                 )}
@@ -618,6 +789,38 @@ export function CommandCenter() {
                       e.target.value = '' // Reset so same file can be picked again
                     }}
                   />
+
+                  {/* Mode selector pills */}
+                  {modes.length > 0 && (
+                    <div className="mb-2 flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedMode(undefined)}
+                        className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all
+                          ${!selectedMode
+                            ? 'bg-accent/20 text-accent border border-accent/40'
+                            : 'bg-white/[0.04] text-gray-400 border border-white/[0.08] hover:text-white hover:border-white/20'
+                          }`}
+                      >
+                        🎯 Auto
+                      </button>
+                      {modes.filter((m) => m.slug !== 'orchestrator').map((m) => (
+                        <button
+                          key={m.slug}
+                          type="button"
+                          onClick={() => setSelectedMode(m.slug === selectedMode ? undefined : m.slug)}
+                          title={m.description}
+                          className={`px-2.5 py-1 rounded-full text-xs font-medium transition-all
+                            ${selectedMode === m.slug
+                              ? 'bg-accent/20 text-accent border border-accent/40'
+                              : 'bg-white/[0.04] text-gray-400 border border-white/[0.08] hover:text-white hover:border-white/20'
+                            }`}
+                        >
+                          {m.icon ? `${m.icon} ` : ''}{m.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
 
                   <div className="flex gap-3">
                     <textarea
@@ -712,9 +915,10 @@ export function CommandCenter() {
 
 // ─── Task Card ───
 
-function TaskCard({ task, onCancel }: { task: LiveTask; onCancel: (id: string) => void }) {
+function TaskCard({ task, onCancel, onFollowupResponse, onApprovalResponse }: { task: LiveTask; onCancel: (id: string) => void; onFollowupResponse: (questionId: string, response: string) => void; onApprovalResponse: (approvalId: string, approved: boolean, feedback?: string, reason?: string) => void }) {
   const isActive = task.status === 'queued' || task.status === 'planning' || task.status === 'executing'
   const [expanded, setExpanded] = useState(isActive)
+  const [followupInput, setFollowupInput] = useState('')
 
   return (
     <div className={`glass-card p-4 ${isActive ? 'border border-accent/20' : ''}`}>
@@ -748,6 +952,13 @@ function TaskCard({ task, onCancel }: { task: LiveTask; onCancel: (id: string) =
               </div>
             )}
 
+            {/* Context usage indicator */}
+            {isActive && task.contextUsage && (
+              <div className="mt-2">
+                <ContextIndicator data={task.contextUsage} />
+              </div>
+            )}
+
             {task.activityLog.length > 0 && (
               <div className="mt-2">
                 <button
@@ -759,9 +970,26 @@ function TaskCard({ task, onCancel }: { task: LiveTask; onCancel: (id: string) =
                 </button>
                 {expanded && (
                   <div className="mt-1.5 space-y-px ml-1">
-                    {task.activityLog.map((step, i) => (
-                      <StepEntry key={i} step={step} index={i} />
-                    ))}
+                    {task.activityLog.map((step, i) => {
+                      const checkpoint = task.checkpoints?.find((c) => c.step === i + 1)
+                      // Try to find a matching ToolCallCard for this step index
+                      const toolCall = task.toolCalls?.[i]
+                      return (
+                        <div key={i}>
+                          {toolCall
+                            ? <ToolCallCard data={toolCall} index={i} />
+                            : <StepEntry step={step} index={i} />
+                          }
+                          {checkpoint && (
+                            <CheckpointMarker
+                              checkpoint={checkpoint}
+                              taskId={task.id}
+                              isActive={task.status === 'executing' || task.status === 'planning'}
+                            />
+                          )}
+                        </div>
+                      )
+                    })}
                   </div>
                 )}
               </div>
@@ -769,6 +997,71 @@ function TaskCard({ task, onCancel }: { task: LiveTask; onCancel: (id: string) =
 
             {task.error && (
               <p className="text-[11px] text-red-400/80 mt-1.5">{task.error}</p>
+            )}
+
+            {/* Live streaming text — shows LLM response as it generates */}
+            {isActive && task.streamingText && (
+              <div className="mt-3">
+                <Markdown content={task.streamingText} />
+                <span className="inline-block w-1.5 h-4 bg-accent/60 animate-pulse ml-0.5 align-text-bottom" />
+              </div>
+            )}
+
+            {/* Agent follow-up question */}
+            {task.followupQuestion && (
+              <div className="mt-3 p-3 rounded-lg border border-amber-500/30 bg-amber-500/5">
+                <p className="text-sm text-amber-300 font-medium mb-2">
+                  💬 {task.followupQuestion.question}
+                </p>
+                {task.followupQuestion.options && task.followupQuestion.options.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {task.followupQuestion.options.map((opt, i) => (
+                      <button
+                        key={i}
+                        onClick={() => onFollowupResponse(task.followupQuestion!.questionId, opt)}
+                        className="px-3 py-1.5 text-xs rounded-md bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 border border-amber-500/20 transition-colors"
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={followupInput}
+                    onChange={(e) => setFollowupInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && followupInput.trim()) {
+                        onFollowupResponse(task.followupQuestion!.questionId, followupInput.trim())
+                        setFollowupInput('')
+                      }
+                    }}
+                    placeholder="Type your answer..."
+                    className="flex-1 px-3 py-1.5 text-xs rounded-md bg-white/[0.04] border border-white/[0.08] text-white placeholder:text-gray-500 focus:outline-none focus:border-amber-500/40"
+                  />
+                  <button
+                    onClick={() => {
+                      if (followupInput.trim()) {
+                        onFollowupResponse(task.followupQuestion!.questionId, followupInput.trim())
+                        setFollowupInput('')
+                      }
+                    }}
+                    disabled={!followupInput.trim()}
+                    className="px-3 py-1.5 text-xs rounded-md bg-amber-500/20 text-amber-300 hover:bg-amber-500/30 disabled:opacity-40 transition-colors"
+                  >
+                    <Send className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Tool approval request */}
+            {task.approvalRequest && (
+              <ApprovalPrompt
+                request={task.approvalRequest}
+                onRespond={onApprovalResponse}
+              />
             )}
 
             {task.status === 'completed' && task.result && (
@@ -855,6 +1148,44 @@ function StepEntry({ step, index }: { step: string; index: number }) {
   )
 }
 
+function CheckpointMarker({ checkpoint, taskId, isActive }: { checkpoint: CheckpointInfo; taskId: string; isActive: boolean }) {
+  const [rolling, setRolling] = useState(false)
+
+  const handleRollback = async () => {
+    if (rolling || isActive) return
+    setRolling(true)
+    try {
+      await window.brainwave.rollbackToCheckpoint(taskId, checkpoint.id)
+    } catch (err) {
+      console.error('[CommandCenter] Rollback failed:', err)
+    } finally {
+      setRolling(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 py-0.5 ml-5">
+      <span className="text-[10px] text-cyan-400/70">📌</span>
+      <span className="text-[9px] text-cyan-400/60 truncate max-w-[180px]">
+        {checkpoint.description || `Checkpoint after ${checkpoint.tool}`}
+      </span>
+      {!isActive && (
+        <button
+          onClick={handleRollback}
+          disabled={rolling}
+          title="Rollback to this checkpoint"
+          className="ml-auto text-gray-600 hover:text-amber-400 transition-colors disabled:opacity-30"
+        >
+          {rolling
+            ? <Loader2 className="w-3 h-3 animate-spin" />
+            : <Undo2 className="w-3 h-3" />
+          }
+        </button>
+      )}
+    </div>
+  )
+}
+
 function StatusIcon({ status }: { status: TaskStatus }) {
   switch (status) {
     case 'queued':
@@ -929,5 +1260,103 @@ function SpeakButton({ text }: { text: string }) {
       {speaking ? <VolumeX className="w-3.5 h-3.5" /> : <Volume2 className="w-3.5 h-3.5" />}
       {speaking ? 'Stop' : 'Read aloud'}
     </button>
+  )
+}
+
+// ─── Approval Prompt ───
+
+const SAFETY_COLORS: Record<string, { border: string; bg: string; text: string; label: string }> = {
+  safe: { border: 'border-green-500/30', bg: 'bg-green-500/5', text: 'text-green-300', label: 'Read' },
+  write: { border: 'border-blue-500/30', bg: 'bg-blue-500/5', text: 'text-blue-300', label: 'Write' },
+  execute: { border: 'border-orange-500/30', bg: 'bg-orange-500/5', text: 'text-orange-300', label: 'Execute' },
+  dangerous: { border: 'border-red-500/30', bg: 'bg-red-500/5', text: 'text-red-300', label: 'Dangerous' },
+}
+
+function ApprovalPrompt({ request, onRespond }: {
+  request: ApprovalRequest
+  onRespond: (approvalId: string, approved: boolean, feedback?: string, reason?: string) => void
+}) {
+  const [rejectReason, setRejectReason] = useState('')
+  const [showRejectInput, setShowRejectInput] = useState(false)
+  const safety = SAFETY_COLORS[request.safetyLevel] ?? SAFETY_COLORS.execute
+
+  return (
+    <div className={`mt-3 p-3 rounded-lg border ${safety.border} ${safety.bg}`}>
+      {/* Header */}
+      <div className="flex items-center gap-2 mb-2">
+        <ShieldCheck className={`w-4 h-4 ${safety.text}`} />
+        <span className={`text-xs font-semibold ${safety.text} uppercase`}>{safety.label} — Approval Required</span>
+      </div>
+
+      {/* Summary */}
+      <p className="text-sm text-white/90 font-medium mb-1">{request.summary}</p>
+
+      {/* Tool + args detail */}
+      <div className="text-[11px] text-gray-400 mb-2">
+        <span className="font-mono">{request.tool}</span>
+        {request.args && Object.keys(request.args).length > 0 && (
+          <pre className="mt-1 p-2 rounded bg-black/30 text-gray-400 overflow-x-auto max-h-32 text-[10px]">
+            {JSON.stringify(request.args, null, 2)}
+          </pre>
+        )}
+      </div>
+
+      {/* Diff preview for file edits */}
+      {request.diffPreview && (
+        <details className="mb-2">
+          <summary className="text-[11px] text-gray-400 cursor-pointer hover:text-gray-300">Show diff preview</summary>
+          <pre className="mt-1 p-2 rounded bg-black/30 text-[10px] overflow-x-auto max-h-48 text-gray-300">
+            {request.diffPreview}
+          </pre>
+        </details>
+      )}
+
+      {/* Reject reason input */}
+      {showRejectInput && (
+        <div className="mb-2">
+          <input
+            type="text"
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                onRespond(request.approvalId, false, undefined, rejectReason.trim() || undefined)
+              }
+            }}
+            placeholder="Reason for rejection (optional)..."
+            className="w-full px-3 py-1.5 text-xs rounded-md bg-white/[0.04] border border-white/[0.08] text-white placeholder:text-gray-500 focus:outline-none focus:border-red-500/40"
+            autoFocus
+          />
+        </div>
+      )}
+
+      {/* Action buttons */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => onRespond(request.approvalId, true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-green-500/20 text-green-300 hover:bg-green-500/30 border border-green-500/20 transition-colors"
+        >
+          <ShieldCheck className="w-3 h-3" />
+          Approve
+        </button>
+        {showRejectInput ? (
+          <button
+            onClick={() => onRespond(request.approvalId, false, undefined, rejectReason.trim() || undefined)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-red-500/20 text-red-300 hover:bg-red-500/30 border border-red-500/20 transition-colors"
+          >
+            <ShieldX className="w-3 h-3" />
+            Confirm Reject
+          </button>
+        ) : (
+          <button
+            onClick={() => setShowRejectInput(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20 transition-colors"
+          >
+            <ShieldX className="w-3 h-3" />
+            Reject
+          </button>
+        )}
+      </div>
+    </div>
   )
 }

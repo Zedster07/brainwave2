@@ -13,6 +13,8 @@
  *   - none:      No tool access (pure reasoning agents)
  */
 import type { AgentType } from '../agents/event-bus'
+import type { ModeConfig } from '../modes'
+import { resolveToolGroups, modeAllowsMcp } from '../modes'
 
 // ─── Permission Types ───────────────────────────────────────
 
@@ -42,37 +44,37 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
   // Read + web search — can look things up, can't modify
   researcher: {
     tier: 'read',
-    allowedLocalTools: ['web_search', 'webpage_fetch', 'file_read', 'directory_list', 'http_request'],
-    timeoutMs: 5 * 60 * 1000,
+    allowedLocalTools: ['web_search', 'webpage_fetch', 'file_read', 'directory_list', 'http_request', 'search_files', 'list_code_definition_names', 'ask_followup_question'],
+    timeoutMs: 8 * 60 * 1000, // 8 min — web research chains can be lengthy
   },
 
   // Read filesystem + write code — can read context, write files
   coder: {
     tier: 'readWrite',
-    allowedLocalTools: ['file_read', 'file_write', 'file_create', 'file_edit', 'directory_list', 'web_search', 'webpage_fetch'],
+    allowedLocalTools: ['file_read', 'file_write', 'file_create', 'file_edit', 'directory_list', 'web_search', 'webpage_fetch', 'search_files', 'apply_patch', 'list_code_definition_names', 'ask_followup_question'],
     blockedLocalTools: ['shell_execute', 'file_delete'],
-    timeoutMs: 5 * 60 * 1000,
+    timeoutMs: 10 * 60 * 1000, // 10 min — complex multi-file edits
   },
 
   // Read-only — can check actual code/files for review
   reviewer: {
     tier: 'read',
-    allowedLocalTools: ['file_read', 'directory_list', 'web_search', 'webpage_fetch'],
-    timeoutMs: 3 * 60 * 1000,
+    allowedLocalTools: ['file_read', 'directory_list', 'web_search', 'webpage_fetch', 'search_files', 'list_code_definition_names', 'ask_followup_question'],
+    timeoutMs: 5 * 60 * 1000, // 5 min
   },
 
   // Read-only — can look up data for analysis
   analyst: {
     tier: 'read',
     allowedLocalTools: ['file_read', 'directory_list', 'web_search', 'webpage_fetch', 'http_request'],
-    timeoutMs: 3 * 60 * 1000,
+    timeoutMs: 5 * 60 * 1000, // 5 min
   },
 
   // Read-only web — can fact-check claims
   critic: {
     tier: 'read',
     allowedLocalTools: ['web_search', 'webpage_fetch'],
-    timeoutMs: 2 * 60 * 1000,
+    timeoutMs: 3 * 60 * 1000, // 3 min
   },
 
   // Pure reasoning — no tools needed
@@ -83,9 +85,9 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
   // Read-only reconnaissance — can inspect project structure before planning
   planner: {
     tier: 'read',
-    allowedLocalTools: ['file_read', 'directory_list'],
-    maxSteps: 8,
-    timeoutMs: 2 * 60 * 1000,
+    allowedLocalTools: ['file_read', 'directory_list', 'search_files', 'list_code_definition_names'],
+    maxSteps: 12,
+    timeoutMs: 3 * 60 * 1000, // 3 min
   },
 
   // Pure reasoning — no tools needed
@@ -105,10 +107,11 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
 function classifyLocalTool(toolName: string): 'read' | 'write' | 'execute' {
   const READ_TOOLS = new Set([
     'file_read', 'directory_list', 'web_search', 'webpage_fetch',
-    'http_request', 'send_notification',
+    'http_request', 'send_notification', 'search_files', 'list_code_definition_names',
+    'ask_followup_question', 'condense',
   ])
   const WRITE_TOOLS = new Set([
-    'file_write', 'file_create', 'file_delete', 'file_move', 'file_edit',
+    'file_write', 'file_create', 'file_delete', 'file_move', 'file_edit', 'apply_patch',
   ])
 
   if (READ_TOOLS.has(toolName)) return 'read'
@@ -192,4 +195,56 @@ export function filterToolsForAgent<T extends { key: string; name: string }>(
 /** Check if an agent type has any tool access at all */
 export function hasToolAccess(agentType: AgentType | string): boolean {
   return getAgentPermissions(agentType).tier !== 'none'
+}
+
+/**
+ * Build a permission config from a ModeConfig's tool groups.
+ * When a mode is active, its toolGroups override the agent's default
+ * permissions to enforce the mode's restrictions.
+ */
+export function getPermissionsForMode(mode: ModeConfig): ToolPermissionConfig {
+  const allowedTools = resolveToolGroups(mode.toolGroups)
+  const hasEdit = mode.toolGroups.includes('edit')
+  const hasCommand = mode.toolGroups.includes('command')
+
+  // Determine tier from tool groups
+  let tier: ToolPermissionTier = 'none'
+  if (hasCommand) {
+    tier = 'full'
+  } else if (hasEdit) {
+    tier = 'readWrite'
+  } else if (mode.toolGroups.length > 0) {
+    tier = 'read'
+  }
+
+  return {
+    tier,
+    allowedLocalTools: [...allowedTools],
+  }
+}
+
+/**
+ * Filter tools for an agent operating in a specific mode.
+ * More restrictive than either agent or mode permissions alone:
+ * the tool must be allowed by BOTH the mode's tool groups AND be a
+ * valid tool for the agent type.
+ */
+export function filterToolsForMode<T extends { key: string; name: string }>(
+  mode: ModeConfig,
+  allTools: T[]
+): T[] {
+  const modeTools = resolveToolGroups(mode.toolGroups)
+  const allowsMcp = modeAllowsMcp(mode)
+
+  return allTools.filter((tool) => {
+    const isLocal = tool.key.startsWith('local::')
+    const toolName = isLocal ? tool.key.split('::')[1] : tool.name
+
+    if (isLocal) {
+      return modeTools.has(toolName)
+    }
+
+    // MCP tools — only allowed if mode includes 'mcp' group
+    return allowsMcp
+  })
 }
