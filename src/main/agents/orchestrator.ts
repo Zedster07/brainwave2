@@ -27,7 +27,7 @@ import { ReflectionAgent } from './reflection'
 import { getSoftEngine } from '../rules'
 import { getPromptRegistry } from '../prompts'
 import { getMcpRegistry } from '../mcp'
-import type { ImageAttachment } from '@shared/types'
+import type { ImageAttachment, DocumentAttachment } from '@shared/types'
 import { Blackboard } from './blackboard'
 import { createTaskToken, cancelTaskToken } from './cancellation'
 import { getModeRegistry, resolveToolGroups, modeAllowsMcp } from '../modes'
@@ -45,6 +45,8 @@ export interface TaskRecord {
   createdAt: number
   completedAt?: number
   images?: ImageAttachment[]
+  /** Attached documents with extracted text */
+  documents?: DocumentAttachment[]
   sessionId?: string
   /** Mode slug — when set, bypasses triage and routes directly to the mode's agent */
   mode?: string
@@ -418,7 +420,7 @@ FINAL CHECK — before outputting, verify:
   }
 
   /** Main entry point — submit a user task */
-  async submitTask(prompt: string, priority: 'low' | 'normal' | 'high' = 'normal', sessionId?: string, images?: ImageAttachment[], mode?: string): Promise<TaskRecord> {
+  async submitTask(prompt: string, priority: 'low' | 'normal' | 'high' = 'normal', sessionId?: string, images?: ImageAttachment[], mode?: string, documents?: DocumentAttachment[]): Promise<TaskRecord> {
     const taskId = randomUUID()
     const task: TaskRecord = {
       id: taskId,
@@ -427,6 +429,7 @@ FINAL CHECK — before outputting, verify:
       status: 'pending',
       createdAt: Date.now(),
       images,
+      documents,
       sessionId,
       mode,
     }
@@ -621,6 +624,15 @@ FINAL CHECK — before outputting, verify:
         }
       }
 
+      // 0c. Inject attached document text into the prompt
+      if (task.documents && task.documents.length > 0) {
+        const docBlocks = task.documents.map((doc) =>
+          `<attached_document name="${doc.name}" type="${doc.extension}" size="${doc.sizeBytes}">\n${doc.extractedText}\n</attached_document>`
+        ).join('\n\n')
+        task.prompt = `${task.prompt}\n\n--- Attached Documents ---\n${docBlocks}`
+        console.log(`[Orchestrator] Injected ${task.documents.length} document(s) into prompt context`)
+      }
+
       // 1. Triage — classify the prompt before doing heavy work
       task.status = 'planning'
       this.db.run(`UPDATE tasks SET status = 'planning' WHERE id = ?`, task.id)
@@ -748,6 +760,7 @@ CRITICAL RULES:
 - NEVER output tool calls, XML tags, JSON blocks, or code markers like <tool_call>, [TOOL_CALL], {"tool":...} etc. Just reply in plain natural language.
 - When asked about your capabilities, tools, or MCP servers, ONLY report what is listed in SYSTEM CAPABILITIES below. Do NOT guess or hallucinate additional servers/tools.
 ${task.images?.length ? '- The user has attached image(s). Describe and reference them naturally in your response.' : ''}
+${task.documents?.length ? `- The user has attached ${task.documents.length} document(s). Their extracted text is included in the prompt. Reference and analyze the document content in your response.` : ''}
 
 ${memoryContext}${peopleContext}${historyContext}
 

@@ -23,6 +23,7 @@ import { getCalibrationTracker } from '../agents/calibration'
 import { getCheckpointService } from '../agents/checkpoint-service'
 import { getModeRegistry } from '../modes'
 import { getInstructionManager } from '../instructions'
+import { extractDocumentText } from '../tools/document-extractor'
 import { getPromptRegistry } from '../prompts'
 import { getProceduralStore } from '../memory/procedural'
 import { getProspectiveStore } from '../memory/prospective'
@@ -249,8 +250,21 @@ export function registerIpcHandlers(): void {
   // Wire the agent pool as the executor for the orchestrator
   orchestrator.setExecutor((subTask, context) => agentPool.executeTask(subTask, context))
 
+  // ─── Document Text Extraction ───
+  ipcMain.handle(IPC_CHANNELS.DOCUMENT_EXTRACT_TEXT, async (_event, filePath: string) => {
+    try {
+      const text = await extractDocumentText(filePath)
+      const { statSync } = await import('node:fs')
+      const sizeBytes = statSync(filePath).size
+      return { text, sizeBytes }
+    } catch (err) {
+      console.error('[IPC] Document extraction failed:', err)
+      return null
+    }
+  })
+
   ipcMain.handle(IPC_CHANNELS.AGENT_SUBMIT_TASK, async (_event, task: TaskSubmission) => {
-    const record = await orchestrator.submitTask(task.prompt, task.priority ?? 'normal', task.sessionId, task.images, task.mode)
+    const record = await orchestrator.submitTask(task.prompt, task.priority ?? 'normal', task.sessionId, task.images, task.mode, task.documents)
     return { taskId: record.id }
   })
 

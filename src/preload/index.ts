@@ -410,6 +410,10 @@ const api: BrainwaveAPI = {
 
   saveInstructionContent: (filePath: string, content: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.INSTRUCTIONS_SAVE_CONTENT, filePath, content) as Promise<boolean>,
+
+  // ─── Document Extraction ───
+  extractDocumentText: (filePath: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.DOCUMENT_EXTRACT_TEXT, filePath) as Promise<{ text: string; sizeBytes: number } | null>,
 }
 
 // Expose typed API to renderer

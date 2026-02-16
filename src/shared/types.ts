@@ -181,6 +181,9 @@ export const IPC_CHANNELS = {
   // Context usage (Phase 16 — real-time context window indicator)
   AGENT_CONTEXT_USAGE: 'agent:context-usage',
   AGENT_TOOL_CALL_INFO: 'agent:tool-call-info',
+
+  // Document extraction (renderer → main)
+  DOCUMENT_EXTRACT_TEXT: 'document:extract-text',
 } as const
 
 // ─── IPC Payload Types ───
@@ -192,6 +195,8 @@ export interface TaskSubmission {
   sessionId?: string
   context?: Record<string, unknown>
   images?: ImageAttachment[]
+  /** Attached document files — extracted text injected into prompt context */
+  documents?: DocumentAttachment[]
   /** Optional mode slug — bypasses triage and routes directly to the mode's agent */
   mode?: string
 }
@@ -204,6 +209,18 @@ export interface ImageAttachment {
   mimeType: string
   /** Optional filename for display */
   name?: string
+}
+
+/** Document attachment — text extracted in main process */
+export interface DocumentAttachment {
+  /** Original file name for display */
+  name: string
+  /** File extension (.pdf, .docx, .xlsx, etc.) */
+  extension: string
+  /** Extracted text content from the document */
+  extractedText: string
+  /** Original file size in bytes */
+  sizeBytes: number
 }
 
 export type TaskStatus = 'queued' | 'planning' | 'executing' | 'completed' | 'failed' | 'cancelled'
@@ -459,6 +476,7 @@ export interface BrainwaveAPI {
 
   // Agent system
   submitTask: (task: TaskSubmission) => Promise<{ taskId: string }>
+  extractDocumentText: (filePath: string) => Promise<{ text: string; sizeBytes: number } | null>
   cancelTask: (taskId: string) => Promise<void>
   getAgentStatus: () => Promise<AgentStatus[]>
   getActiveTasks: () => Promise<TaskRecord[]>

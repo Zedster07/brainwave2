@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Send, Sparkles, Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, Ban, Plus, MessageSquare, Trash2, Pencil, PanelLeftClose, PanelLeft, Mic, MicOff, Volume2, VolumeX, Paperclip, X, ImageIcon, Bot, ShieldCheck, ShieldX, Undo2 } from 'lucide-react'
+import { Send, Sparkles, Clock, CheckCircle2, XCircle, Loader2, AlertTriangle, Ban, Plus, MessageSquare, Trash2, Pencil, PanelLeftClose, PanelLeft, Mic, MicOff, Volume2, VolumeX, Paperclip, X, ImageIcon, Bot, ShieldCheck, ShieldX, Undo2, FileText } from 'lucide-react'
 import { Markdown } from '../../components/Markdown'
 import { useVoice } from '../../hooks/useVoice'
 import { ToolCallCard, type ToolCallCardData } from './ToolCallCard'
 import { ContextIndicator, type ContextUsageData } from './ContextIndicator'
 import { StreamingContent } from './StreamingCodeCard'
-import type { TaskUpdate, TaskStatus, ChatSession, TaskLiveState, ImageAttachment, TaskListItem, TaskListItemStatus, StreamChunk, FollowupQuestion, ApprovalRequest, CheckpointInfo, ModeInfo, ContextUsageInfo, ToolCallInfo } from '@shared/types'
+import type { TaskUpdate, TaskStatus, ChatSession, TaskLiveState, ImageAttachment, DocumentAttachment, TaskListItem, TaskListItemStatus, StreamChunk, FollowupQuestion, ApprovalRequest, CheckpointInfo, ModeInfo, ContextUsageInfo, ToolCallInfo } from '@shared/types'
 
 interface LiveTask {
   id: string
@@ -51,6 +51,11 @@ export function CommandCenter() {
   const [attachedImages, setAttachedImages] = useState<ImageAttachment[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Document attachments
+  const [attachedDocuments, setAttachedDocuments] = useState<DocumentAttachment[]>([])
+  const [processingDocs, setProcessingDocs] = useState(false)
+  const docInputRef = useRef<HTMLInputElement>(null)
+
   // Modes
   const [modes, setModes] = useState<ModeInfo[]>([])
   const [selectedMode, setSelectedMode] = useState<string | undefined>(undefined)
@@ -90,6 +95,139 @@ export function CommandCenter() {
 
   const removeImage = useCallback((index: number) => {
     setAttachedImages((prev) => prev.filter((_, i) => i !== index))
+  }, [])
+
+  // Document attachment handlers
+  const SUPPORTED_DOC_EXTENSIONS = ['.pdf', '.docx', '.xlsx', '.csv', '.txt', '.md', '.json']
+  const MAX_DOCS = 5
+  const MAX_DOC_SIZE = 20 * 1024 * 1024 // 20MB per doc
+
+  const addDocuments = useCallback(async (files: File[]) => {
+    const remaining = MAX_DOCS - attachedDocuments.length
+    if (remaining <= 0) return
+
+    setProcessingDocs(true)
+    try {
+      const toProcess = files.slice(0, remaining)
+      const results: DocumentAttachment[] = []
+
+      for (const file of toProcess) {
+        const ext = '.' + file.name.split('.').pop()?.toLowerCase()
+        if (!SUPPORTED_DOC_EXTENSIONS.includes(ext)) {
+          console.warn(`[CommandCenter] Unsupported document type: ${file.name}`)
+          continue
+        }
+        if (file.size > MAX_DOC_SIZE) {
+          console.warn(`[CommandCenter] Document too large: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`)
+          continue
+        }
+
+        // For binary docs (pdf, docx, xlsx), we need the main process to extract text
+        // For text-based files (csv, txt, md, json), read directly in renderer
+        const textExts = ['.csv', '.txt', '.md', '.json']
+        if (textExts.includes(ext)) {
+          const text = await file.text()
+          results.push({ name: file.name, extension: ext, extractedText: text.slice(0, 400_000), sizeBytes: file.size })
+        } else {
+          // Binary doc — need to write temp file and extract via IPC
+          // Use the File System Access API path if available, otherwise read as ArrayBuffer
+          const arrayBuf = await file.arrayBuffer()
+          const uint8 = new Uint8Array(arrayBuf)
+          // Convert to base64 and save temp, then extract. Simpler: use webPath or direct extraction
+          // Actually, we need to pass the file path to main process. Since File objects in renderer
+          // don't expose real paths, we'll handle this differently:
+          // We read the binary content, save it to a temp path via IPC, then extract.
+          // For now, create a lightweight approach: read text via FileReader for non-binary, 
+          // or show a placeholder for binary docs that need the dialog picker approach.
+          
+          // Better approach: trigger a native file dialog from main process that returns extracted text
+          // But we already have the file... Let's base64 encode and send to main for extraction
+          const base64 = btoa(String.fromCharCode(...uint8))
+          try {
+            // Store as temp file and extract via IPC - but we don't have that IPC.
+            // Instead, for binary files, ask user to use the native dialog
+            // Actually: we DO have extractDocumentText which takes a filePath.
+            // The problem: browser File API doesn't expose the real path.
+            // Solution: Read as text with a heuristic for simple cases, or require the dialog.
+            // Pragmatic: For web-dropped files, we can't get the path. Show a warning.
+            console.warn(`[CommandCenter] Binary document "${file.name}" — use the attach button for binary files (drag/drop not supported for binary documents)`)
+            // We'll still add it but with a note that extraction may be limited
+            results.push({
+              name: file.name,
+              extension: ext,
+              extractedText: `[Binary document: ${file.name} — ${(file.size / 1024).toFixed(0)}KB. Use the attach button instead of drag/drop for full text extraction of binary documents.]`,
+              sizeBytes: file.size,
+            })
+          } catch (err) {
+            console.error(`[CommandCenter] Failed to process document ${file.name}:`, err)
+          }
+        }
+      }
+
+      if (results.length > 0) {
+        setAttachedDocuments((prev) => [...prev, ...results].slice(0, MAX_DOCS))
+      }
+    } finally {
+      setProcessingDocs(false)
+    }
+  }, [attachedDocuments.length])
+
+  const addDocumentsViaDialog = useCallback(async () => {
+    // Trigger the hidden doc file input which gives us real file references
+    docInputRef.current?.click()
+  }, [])
+
+  const handleDocFileInput = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const remaining = MAX_DOCS - attachedDocuments.length
+    if (remaining <= 0) return
+
+    setProcessingDocs(true)
+    try {
+      const results: DocumentAttachment[] = []
+      const filesToProcess = Array.from(files).slice(0, remaining)
+
+      for (const file of filesToProcess) {
+        const ext = '.' + file.name.split('.').pop()?.toLowerCase()
+        if (!SUPPORTED_DOC_EXTENSIONS.includes(ext)) continue
+        if (file.size > MAX_DOC_SIZE) continue
+
+        const textExts = ['.csv', '.txt', '.md', '.json']
+        if (textExts.includes(ext)) {
+          const text = await file.text()
+          results.push({ name: file.name, extension: ext, extractedText: text.slice(0, 400_000), sizeBytes: file.size })
+        } else {
+          // For Electron, File objects from <input> do have .path
+          const filePath = (file as any).path as string | undefined
+          if (filePath && window.brainwave.extractDocumentText) {
+            try {
+              const extracted = await window.brainwave.extractDocumentText(filePath)
+              if (extracted) {
+                results.push({ name: file.name, extension: ext, extractedText: extracted.text, sizeBytes: extracted.sizeBytes })
+              } else {
+                results.push({ name: file.name, extension: ext, extractedText: `[Failed to extract text from ${file.name}]`, sizeBytes: file.size })
+              }
+            } catch (err) {
+              console.error(`[CommandCenter] Extraction failed for ${file.name}:`, err)
+              results.push({ name: file.name, extension: ext, extractedText: `[Extraction error: ${err}]`, sizeBytes: file.size })
+            }
+          } else {
+            // Fallback — no path available
+            results.push({ name: file.name, extension: ext, extractedText: `[Binary document: ${file.name} — text extraction requires Electron file dialog]`, sizeBytes: file.size })
+          }
+        }
+      }
+
+      if (results.length > 0) {
+        setAttachedDocuments((prev) => [...prev, ...results].slice(0, MAX_DOCS))
+      }
+    } finally {
+      setProcessingDocs(false)
+    }
+  }, [attachedDocuments.length])
+
+  const removeDocument = useCallback((index: number) => {
+    setAttachedDocuments((prev) => prev.filter((_, i) => i !== index))
   }, [])
 
   // Auto-scroll to bottom when tasks change
@@ -412,12 +550,14 @@ export function CommandCenter() {
 
   const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault()
-    if ((!input.trim() && attachedImages.length === 0) || submitting) return
+    if ((!input.trim() && attachedImages.length === 0 && attachedDocuments.length === 0) || submitting) return
 
     const prompt = input.trim()
     const images = attachedImages.length > 0 ? [...attachedImages] : undefined
+    const documents = attachedDocuments.length > 0 ? [...attachedDocuments] : undefined
     setInput('')
     setAttachedImages([])
+    setAttachedDocuments([])
     // Reset textarea height
     if (inputRef.current) inputRef.current.style.height = 'auto'
     setSubmitting(true)
@@ -441,16 +581,17 @@ export function CommandCenter() {
         }
       }
 
-      const displayPrompt = images
-        ? `${prompt || 'Analyze image(s)'}${images.length > 0 ? ` [${images.length} image${images.length > 1 ? 's' : ''}]` : ''}`
+      const displayPrompt = images || documents
+        ? `${prompt || 'Analyze attachment(s)'}${images?.length ? ` [${images.length} image${images.length > 1 ? 's' : ''}]` : ''}${documents?.length ? ` [${documents.length} doc${documents.length > 1 ? 's' : ''}]` : ''}`
         : prompt
 
       const { taskId } = await window.brainwave.submitTask({
         id: crypto.randomUUID(),
-        prompt: prompt || 'Analyze the attached image(s)',
+        prompt: prompt || 'Analyze the attached file(s)',
         priority: 'normal',
         sessionId,
         images,
+        documents,
         mode: selectedMode,
       })
 
@@ -470,7 +611,7 @@ export function CommandCenter() {
       setSubmitting(false)
       inputRef.current?.focus()
     }
-  }, [input, submitting, activeSessionId, tasks.length, attachedImages])
+  }, [input, submitting, activeSessionId, tasks.length, attachedImages, attachedDocuments])
 
   const handleCancel = useCallback(async (taskId: string) => {
     try {
@@ -728,8 +869,14 @@ export function CommandCenter() {
                   onDrop={(e) => {
                     e.preventDefault()
                     e.stopPropagation()
-                    const files = Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith('image/'))
-                    if (files.length > 0) addImages(files)
+                    const allFiles = Array.from(e.dataTransfer.files)
+                    const imageFiles = allFiles.filter((f) => f.type.startsWith('image/'))
+                    const docFiles = allFiles.filter((f) => {
+                      const ext = '.' + f.name.split('.').pop()?.toLowerCase()
+                      return ['.pdf', '.docx', '.xlsx', '.csv', '.txt', '.md', '.json'].includes(ext) && !f.type.startsWith('image/')
+                    })
+                    if (imageFiles.length > 0) addImages(imageFiles)
+                    if (docFiles.length > 0) addDocuments(docFiles)
                   }}
                 >
                   {/* Interim transcript indicator */}
@@ -777,7 +924,7 @@ export function CommandCenter() {
                     </div>
                   )}
 
-                  {/* Hidden file input */}
+                  {/* Hidden file input for images */}
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -788,6 +935,47 @@ export function CommandCenter() {
                       const files = Array.from(e.target.files || [])
                       if (files.length > 0) addImages(files)
                       e.target.value = '' // Reset so same file can be picked again
+                    }}
+                  />
+
+                  {/* Document attachment chips */}
+                  {(attachedDocuments.length > 0 || processingDocs) && (
+                    <div className="mb-3 flex flex-wrap gap-2">
+                      {attachedDocuments.map((doc, i) => (
+                        <div key={i} className="relative group flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.1]">
+                          <FileText className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />
+                          <span className="text-xs text-gray-300 truncate max-w-[120px]">{doc.name}</span>
+                          <span className="text-[10px] text-gray-500">{(doc.sizeBytes / 1024).toFixed(0)}KB</span>
+                          <button
+                            type="button"
+                            onClick={() => removeDocument(i)}
+                            className="ml-0.5 w-4 h-4 rounded-full bg-red-500/80 text-white flex items-center justify-center
+                                       opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="Remove document"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        </div>
+                      ))}
+                      {processingDocs && (
+                        <div className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-gray-400">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          Extracting text…
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Hidden file input for documents */}
+                  <input
+                    ref={docInputRef}
+                    type="file"
+                    accept=".pdf,.docx,.xlsx,.csv,.txt,.md,.json"
+                    multiple
+                    className="hidden"
+                    onChange={(e) => {
+                      handleDocFileInput(e.target.files)
+                      e.target.value = ''
                     }}
                   />
 
@@ -831,7 +1019,7 @@ export function CommandCenter() {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' && !e.shiftKey) {
                           e.preventDefault()
-                          if ((input.trim() || attachedImages.length > 0) && !submitting) {
+                          if ((input.trim() || attachedImages.length > 0 || attachedDocuments.length > 0) && !submitting) {
                             handleSubmit(e as unknown as React.FormEvent)
                           }
                         }
@@ -847,7 +1035,7 @@ export function CommandCenter() {
                           addImages(imageFiles)
                         }
                       }}
-                      placeholder={voice.isListening ? 'Listening...' : attachedImages.length > 0 ? 'Add a message or just send the image(s)...' : 'e.g., Build a REST API for user authentication...'}
+                      placeholder={voice.isListening ? 'Listening...' : (attachedImages.length > 0 || attachedDocuments.length > 0) ? 'Add a message or just send the attachment(s)...' : 'e.g., Build a REST API for user authentication...'}
                       disabled={submitting}
                       rows={1}
                       className="flex-1 bg-white/[0.03] border border-white/[0.08] rounded-lg px-4 py-3 text-sm text-white
@@ -860,12 +1048,24 @@ export function CommandCenter() {
                         target.style.height = `${Math.min(target.scrollHeight, 160)}px`
                       }}
                     />
-                    {/* Image attach button */}
+                    {/* Attach button — images */}
                     <button
                       type="button"
                       onClick={() => fileInputRef.current?.click()}
                       disabled={submitting || attachedImages.length >= MAX_IMAGES}
                       title={attachedImages.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : 'Attach image(s)'}
+                      className="flex items-center justify-center w-11 rounded-lg border transition-all
+                        bg-white/[0.03] border-white/[0.08] text-gray-400 hover:text-white hover:border-white/20
+                        disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      <ImageIcon className="w-4 h-4" />
+                    </button>
+                    {/* Attach button — documents */}
+                    <button
+                      type="button"
+                      onClick={() => docInputRef.current?.click()}
+                      disabled={submitting || attachedDocuments.length >= MAX_DOCS || processingDocs}
+                      title={attachedDocuments.length >= MAX_DOCS ? `Max ${MAX_DOCS} documents` : 'Attach document(s) (PDF, DOCX, XLSX, CSV, TXT)'}
                       className="flex items-center justify-center w-11 rounded-lg border transition-all
                         bg-white/[0.03] border-white/[0.08] text-gray-400 hover:text-white hover:border-white/20
                         disabled:opacity-30 disabled:cursor-not-allowed"
@@ -890,7 +1090,7 @@ export function CommandCenter() {
                     )}
                     <button
                       type="submit"
-                      disabled={(!input.trim() && attachedImages.length === 0) || submitting}
+                      disabled={(!input.trim() && attachedImages.length === 0 && attachedDocuments.length === 0) || submitting}
                       className="flex items-center gap-2 px-5 py-3 rounded-lg bg-accent text-white text-sm font-medium
                                  hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed
                                  transition-all active:scale-[0.98]"
@@ -902,7 +1102,7 @@ export function CommandCenter() {
 
                   {/* Drop zone hint */}
                   <p className="text-[10px] text-gray-600 mt-2 text-center">
-                    Paste, drag & drop, or click <Paperclip className="w-3 h-3 inline" /> to attach images
+                    Drag & drop files, or use <ImageIcon className="w-3 h-3 inline" /> for images and <Paperclip className="w-3 h-3 inline" /> for documents
                   </p>
                 </form>
               </div>

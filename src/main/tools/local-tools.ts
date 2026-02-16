@@ -19,6 +19,8 @@ import { getHardEngine } from '../rules'
 import { getEventBus } from '../agents/event-bus'
 import type { McpTool, McpToolCallResult } from '../mcp/types'
 import { getDiffStrategy, parsePatchOperations, type DiffBlock } from './diff-strategy'
+import { isBinaryDocument, extractDocumentText } from './document-extractor'
+import { generatePDF, generateDOCX, generateXLSX } from './document-generator'
 
 
 /**
@@ -94,7 +96,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'file_read',
-    description: 'Read the contents of a file. Returns the text content. For large files, use start_line/end_line to read specific sections.',
+    description: 'Read the contents of a file. Returns text content. For large files, use start_line/end_line to read specific sections. Automatically extracts readable text from PDF, DOCX, and XLSX files.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -374,6 +376,59 @@ const TOOL_DEFS: McpTool[] = [
       properties: {},
     },
   },
+  // ─── Document Generation Tools ───
+  {
+    key: 'local::generate_pdf',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'generate_pdf',
+    description: 'Generate a PDF document. Provide structured content with sections (heading, body, bullets) and optional tables. The file is written to the specified output path.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        output_path: { type: 'string', description: 'Absolute path for the output PDF file (e.g. /path/to/report.pdf)' },
+        title: { type: 'string', description: 'Document title (centered at top)' },
+        author: { type: 'string', description: 'Document author metadata' },
+        sections: { type: 'string', description: 'JSON array of section objects: [{heading?, body?, bullets?}]' },
+        tables: { type: 'string', description: 'JSON array of table objects: [{headers: string[], rows: string[][]}]' },
+      },
+      required: ['output_path'],
+    },
+  },
+  {
+    key: 'local::generate_docx',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'generate_docx',
+    description: 'Generate a DOCX (Word) document. Provide structured content with sections (heading, body, bullets) and optional tables. The file is written to the specified output path.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        output_path: { type: 'string', description: 'Absolute path for the output DOCX file (e.g. /path/to/report.docx)' },
+        title: { type: 'string', description: 'Document title' },
+        author: { type: 'string', description: 'Document author metadata' },
+        sections: { type: 'string', description: 'JSON array of section objects: [{heading?, body?, bullets?}]' },
+        tables: { type: 'string', description: 'JSON array of table objects: [{headers: string[], rows: string[][]}]' },
+      },
+      required: ['output_path'],
+    },
+  },
+  {
+    key: 'local::generate_xlsx',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'generate_xlsx',
+    description: 'Generate an XLSX (Excel) spreadsheet. Provide one or more sheets, each with headers and data rows. The file is written to the specified output path.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        output_path: { type: 'string', description: 'Absolute path for the output XLSX file (e.g. /path/to/data.xlsx)' },
+        author: { type: 'string', description: 'Document author metadata' },
+        sheets: { type: 'string', description: 'JSON array of sheet objects: [{name: string, headers: string[], rows: (string|number|boolean|null)[][]}]' },
+      },
+      required: ['output_path', 'sheets'],
+    },
+  },
 ]
 
 // ─── Provider ───────────────────────────────────────────────
@@ -442,6 +497,12 @@ class LocalToolProvider {
         return this.askFollowupQuestion(args)
       case 'condense':
         return this.condenseContext(args)
+      case 'generate_pdf':
+        return this.generatePdf(args)
+      case 'generate_docx':
+        return this.generateDocx(args)
+      case 'generate_xlsx':
+        return this.generateXlsx(args)
       default:
         return {
           toolKey: `local::${toolName}`,
@@ -467,6 +528,18 @@ class LocalToolProvider {
     }
 
     try {
+      // Binary document extraction (PDF, DOCX, XLSX)
+      if (isBinaryDocument(filePath)) {
+        const content = await extractDocumentText(filePath)
+        return {
+          toolKey: 'local::file_read',
+          success: true,
+          content,
+          isError: false,
+          duration: Date.now() - start,
+        }
+      }
+
       const fullContent = await readFile(filePath, { encoding })
       const allLines = fullContent.split('\n')
       const totalLines = allLines.length
@@ -2172,6 +2245,89 @@ class LocalToolProvider {
       return backup
     }
     return undefined
+  }
+
+  // ─── Document Generation ──────────────────────────────
+
+  private async generatePdf(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const outputPath = resolve(String(args.output_path ?? ''))
+    const start = Date.now()
+
+    const verdict = getHardEngine().evaluate({ type: 'file_write', path: outputPath })
+    if (!verdict.allowed) return this.blocked('local::generate_pdf', verdict.reason, start)
+
+    try {
+      const sections = args.sections ? JSON.parse(String(args.sections)) : undefined
+      const tables = args.tables ? JSON.parse(String(args.tables)) : undefined
+      const result = await generatePDF(outputPath, {
+        title: args.title ? String(args.title) : undefined,
+        author: args.author ? String(args.author) : undefined,
+        sections,
+        tables,
+      })
+      return {
+        toolKey: 'local::generate_pdf',
+        success: true,
+        content: `PDF generated: ${result.path} (${result.pageCount} page${result.pageCount !== 1 ? 's' : ''})`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::generate_pdf', this.errMsg(err), start)
+    }
+  }
+
+  private async generateDocx(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const outputPath = resolve(String(args.output_path ?? ''))
+    const start = Date.now()
+
+    const verdict = getHardEngine().evaluate({ type: 'file_write', path: outputPath })
+    if (!verdict.allowed) return this.blocked('local::generate_docx', verdict.reason, start)
+
+    try {
+      const sections = args.sections ? JSON.parse(String(args.sections)) : undefined
+      const tables = args.tables ? JSON.parse(String(args.tables)) : undefined
+      const result = await generateDOCX(outputPath, {
+        title: args.title ? String(args.title) : undefined,
+        author: args.author ? String(args.author) : undefined,
+        sections,
+        tables,
+      })
+      return {
+        toolKey: 'local::generate_docx',
+        success: true,
+        content: `DOCX generated: ${result.path}`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::generate_docx', this.errMsg(err), start)
+    }
+  }
+
+  private async generateXlsx(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const outputPath = resolve(String(args.output_path ?? ''))
+    const start = Date.now()
+
+    const verdict = getHardEngine().evaluate({ type: 'file_write', path: outputPath })
+    if (!verdict.allowed) return this.blocked('local::generate_xlsx', verdict.reason, start)
+
+    try {
+      const sheets = JSON.parse(String(args.sheets ?? '[]'))
+      const result = await generateXLSX(outputPath, {
+        sheets,
+        author: args.author ? String(args.author) : undefined,
+      })
+      return {
+        toolKey: 'local::generate_xlsx',
+        success: true,
+        content: `XLSX generated: ${result.path} (${result.sheetCount} sheet${result.sheetCount !== 1 ? 's' : ''})`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::generate_xlsx', this.errMsg(err), start)
+    }
   }
 
   // ─── Helpers ──────────────────────────────────────────
