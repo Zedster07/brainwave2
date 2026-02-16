@@ -1895,10 +1895,23 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
         }
 
         // ── Pure prose response (no tool call, no completion) ──
-        // Grace retry pattern: first N are soft nudges, then escalate
+        // Grace retry pattern: first N are soft nudges, then escalate, then abort
         if (step < ABSOLUTE_MAX_STEPS - 1) {
           mistakes.noToolUse++
           const isEscalated = mistakes.noToolUse > GRACE_RETRY_THRESHOLD
+
+          // Hard abort: if model can't produce tool calls after many attempts,
+          // stop wasting tokens and treat last response as final answer
+          const NO_TOOL_USE_ABORT_THRESHOLD = 8
+          if (mistakes.noToolUse >= NO_TOOL_USE_ABORT_THRESHOLD) {
+            console.warn(`[${this.type}] Step ${step}: Model failed to use tools after ${mistakes.noToolUse} attempts — aborting to save tokens`)
+            return this.buildToolResult(
+              toolResults.some(t => t.success) ? 'partial' : 'error',
+              parsed.textContent || response.content || 'Model was unable to use the required tool format. Try a different model (e.g. Claude, GPT-4o).',
+              0.3,
+              totalTokensIn, totalTokensOut, model, startTime, artifacts
+            )
+          }
 
           if (isEscalated) {
             mistakes.general++

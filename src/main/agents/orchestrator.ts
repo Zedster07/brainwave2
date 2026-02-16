@@ -1312,7 +1312,14 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
           // If verification fails, feed errors back to the coder for self-correction.
           let verificationFailed = false
           if (subTask.assignedAgent === 'coder' && result.status === 'success') {
-            const verifyResult = await this.verifyCodingOutput(task.id, plan.id, subTask, context)
+            const verifyContext: AgentContext = {
+              taskId: task.id,
+              relevantMemories,
+              conversationHistory,
+              siblingResults: results,
+              cancellationToken,
+            }
+            const verifyResult = await this.verifyCodingOutput(task.id, plan.id, subTask, verifyContext)
             if (verifyResult && !verifyResult.passed) {
               subTask.attempts++
               if (subTask.attempts < subTask.maxAttempts) {
