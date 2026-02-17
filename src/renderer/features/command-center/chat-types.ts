@@ -74,6 +74,17 @@ export interface StatusBlockUI {
   detail?: string
 }
 
+/** A YouTube video/playlist embed block */
+export interface YouTubeBlockUI {
+  type: 'youtube'
+  videoId: string
+  title?: string
+  /** If present, this is a playlist */
+  playlistId?: string
+  /** Start time in seconds */
+  startAt?: number
+}
+
 /** Union of all renderable content blocks */
 export type ContentBlockUI =
   | ThinkingBlockUI
@@ -81,6 +92,7 @@ export type ContentBlockUI =
   | ToolCallBlockUI
   | CodeChangeBlockUI
   | StatusBlockUI
+  | YouTubeBlockUI
 
 // ─── Messages ───
 

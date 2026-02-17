@@ -187,6 +187,9 @@ export const IPC_CHANNELS = {
 
   // Document extraction (renderer → main)
   DOCUMENT_EXTRACT_TEXT: 'document:extract-text',
+
+  // YouTube Player (main → renderer)
+  YOUTUBE_PLAY: 'youtube:play',
 } as const
 
 // ─── IPC Payload Types ───
@@ -466,6 +469,16 @@ export interface NotificationPayload {
   timestamp: number
 }
 
+// ─── YouTube Player Types ───
+
+export interface YouTubePlayPayload {
+  taskId: string
+  videoId: string
+  title?: string
+  playlistId?: string
+  startAt?: number
+}
+
 // ─── Brainwave API (exposed to renderer via preload) ───
 
 export interface BrainwaveAPI {
@@ -646,6 +659,9 @@ export interface BrainwaveAPI {
   pluginRemove: (id: string) => Promise<boolean>
   pluginEnable: (id: string) => Promise<PluginInfoData | null>
   pluginDisable: (id: string) => Promise<PluginInfoData | null>
+
+  // YouTube Player (main → renderer)
+  onYouTubePlay: (callback: (payload: YouTubePlayPayload) => void) => () => void
 }
 
 // ─── Checkpoint Types ───

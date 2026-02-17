@@ -1192,7 +1192,7 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
 
           const toolBaseName = internalKey.split('::').pop() ?? internalKey
           const result = internalKey.startsWith('local::')
-            ? await localProvider.callTool(toolBaseName, toolUse.input)
+            ? await localProvider.callTool(toolBaseName, toolUse.input, { taskId: context.taskId })
             : await registry.callTool(internalKey, toolUse.input)
 
           const toolDuration = Date.now() - toolStartTime
@@ -1699,7 +1699,7 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
                 }
                 // Execute
                 const res = tc.tool.startsWith('local::')
-                  ? await localProvider.callTool(tc.tool.split('::')[1], tc.args)
+                  ? await localProvider.callTool(tc.tool.split('::')[1], tc.args, { taskId: context.taskId })
                   : await registry.callTool(tc.tool, tc.args)
                 // Cache result
                 if (res.success && rp) {
@@ -2168,7 +2168,7 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
 
           const toolStartTime = Date.now()
           const result = toolCall.tool.startsWith('local::')
-            ? await localProvider.callTool(toolCall.tool.split('::')[1], toolCall.args)
+            ? await localProvider.callTool(toolCall.tool.split('::')[1], toolCall.args, { taskId: context.taskId })
             : await registry.callTool(toolCall.tool, toolCall.args)
           const toolDuration = Date.now() - toolStartTime
 

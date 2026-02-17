@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type StreamChunk, type FollowupQuestion, type ApprovalRequest, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession, type NotificationPayload, type TaskLiveState, type CheckpointInfo, type ModeInfo, type InstructionInfo, type ContextUsageInfo, type ToolCallInfo } from '@shared/types'
+import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type StreamChunk, type FollowupQuestion, type ApprovalRequest, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession, type NotificationPayload, type TaskLiveState, type CheckpointInfo, type ModeInfo, type InstructionInfo, type ContextUsageInfo, type ToolCallInfo, type YouTubePlayPayload } from '@shared/types'
 
 const api: BrainwaveAPI = {
   // ─── Window Controls ───
@@ -423,6 +423,13 @@ const api: BrainwaveAPI = {
   // ─── Document Extraction ───
   extractDocumentText: (filePath: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.DOCUMENT_EXTRACT_TEXT, filePath) as Promise<{ text: string; sizeBytes: number } | null>,
+
+  // ─── YouTube Player ───
+  onYouTubePlay: (callback: (payload: YouTubePlayPayload) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: YouTubePlayPayload) => callback(payload)
+    ipcRenderer.on(IPC_CHANNELS.YOUTUBE_PLAY, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.YOUTUBE_PLAY, handler)
+  },
 }
 
 // Expose typed API to renderer

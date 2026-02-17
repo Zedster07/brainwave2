@@ -447,11 +447,31 @@ const TOOL_DEFS: McpTool[] = [
       required: ['output_path', 'slides'],
     },
   },
+  // ─── YouTube Player Tool ───
+  {
+    key: 'local::play_youtube_video',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'play_youtube_video',
+    description: 'Play a YouTube video or playlist embedded directly in the Brainwave app. IMPORTANT: Always use this tool instead of browser_navigate or browser_click when dealing with YouTube videos. This tool is the PREFERRED way to play any YouTube content — do NOT open YouTube in the browser. Accepts any YouTube URL or video/playlist ID. When the user asks to play, watch, or listen to any YouTube video or music, use this tool. Supports single videos and full playlists.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'YouTube URL (e.g. https://www.youtube.com/watch?v=dQw4w9WgXcQ, https://youtu.be/dQw4w9WgXcQ, or https://www.youtube.com/playlist?list=PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf) OR a video ID (e.g. dQw4w9WgXcQ)' },
+        title: { type: 'string', description: 'Optional display title for the video' },
+        start_at: { type: 'number', description: 'Start playback at this many seconds into the video (default: 0)' },
+      },
+      required: ['url'],
+    },
+  },
 ]
 
 // ─── Provider ───────────────────────────────────────────────
 
 class LocalToolProvider {
+  /** Current task ID — set by callTool() before dispatching */
+  private _currentTaskId = ''
+
   /** Background process tracker — maps PID to child process reference */
   private backgroundProcesses = new Map<number, ChildProcess>()
 
@@ -473,8 +493,11 @@ class LocalToolProvider {
   /** Call a local tool by name. Safety-gated through the Hard Rules Engine. */
   async callTool(
     toolName: string,
-    args: Record<string, unknown> = {}
+    args: Record<string, unknown> = {},
+    context?: { taskId?: string },
   ): Promise<McpToolCallResult> {
+    // Stash context so individual tool handlers can access it
+    this._currentTaskId = context?.taskId ?? ''
     console.log(`[LocalTools] callTool(${toolName}) args=${JSON.stringify(args).slice(0, 300)}`)
     switch (toolName) {
       case 'file_read':
@@ -523,6 +546,8 @@ class LocalToolProvider {
         return this.generateXlsx(args)
       case 'generate_pptx':
         return this.generatePptx(args)
+      case 'play_youtube_video':
+        return this.playYouTubeVideo(args)
       default:
         return {
           toolKey: `local::${toolName}`,
@@ -2377,7 +2402,109 @@ class LocalToolProvider {
     }
   }
 
-  // ─── Helpers ──────────────────────────────────────────
+  // ─── YouTube Player ────────────────────────────────────
+
+  private async playYouTubeVideo(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const start = Date.now()
+    const urlOrId = String(args.url ?? '').trim()
+    const title = args.title ? String(args.title) : undefined
+    const startAt = typeof args.start_at === 'number' ? args.start_at : undefined
+
+    if (!urlOrId) {
+      return this.error('local::play_youtube_video', 'url is required', start)
+    }
+
+    // Parse YouTube URL/ID to extract videoId and optional playlistId
+    const parsed = this.parseYouTubeUrl(urlOrId)
+    if (!parsed.videoId && !parsed.playlistId) {
+      return this.error(
+        'local::play_youtube_video',
+        `Could not extract a YouTube video or playlist ID from: "${urlOrId}"`,
+        start,
+      )
+    }
+
+    // Send to renderer via IPC broadcast
+    const { BrowserWindow } = require('electron')
+    const payload = {
+      taskId: this._currentTaskId,
+      videoId: parsed.videoId ?? '',
+      title,
+      playlistId: parsed.playlistId,
+      startAt,
+    }
+
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send('youtube:play', payload)
+    }
+
+    const what = parsed.playlistId
+      ? `playlist ${parsed.playlistId}${parsed.videoId ? ` (starting at video ${parsed.videoId})` : ''}`
+      : `video ${parsed.videoId}`
+
+    console.log(`[LocalTools] play_youtube_video → ${what}${startAt ? ` @${startAt}s` : ''}`)
+
+    return {
+      toolKey: 'local::play_youtube_video',
+      success: true,
+      content: `Now playing YouTube ${what}${title ? ` — "${title}"` : ''} in the embedded player.`,
+      isError: false,
+      duration: Date.now() - start,
+    }
+  }
+
+  /**
+   * Parse a YouTube URL or bare ID into videoId and playlistId.
+   * Handles:
+   *   - https://www.youtube.com/watch?v=ID
+   *   - https://youtu.be/ID
+   *   - https://www.youtube.com/embed/ID
+   *   - https://www.youtube.com/playlist?list=PLID
+   *   - https://www.youtube.com/watch?v=ID&list=PLID
+   *   - https://music.youtube.com/watch?v=ID
+   *   - bare video ID (11 chars alphanumeric + _ -)
+   */
+  private parseYouTubeUrl(input: string): { videoId?: string; playlistId?: string } {
+    try {
+      const url = new URL(input)
+
+      if (url.hostname.includes('youtube.com') || url.hostname.includes('music.youtube.com')) {
+        const videoId = url.searchParams.get('v') ?? undefined
+        const playlistId = url.searchParams.get('list') ?? undefined
+
+        if (!videoId && url.pathname.startsWith('/embed/')) {
+          const id = url.pathname.split('/embed/')[1]?.split(/[?/]/)[0]
+          return { videoId: id, playlistId }
+        }
+
+        if (!videoId && url.pathname === '/playlist') {
+          return { playlistId }
+        }
+
+        return { videoId, playlistId }
+      }
+
+      if (url.hostname === 'youtu.be') {
+        const videoId = url.pathname.slice(1).split(/[?/]/)[0]
+        const playlistId = url.searchParams.get('list') ?? undefined
+        return { videoId, playlistId }
+      }
+    } catch {
+      // Not a URL — try as bare ID
+    }
+
+    if (/^[a-zA-Z0-9_-]{10,12}$/.test(input)) {
+      return { videoId: input }
+    }
+
+    if (/^(PL|RD|OL|UU)[a-zA-Z0-9_-]+$/.test(input)) {
+      return { playlistId: input }
+    }
+
+    return {}
+  }
+
+  // ─── Helpers (shared) ─────────────────────────────────
 
   private blocked(toolKey: string, reason: string, start: number): McpToolCallResult {
     return {

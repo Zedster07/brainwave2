@@ -27,6 +27,7 @@ import { AgentStatusIndicator } from './AgentStatusIndicator'
 import { ToolCallCard } from './ToolCallCard'
 import { ContextIndicator } from './ContextIndicator'
 import { StreamingContent } from './StreamingCodeCard'
+import { YouTubePlayer } from './YouTubePlayer'
 import type {
   ChatMessage,
   UserMessage,
@@ -127,6 +128,16 @@ function BlockRenderer({ block, index }: { block: ContentBlockUI; index: number 
             <span className="text-[10px] text-gray-500 truncate">{block.detail}</span>
           )}
         </div>
+      )
+
+    case 'youtube':
+      return (
+        <YouTubePlayer
+          videoId={block.videoId}
+          title={block.title}
+          playlistId={block.playlistId}
+          startAt={block.startAt}
+        />
       )
 
     default:

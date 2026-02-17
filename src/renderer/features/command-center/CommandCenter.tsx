@@ -72,6 +72,7 @@ export function CommandCenter() {
       window.brainwave.onCheckpointCreated((checkpoint) => store.handleCheckpoint(checkpoint)),
       window.brainwave.onToolCallInfo((info) => store.handleToolCallInfo(info)),
       window.brainwave.onContextUsage((usage) => store.handleContextUsage(usage)),
+      window.brainwave.onYouTubePlay((payload) => store.handleYouTubePlay(payload)),
     ]
     return () => unsubs.forEach((unsub) => unsub())
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
@@ -162,8 +163,10 @@ export function CommandCenter() {
     documents?: DocumentAttachment[],
     mode?: string,
   ) => {
-    let sessionId = store.activeSessionId
-    const msgs = store.messages
+    // Read fresh state at call time — NOT from the stale closure
+    const current = useChatStore.getState()
+    let sessionId = current.activeSessionId
+    const msgs = current.messages
 
     // Auto-create session if none active
     if (!sessionId) {
