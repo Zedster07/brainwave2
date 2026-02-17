@@ -1097,6 +1097,18 @@ export function registerIpcHandlers(): void {
     return mcpRegistry.reload()
   })
 
+  ipcMain.handle(IPC_CHANNELS.MCP_GET_BUNDLED, async () => {
+    return mcpRegistry.getBundledPresets()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MCP_TOGGLE_BUNDLED, async (_event, presetId: string, enabled: boolean) => {
+    await mcpRegistry.toggleBundledServer(presetId, enabled)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.MCP_UPDATE_BUNDLED_CONFIG, async (_event, presetId: string, envVars?: Record<string, string>, configArgs?: Record<string, string>) => {
+    mcpRegistry.updateBundledConfig(presetId, envVars, configArgs)
+  })
+
   // ─── Scheduler ───
   const scheduler = getScheduler()
 

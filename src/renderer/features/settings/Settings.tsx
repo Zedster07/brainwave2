@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2, Globe, ArrowRightLeft, FilePlus2, FolderTree, RotateCcw, Sun, ShieldCheck } from 'lucide-react'
+import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2, Globe, ArrowRightLeft, FilePlus2, FolderTree, RotateCcw, Sun, ShieldCheck, Search, Code2, HardDrive, GitBranch, Package } from 'lucide-react'
 import { ModelSelector } from '../../components/ModelSelector'
-import type { PluginInfoData, McpServerConfigInfo, McpServerStatusInfo } from '@shared/types'
+import type { PluginInfoData, McpServerConfigInfo, McpServerStatusInfo, BundledMcpServerInfo } from '@shared/types'
 
 type SettingsTab = 'general' | 'models' | 'rules' | 'storage' | 'plugins' | 'tools' | 'daily-pulse' | 'approval'
 
@@ -1593,14 +1593,22 @@ function ToolsSettings() {
   const [importBusy, setImportBusy] = useState(false)
   const [importResult, setImportResult] = useState<{ imported: number; skipped: number; errors: string[] } | null>(null)
 
+  // ── Bundled MCP servers state ──
+  const [bundledServers, setBundledServers] = useState<BundledMcpServerInfo[]>([])
+  const [bundledTogglingId, setBundledTogglingId] = useState<string | null>(null)
+  const [bundledExpandedId, setBundledExpandedId] = useState<string | null>(null)
+  const [bundledSavingId, setBundledSavingId] = useState<string | null>(null)
+
   const refresh = useCallback(async () => {
     try {
-      const [s, st] = await Promise.all([
+      const [s, st, b] = await Promise.all([
         window.brainwave.mcpGetServers(),
         window.brainwave.mcpGetStatuses(),
+        window.brainwave.mcpGetBundled(),
       ])
       setServers(s)
       setStatuses(st)
+      setBundledServers(b)
     } catch (err) {
       console.error('[ToolsSettings] Failed to load:', err)
     } finally {
@@ -1719,6 +1727,52 @@ function ToolsSettings() {
     }
   }
 
+  // ── Bundled server handlers ──
+  const handleBundledToggle = async (presetId: string, enabled: boolean) => {
+    setBundledTogglingId(presetId)
+    try {
+      await window.brainwave.mcpToggleBundled(presetId, enabled)
+      // If enabling, also trigger a connect via reload
+      if (enabled) {
+        await window.brainwave.mcpReload()
+      }
+      await refresh()
+    } catch (err) {
+      console.error('Failed to toggle bundled server:', err)
+    } finally {
+      setBundledTogglingId(null)
+    }
+  }
+
+  const handleBundledSaveConfig = async (presetId: string, envVars: Record<string, string>, configArgs: Record<string, string>) => {
+    setBundledSavingId(presetId)
+    try {
+      await window.brainwave.mcpUpdateBundledConfig(presetId, envVars, configArgs)
+      // Find if this server is enabled — if so, reconnect with new config
+      const preset = bundledServers.find(b => b.id === presetId)
+      if (preset?.enabled) {
+        // Disconnect old, reload to reconnect with new env/args
+        const serverId = `bundled::${presetId}`
+        await window.brainwave.mcpDisconnect(serverId).catch(() => {})
+        await window.brainwave.mcpReload()
+      }
+      await refresh()
+    } catch (err) {
+      console.error('Failed to save bundled config:', err)
+    } finally {
+      setBundledSavingId(null)
+    }
+  }
+
+  const CATEGORY_ICONS: Record<string, typeof Search> = {
+    search: Search,
+    browser: Globe,
+    coding: Code2,
+    filesystem: HardDrive,
+    database: Database,
+    utility: GitBranch,
+  }
+
   if (loading) {
     return <div className="flex items-center gap-2 text-gray-500 text-sm"><Loader2 className="w-4 h-4 animate-spin" /> Loading…</div>
   }
@@ -1742,6 +1796,85 @@ function ToolsSettings() {
                   <p className="text-xs font-medium text-white">local::{t.name}</p>
                   <p className="text-[10px] text-gray-500">{t.desc}</p>
                 </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="border-t border-white/[0.06]" />
+
+      {/* ── Bundled MCP Servers ── */}
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <div>
+            <h3 className="text-sm font-semibold text-white flex items-center gap-2">
+              <Package className="w-4 h-4 text-accent" /> Bundled MCP Servers
+            </h3>
+            <p className="text-xs text-gray-500 mt-0.5">Pre-configured servers — toggle on/off and add your API keys</p>
+          </div>
+        </div>
+
+        <div className="space-y-2 mt-3">
+          {bundledServers.map((preset) => {
+            const CatIcon = CATEGORY_ICONS[preset.category] ?? Package
+            const isExpanded = bundledExpandedId === preset.id
+            const isToggling = bundledTogglingId === preset.id
+            const isSaving = bundledSavingId === preset.id
+            const status = statuses.find(s => s.id === `bundled::${preset.id}`)
+            const isConnected = status?.state === 'connected'
+            const isError = status?.state === 'error'
+            const hasConfigFields = preset.envVars.length > 0 || preset.configArgs.length > 0
+
+            return (
+              <div key={preset.id} className="bg-white/[0.02] rounded-lg border border-white/[0.06] overflow-hidden">
+                {/* Header row */}
+                <div className="flex items-center gap-3 p-3">
+                  <CatIcon className="w-4 h-4 text-accent flex-shrink-0" />
+
+                  {/* Info — clickable to expand if has config fields */}
+                  <div
+                    className={`flex-1 min-w-0 ${hasConfigFields ? 'cursor-pointer' : ''}`}
+                    onClick={() => hasConfigFields && setBundledExpandedId(isExpanded ? null : preset.id)}
+                  >
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium text-white truncate">{preset.name}</p>
+                      <span className="text-[10px] text-gray-600 bg-white/[0.04] px-1.5 py-0.5 rounded">{preset.category}</span>
+                      {isConnected && status?.toolCount !== undefined && (
+                        <span className="text-[10px] text-green-400">{status.toolCount} tools</span>
+                      )}
+                      {isError && <span className="text-[10px] text-red-400">error</span>}
+                    </div>
+                    <p className="text-[10px] text-gray-500 truncate mt-0.5">{preset.description}</p>
+                  </div>
+
+                  {/* Status dot */}
+                  {preset.enabled && (
+                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                      isConnected ? 'bg-green-400' : isError ? 'bg-red-400' : 'bg-gray-600'
+                    }`} />
+                  )}
+
+                  {/* Toggle */}
+                  {isToggling ? (
+                    <Loader2 className="w-4 h-4 text-gray-500 animate-spin" />
+                  ) : (
+                    <ToggleSwitch
+                      checked={preset.enabled}
+                      onChange={(val) => handleBundledToggle(preset.id, val)}
+                    />
+                  )}
+                </div>
+
+                {/* Expanded config panel */}
+                {isExpanded && hasConfigFields && (
+                  <BundledConfigPanel
+                    preset={preset}
+                    isSaving={isSaving}
+                    onSave={(envVars, configArgs) => handleBundledSaveConfig(preset.id, envVars, configArgs)}
+                    onClose={() => setBundledExpandedId(null)}
+                  />
+                )}
               </div>
             )
           })}
@@ -1992,6 +2125,64 @@ function ToolsSettings() {
             </div>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Bundled Config Panel ───
+
+function BundledConfigPanel({ preset, isSaving, onSave, onClose }: {
+  preset: BundledMcpServerInfo
+  isSaving: boolean
+  onSave: (envVars: Record<string, string>, configArgs: Record<string, string>) => void
+  onClose: () => void
+}) {
+  const [envVars, setEnvVars] = useState<Record<string, string>>({ ...preset.configuredEnvVars })
+  const [cfgArgs, setCfgArgs] = useState<Record<string, string>>({ ...preset.configuredArgs })
+
+  return (
+    <div className="border-t border-white/[0.06] px-4 py-3 space-y-3 bg-white/[0.01]">
+      {/* Env vars (API keys) */}
+      {preset.envVars.map((ev) => (
+        <div key={ev.key}>
+          <label className="text-[11px] text-gray-500 mb-1 block">{ev.label}</label>
+          <input
+            type={ev.secret ? 'password' : 'text'}
+            value={envVars[ev.key] ?? ''}
+            onChange={(e) => setEnvVars({ ...envVars, [ev.key]: e.target.value })}
+            placeholder={ev.placeholder}
+            autoComplete="off"
+            className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-accent/40"
+          />
+        </div>
+      ))}
+
+      {/* Config args (paths etc.) */}
+      {preset.configArgs.map((ca) => (
+        <div key={ca.key}>
+          <label className="text-[11px] text-gray-500 mb-1 block">{ca.label}</label>
+          <input
+            type="text"
+            value={cfgArgs[ca.key] ?? ca.defaultValue}
+            onChange={(e) => setCfgArgs({ ...cfgArgs, [ca.key]: e.target.value })}
+            placeholder={ca.placeholder}
+            className="w-full bg-white/[0.03] border border-white/[0.08] rounded px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-accent/40"
+          />
+          <p className="text-[10px] text-gray-600 mt-0.5">{ca.description}</p>
+        </div>
+      ))}
+
+      <div className="flex justify-end gap-2 pt-1">
+        <button onClick={onClose} className="px-3 py-1.5 text-xs text-gray-400 hover:text-white transition-colors">Cancel</button>
+        <button
+          onClick={() => onSave(envVars, cfgArgs)}
+          disabled={isSaving}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-accent text-white text-xs font-medium hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+        >
+          {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+          Save & Reconnect
+        </button>
       </div>
     </div>
   )

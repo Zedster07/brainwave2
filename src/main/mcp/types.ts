@@ -53,7 +53,7 @@ export type ValidatedServerConfig = z.infer<typeof ServerConfigSchema>
 export type McpTransport = 'stdio' | 'sse' | 'streamable-http'
 
 /** Where a config was loaded from */
-export type McpConfigSource = 'sqlite' | 'global-file' | 'project-file'
+export type McpConfigSource = 'sqlite' | 'global-file' | 'project-file' | 'bundled'
 
 /** Persisted MCP server configuration */
 export interface McpServerConfig {

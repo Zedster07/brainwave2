@@ -140,6 +140,9 @@ export const IPC_CHANNELS = {
   MCP_GET_TOOLS: 'mcp:get-tools',
   MCP_IMPORT_SERVERS: 'mcp:import-servers',
   MCP_RELOAD: 'mcp:reload',
+  MCP_GET_BUNDLED: 'mcp:get-bundled',
+  MCP_TOGGLE_BUNDLED: 'mcp:toggle-bundled',
+  MCP_UPDATE_BUNDLED_CONFIG: 'mcp:update-bundled-config',
 
   // Calibration / Feedback
   CALIBRATION_SUBMIT_FEEDBACK: 'calibration:submit-feedback',
@@ -612,6 +615,9 @@ export interface BrainwaveAPI {
   mcpGetTools: () => Promise<McpToolInfo[]>
   mcpImportServers: (json: string) => Promise<{ imported: number; skipped: number; errors: string[] }>
   mcpReload: () => Promise<{ connected: number; disconnected: number; errors: string[] }>
+  mcpGetBundled: () => Promise<BundledMcpServerInfo[]>
+  mcpToggleBundled: (presetId: string, enabled: boolean) => Promise<void>
+  mcpUpdateBundledConfig: (presetId: string, envVars?: Record<string, string>, configArgs?: Record<string, string>) => Promise<void>
 
   // Checkpoints
   getCheckpoints: (taskId: string) => Promise<CheckpointInfo[]>
@@ -701,7 +707,7 @@ export interface McpServerConfigInfo {
   autoConnect: boolean
   enabled: boolean
   autoApprove?: string[]
-  configSource?: 'sqlite' | 'global-file' | 'project-file'
+  configSource?: 'sqlite' | 'global-file' | 'project-file' | 'bundled'
 }
 
 export interface McpServerStatusInfo {
@@ -720,6 +726,35 @@ export interface McpToolInfo {
   serverName: string
   name: string
   description: string
+}
+
+// ─── Bundled MCP Server Types ───
+
+export interface BundledMcpEnvVarInfo {
+  key: string
+  label: string
+  placeholder: string
+  secret: boolean
+}
+
+export interface BundledMcpConfigArgInfo {
+  key: string
+  label: string
+  defaultValue: string
+  placeholder: string
+  description: string
+}
+
+export interface BundledMcpServerInfo {
+  id: string
+  name: string
+  description: string
+  category: 'search' | 'browser' | 'coding' | 'filesystem' | 'database' | 'utility'
+  enabled: boolean
+  envVars: BundledMcpEnvVarInfo[]
+  configArgs: BundledMcpConfigArgInfo[]
+  configuredEnvVars: Record<string, string>
+  configuredArgs: Record<string, string>
 }
 
 // ─── Plugin Types ───

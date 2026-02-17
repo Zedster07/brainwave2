@@ -371,6 +371,15 @@ const api: BrainwaveAPI = {
   mcpReload: () =>
     ipcRenderer.invoke(IPC_CHANNELS.MCP_RELOAD),
 
+  mcpGetBundled: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_GET_BUNDLED),
+
+  mcpToggleBundled: (presetId: string, enabled: boolean) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_TOGGLE_BUNDLED, presetId, enabled) as Promise<void>,
+
+  mcpUpdateBundledConfig: (presetId: string, envVars?: Record<string, string>, configArgs?: Record<string, string>) =>
+    ipcRenderer.invoke(IPC_CHANNELS.MCP_UPDATE_BUNDLED_CONFIG, presetId, envVars, configArgs) as Promise<void>,
+
   // ─── Speech-to-Text ───
   transcribeAudio: (audioBuffer: ArrayBuffer, mimeType: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.STT_TRANSCRIBE, audioBuffer, mimeType),

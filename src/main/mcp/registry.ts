@@ -23,6 +23,13 @@ import type {
   McpToolCallResult,
   McpConfigSource,
 } from './types'
+import {
+  BUNDLED_SERVERS,
+  BUNDLED_SETTINGS_KEY,
+  getDefaultBundledState,
+  type BundledServerPreset,
+  type BundledServerState,
+} from './bundled-servers'
 
 const SETTINGS_KEY = 'mcp_servers'
 
@@ -388,9 +395,10 @@ class McpRegistry {
   // ─── Config Merging ───────────────────────────────────────
 
   /**
-   * Merge configs from all sources: SQLite → global file → project file.
+   * Merge configs from all sources: SQLite → global file → project file → bundled.
    * SQLite configs have highest priority (user-managed).
    * File configs are additive — only added if no SQLite config has the same name.
+   * Bundled presets are added last and only if enabled and no existing config shares the name.
    */
   private getMergedConfigs(): McpServerConfig[] {
     const sqliteConfigs = this.loadSqliteConfigs()
@@ -404,7 +412,139 @@ class McpRegistry {
       }
     }
 
+    // Add enabled bundled presets that don't conflict
+    const allNames = new Set(merged.map(c => c.name.toLowerCase()))
+    const bundledConfigs = this.getBundledConfigs()
+    for (const bc of bundledConfigs) {
+      if (!allNames.has(bc.name.toLowerCase())) {
+        merged.push(bc)
+      }
+    }
+
     return merged
+  }
+
+  // ─── Bundled MCP Servers ──────────────────────────────────
+
+  /** Load the persisted bundled server state from SQLite */
+  loadBundledState(): BundledServerState {
+    try {
+      const db = getDatabase()
+      const row = db.get<{ value: string }>(
+        `SELECT value FROM settings WHERE key = ?`,
+        BUNDLED_SETTINGS_KEY
+      )
+      if (!row) return getDefaultBundledState()
+
+      const parsed = JSON.parse(row.value) as BundledServerState
+      // Ensure all presets have entries (handles newly-added presets after update)
+      const defaults = getDefaultBundledState()
+      for (const id of Object.keys(defaults.servers)) {
+        if (!parsed.servers[id]) {
+          parsed.servers[id] = defaults.servers[id]
+        }
+      }
+      return parsed
+    } catch {
+      return getDefaultBundledState()
+    }
+  }
+
+  /** Save the bundled server state to SQLite */
+  saveBundledState(state: BundledServerState): void {
+    const db = getDatabase()
+    db.run(
+      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+      BUNDLED_SETTINGS_KEY,
+      JSON.stringify(state)
+    )
+  }
+
+  /** Toggle a bundled server on/off. Returns the updated state. */
+  async toggleBundledServer(presetId: string, enabled: boolean): Promise<BundledServerState> {
+    const state = this.loadBundledState()
+    if (!state.servers[presetId]) {
+      state.servers[presetId] = { enabled: false, envVars: {}, configArgs: {} }
+    }
+    state.servers[presetId].enabled = enabled
+    this.saveBundledState(state)
+
+    // If disabling, disconnect the server
+    if (!enabled) {
+      const config = this.getBundledConfigs().find(c => c.id === `bundled::${presetId}`)
+      if (config) {
+        await this.disconnect(config.id).catch(() => {})
+      }
+    }
+
+    return state
+  }
+
+  /** Update env vars / config args for a bundled server. Returns the updated state. */
+  updateBundledConfig(presetId: string, envVars?: Record<string, string>, configArgs?: Record<string, string>): BundledServerState {
+    const state = this.loadBundledState()
+    if (!state.servers[presetId]) {
+      state.servers[presetId] = { enabled: false, envVars: {}, configArgs: {} }
+    }
+    if (envVars !== undefined) state.servers[presetId].envVars = envVars
+    if (configArgs !== undefined) state.servers[presetId].configArgs = configArgs
+    this.saveBundledState(state)
+    return state
+  }
+
+  /** Get the list of all bundled presets with their current state */
+  getBundledPresets(): Array<BundledServerPreset & { enabled: boolean; configuredEnvVars: Record<string, string>; configuredArgs: Record<string, string> }> {
+    const state = this.loadBundledState()
+    return BUNDLED_SERVERS.map((preset) => {
+      const s = state.servers[preset.id] ?? { enabled: preset.defaultEnabled, envVars: {}, configArgs: {} }
+      return {
+        ...preset,
+        enabled: s.enabled,
+        configuredEnvVars: s.envVars,
+        configuredArgs: s.configArgs,
+      }
+    })
+  }
+
+  /** Convert enabled bundled presets into McpServerConfig objects */
+  private getBundledConfigs(): McpServerConfig[] {
+    const state = this.loadBundledState()
+    const configs: McpServerConfig[] = []
+
+    for (const preset of BUNDLED_SERVERS) {
+      const s = state.servers[preset.id]
+      if (!s?.enabled) continue
+
+      // Build args: static args + user-configured args
+      const args = [...preset.args]
+      for (const ca of preset.configArgs) {
+        const val = s.configArgs[ca.key]
+        if (val) {
+          // For filesystem, comma-separated dirs become separate args
+          if (ca.key === 'allowed_dirs') {
+            const dirs = val.split(',').map(d => d.trim()).filter(Boolean)
+            args.push(...dirs)
+          } else {
+            args.push(val)
+          }
+        }
+      }
+
+      configs.push({
+        id: `bundled::${preset.id}`,
+        name: preset.name,
+        transport: 'stdio',
+        command: preset.command,
+        args,
+        env: Object.keys(s.envVars).length > 0 ? s.envVars : undefined,
+        autoConnect: true,
+        enabled: true,
+        configSource: 'bundled',
+      })
+    }
+
+    return configs
   }
 
   // ─── File Config Loading ──────────────────────────────────
