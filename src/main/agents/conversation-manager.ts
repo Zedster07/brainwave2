@@ -287,6 +287,110 @@ export class ConversationManager {
     return budget > 0 ? (this.structuredTotalTokens / budget) >= threshold : false
   }
 
+  /** Get the usage ratio for the structured track (0.0 to 1.0+) */
+  getStructuredUsageRatio(): number {
+    const budget = this.maxTokenBudget - this.reservedForResponse
+    return budget > 0 ? this.structuredTotalTokens / budget : 0
+  }
+
+  /**
+   * Proactive compaction — called BEFORE we hit the hard trim threshold.
+   *
+   * Strategy (two-phase):
+   * 1. Strip thinking blocks from all but the last 4 messages.
+   *    Thinking is only useful for the most recent turns; old thinking
+   *    wastes context rapidly (M2.5 can emit 10K+ thinking per turn).
+   * 2. If still above the given ratio, drop middle messages (same
+   *    approach as trimStructured but triggered earlier).
+   *
+   * Returns true if any compaction was performed.
+   */
+  proactiveCompact(targetRatio = 0.55): boolean {
+    const budget = this.maxTokenBudget - this.reservedForResponse
+    if (budget <= 0 || this.structuredMsgs.length <= 6) return false
+
+    const beforeTokens = this.structuredTotalTokens
+    let compacted = false
+
+    // Phase 1: Strip thinking blocks from all but last 4 messages
+    const thinkingCutoff = Math.max(0, this.structuredMsgs.length - 4)
+    for (let i = 0; i < thinkingCutoff; i++) {
+      const msg = this.structuredMsgs[i]
+      if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+        const withoutThinking = msg.content.filter(b => b.type !== 'thinking')
+        if (withoutThinking.length < msg.content.length) {
+          msg.content = withoutThinking
+          compacted = true
+        }
+      }
+    }
+
+    if (compacted) {
+      // Recalculate token estimates after stripping thinking
+      this.structuredTokenEstimates = this.structuredMsgs.map(msg => {
+        const content = msg.content
+        if (typeof content === 'string') return countTokens(content)
+        return countTokens(content.map(b => {
+          switch (b.type) {
+            case 'thinking': return b.thinking
+            case 'text': return b.text
+            case 'tool_use': return JSON.stringify(b.input)
+            case 'tool_result': return typeof b.content === 'string'
+              ? b.content
+              : b.content.map(c => c.text).join('')
+            default: return ''
+          }
+        }).join(' '))
+      })
+      this.structuredTotalTokens = this.structuredTokenEstimates.reduce((a, b) => a + b, 0)
+    }
+
+    // Phase 2: If still above target ratio, drop middle messages
+    const targetTokens = Math.floor(budget * targetRatio)
+    if (this.structuredTotalTokens > targetTokens && this.structuredMsgs.length > 6) {
+      const keepFirst = 1
+      const keepLast = Math.min(8, Math.floor(this.structuredMsgs.length * 0.4))
+
+      if (this.structuredMsgs.length > keepFirst + keepLast + 1) {
+        const middleStart = keepFirst
+        const middleEnd = this.structuredMsgs.length - keepLast
+
+        let removedTokens = 0
+        for (let i = middleStart; i < middleEnd; i++) {
+          removedTokens += this.structuredTokenEstimates[i]
+        }
+
+        const condensedCount = middleEnd - middleStart
+        const notice: StructuredMessage = {
+          role: 'user',
+          content: [{
+            type: 'text',
+            text: `[${condensedCount} earlier messages were proactively condensed at ` +
+                  `${Math.round((this.structuredTotalTokens / budget) * 100)}% capacity. ` +
+                  `The task definition and recent messages are preserved.]`,
+          }],
+        }
+        const noticeTokens = countTokens('[condensed messages notice]')
+
+        this.structuredMsgs.splice(middleStart, condensedCount, notice)
+        this.structuredTokenEstimates.splice(middleStart, condensedCount, noticeTokens)
+        this.structuredTotalTokens = this.structuredTotalTokens - removedTokens + noticeTokens
+        this.trimCount++
+        compacted = true
+      }
+    }
+
+    if (compacted) {
+      const saved = beforeTokens - this.structuredTotalTokens
+      console.log(
+        `[ConversationManager] Proactive compaction: ${beforeTokens} → ${this.structuredTotalTokens} tokens ` +
+        `(saved ${saved}, ${this.structuredMsgs.length} msgs remaining)`
+      )
+    }
+
+    return compacted
+  }
+
   /**
    * Trim structured messages when over budget.
    *

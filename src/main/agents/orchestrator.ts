@@ -962,6 +962,8 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     ;(task as any)._toolingNeeds = triage.toolingNeeds
 
     // Build a single-step plan inline (no planner LLM call)
+    // Coding/executor tasks get more retry attempts for build-verify-fix loops
+    const isCodingTask = agentType === 'coder' || agentType === 'executor'
     const plan: TaskPlan = {
       id: `plan_${randomUUID().slice(0, 8)}`,
       taskId: task.id,
@@ -973,7 +975,7 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
         status: 'pending',
         dependencies: [],
         attempts: 0,
-        maxAttempts: 2,
+        maxAttempts: isCodingTask ? 3 : 2,
       }],
       estimatedComplexity: 'simple',
       requiredAgents: [agentType],
@@ -1308,10 +1310,11 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
 
         if (result.status === 'success' || result.status === 'partial') {
           // ── Code Verification Loop ──
-          // After a coder step writes files, auto-verify with type-check/lint.
-          // If verification fails, feed errors back to the coder for self-correction.
+          // After a coder/executor step writes files, auto-verify with type-check/lint.
+          // If verification fails, feed errors back for self-correction.
           let verificationFailed = false
-          if (subTask.assignedAgent === 'coder' && result.status === 'success') {
+          const isCodeAgent = subTask.assignedAgent === 'coder' || subTask.assignedAgent === 'executor'
+          if (isCodeAgent && result.status === 'success') {
             const verifyContext: AgentContext = {
               taskId: task.id,
               relevantMemories,
@@ -1480,9 +1483,14 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
       const verifySubTask: SubTask = {
         id: `${subTask.id}_verify`,
         description: `Run code verification in "${projectDir}". Execute the following commands and report results:
-1. If package.json exists with a TypeScript config: run "npx tsc --noEmit --pretty" to type-check
-2. If that's not available, try "npx eslint --no-error-on-unmatched-pattern ." for lint
-3. Report ONLY the errors found (if any). If no errors, say "VERIFICATION PASSED".
+1. Run the project's build or type-check command:
+   - If tsconfig.json exists: run "npx tsc --noEmit --pretty" in "${projectDir}"
+   - If electron.vite.config exists: run "npx electron-vite build" in "${projectDir}"
+   - If package.json has a "build" script: run "npm run build" in "${projectDir}"
+   - Otherwise try "npx eslint --no-error-on-unmatched-pattern ." in "${projectDir}"
+2. Use terminal_execute with cwd="${projectDir}" — do NOT cd manually
+3. Check terminal output for errors
+4. Report ONLY the errors found (if any). If no errors, say "VERIFICATION PASSED".
 Do NOT install any packages. Do NOT fix errors — just report them.`,
         assignedAgent: 'executor',
         status: 'in-progress',

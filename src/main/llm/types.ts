@@ -89,6 +89,8 @@ export interface NativeToolDefinition {
     properties: Record<string, unknown>
     required?: string[]
   }
+  /** Prompt caching control — mark as ephemeral to cache this tool definition */
+  cache_control?: { type: 'ephemeral' }
 }
 
 /** Native tool definition in OpenAI function calling format */
@@ -224,7 +226,7 @@ export function getModelCapabilities(modelId: string): ModelCapabilities {
       supportsVision: false,
       supportsPromptCaching: true,
       toolFormat: 'anthropic',
-      contextWindow: 204_800,
+      contextWindow: 1_048_576,
       maxOutput: 131_072,
     }
   }
@@ -277,6 +279,19 @@ export function getModelCapabilities(modelId: string): ModelCapabilities {
       supportsPromptCaching: false,
       toolFormat: 'openai',
       contextWindow: 128_000,
+      maxOutput: 8_192,
+    }
+  }
+
+  // Qwen
+  if (id.includes('qwen')) {
+    return {
+      supportsNativeTools: true,
+      supportsThinking: id.includes('qwen3'),
+      supportsVision: id.includes('vl'),
+      supportsPromptCaching: false,
+      toolFormat: 'openai',
+      contextWindow: id.includes('qwen3-coder') ? 256_000 : 128_000,
       maxOutput: 8_192,
     }
   }

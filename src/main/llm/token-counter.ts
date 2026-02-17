@@ -173,6 +173,28 @@ export function getContextLimit(model: string): number {
 /** Default compaction threshold — compact when context is this % full */
 export const DEFAULT_COMPACTION_THRESHOLD = 0.80
 
+/**
+ * Proactive compaction threshold — strip thinking blocks & compact
+ * at 60% capacity, well before the hard trim kicks in.
+ */
+export const PROACTIVE_COMPACTION_THRESHOLD = 0.60
+
+/**
+ * Hard cap on input budget regardless of model context window.
+ * Even 1M-context models (M2.5, Gemini) should not send 1M of context —
+ * it's slow, expensive, and degrades quality.  200K covers any practical
+ * coding task while keeping latency and cost in check.
+ */
+export const MAX_INPUT_BUDGET = 200_000
+
+/**
+ * Extra tokens reserved when the model supports extended thinking.
+ * Thinking tokens are output tokens but the model's latent reasoning
+ * benefits from headroom.  We add this on top of OUTPUT_RESERVE_TOKENS
+ * so the model has room for deep reasoning without hitting the ceiling.
+ */
+export const REASONING_RESERVE_TOKENS = 16_000
+
 /** Reserve this many tokens for the model's response */
 const OUTPUT_RESERVE_TOKENS = 4_096
 

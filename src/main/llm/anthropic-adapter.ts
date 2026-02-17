@@ -131,7 +131,8 @@ function toAnthropicToolParam(tool: NativeToolDefinition): Anthropic.Tool {
     name: tool.name,
     description: tool.description,
     input_schema: tool.input_schema as Anthropic.Tool.InputSchema,
-  }
+    ...(tool.cache_control ? { cache_control: tool.cache_control } : {}),
+  } as Anthropic.Tool
 }
 
 // ─── Provider Implementation ────────────────────────────────

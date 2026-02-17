@@ -41,7 +41,7 @@ import { getEventBus, type AgentType } from './event-bus'
 import { getDatabase } from '../db/database'
 import { getSoftEngine } from '../rules'
 import { getPromptRegistry } from '../prompts'
-import { calculateBudget, formatTokenCount, countTokens } from '../llm/token-counter'
+import { calculateBudget, formatTokenCount, countTokens, MAX_INPUT_BUDGET, REASONING_RESERVE_TOKENS, PROACTIVE_COMPACTION_THRESHOLD } from '../llm/token-counter'
 import { type FileRegistryEntry, compactContext, buildCompactionNotice } from './context-compactor'
 import { FileContextTracker } from './file-context-tracker'
 import { calculateCost, formatCost } from '../llm/pricing'
@@ -922,13 +922,21 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
     })
 
     // Initialize conversation manager in native mode
-    const contextLimit = calculateBudget(model, 0).contextLimit
-    const conversation = new ConversationManager(contextLimit, 8_000)
+    // Cap input budget at MAX_INPUT_BUDGET even for models with huge context windows
+    // (sending 1M tokens is slow, expensive, and degrades quality).
+    // Reserve extra tokens for thinking if the model supports extended thinking.
+    const rawContextLimit = calculateBudget(model, 0).contextLimit
+    const cappedBudget = Math.min(rawContextLimit, MAX_INPUT_BUDGET)
+    const responseReserve = capabilities.supportsThinking
+      ? 8_000 + REASONING_RESERVE_TOKENS // 24K total: 8K response + 16K thinking headroom
+      : 8_000
+    const conversation = new ConversationManager(cappedBudget, responseReserve)
     conversation.enableNativeMode()
 
     console.log(
       `[${this.type}] executeWithNativeTools | taskId=${context.taskId} | model=${model} | ` +
-      `tools=${nativeTools.length} | timeout=${Math.round(TIMEOUT_MS / 1000)}s | native=true`
+      `tools=${nativeTools.length} | timeout=${Math.round(TIMEOUT_MS / 1000)}s | native=true | ` +
+      `budget=${cappedBudget} (raw=${rawContextLimit}) | responseReserve=${responseReserve}`
     )
 
     try {
@@ -976,7 +984,7 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
       const envDetails = await getEnvironmentDetails({
         workDir,
         brainwaveHomeDir: this.getBrainwaveHomeDir(),
-        contextLimitTokens: contextLimit,
+        contextLimitTokens: cappedBudget,
         fileTracker,
         includeTree: true,
         treeMaxDepth: 3,
@@ -1025,21 +1033,39 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
           action: `Step ${step}: ${step === 1 ? 'Analyzing task...' : 'Processing...'}`,
         })
 
-        // ── Token budget check ──
-        if (step > 1 && conversation.isStructuredNearBudget(0.75)) {
-          console.log(`[${this.type}] Step ${step}: Near context budget — trimming`)
-          // Structured trim will strip thinking from old messages
+        // ── Token budget check — proactive compaction at 60% ──
+        if (step > 1 && conversation.isStructuredNearBudget(PROACTIVE_COMPACTION_THRESHOLD)) {
+          const ratio = conversation.getStructuredUsageRatio()
+          console.log(
+            `[${this.type}] Step ${step}: Context at ${Math.round(ratio * 100)}% — proactive compaction`
+          )
+          conversation.proactiveCompact(0.55)
         }
 
         // ── Call LLM with native tools ──
         const structuredMessages = conversation.getStructuredMessages()
 
+        // ── Prompt Caching: mark system prompt & last tool for caching ──
+        // Anthropic caches everything up to and including the cache_control marker.
+        // System prompt + tool defs are static across the loop — perfect cache candidates.
+        const systemBlocks: Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> = [
+          { type: 'text', text: systemWithInstructions, cache_control: { type: 'ephemeral' } },
+        ]
+
+        // Mark the last tool for caching (tools are static across iterations)
+        const cachedTools = nativeTools.map((t, i) =>
+          i === nativeTools.length - 1
+            ? { ...t, cache_control: { type: 'ephemeral' as const } }
+            : t
+        )
+
         const response = await provider.complete({
           model,
           system: systemWithInstructions,
+          systemBlocks,
           user: '', // Not used when structuredMessages is set
           structuredMessages,
-          tools: nativeTools,
+          tools: cachedTools,
           temperature: capabilities.supportsThinking ? 1.0 : (modelConfig?.temperature ?? 0.7),
           maxTokens: modelConfig?.maxTokens ?? 8192,
           signal: context.cancellationToken?.signal,
@@ -1047,6 +1073,18 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
 
         totalTokensIn += response.tokensIn
         totalTokensOut += response.tokensOut
+
+        // ── Log cache metrics if available ──
+        if (response.cacheMetrics) {
+          const { cacheCreationInputTokens, cacheReadInputTokens } = response.cacheMetrics
+          if (cacheCreationInputTokens > 0 || cacheReadInputTokens > 0) {
+            console.log(
+              `[${this.type}] Step ${step} cache: ` +
+              `created=${cacheCreationInputTokens} read=${cacheReadInputTokens} ` +
+              `(${cacheReadInputTokens > 0 ? 'HIT' : 'MISS'})`
+            )
+          }
+        }
 
         // ── Preserve FULL response in history (M2.5 cardinal rule) ──
         const contentBlocks = response.contentBlocks ?? textToBlocks(response.content)
@@ -1409,11 +1447,12 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
       mode: context.mode,
     })
 
-    // Initialize conversation manager with model's context budget
-    const contextLimit = calculateBudget(model, 0).contextLimit
+    // Initialize conversation manager with capped budget
+    const rawContextLimit = calculateBudget(model, 0).contextLimit
+    const contextLimit = Math.min(rawContextLimit, MAX_INPUT_BUDGET)
     const conversation = new ConversationManager(contextLimit, 8_000)
 
-    console.log(`[${this.type}] executeWithTools | taskId=${context.taskId} | model=${model} | tools=${allowedTools.length} | timeout=${Math.round(TIMEOUT_MS / 1000)}s | contextLimit=${formatTokenCount(contextLimit)}`)
+    console.log(`[${this.type}] executeWithTools | taskId=${context.taskId} | model=${model} | tools=${allowedTools.length} | timeout=${Math.round(TIMEOUT_MS / 1000)}s | contextLimit=${formatTokenCount(contextLimit)} (raw=${formatTokenCount(rawContextLimit)})`)
     console.log(`[${this.type}] Task: "${task.description.slice(0, 200)}"`)
 
     try {

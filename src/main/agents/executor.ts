@@ -81,7 +81,18 @@ You have ALMOST FULL ACCESS to the user's computer:
 - Use EFFICIENT strategies:
   • Find files: use recursive search (dir /s /b on Windows, find on Linux) — don't list dirs one by one
   • Search contents: use findstr /s /i or grep -r
-- Always provide a clear, concrete summary of what was accomplished${toolSection}`
+- Always provide a clear, concrete summary of what was accomplished
+
+## MANDATORY — Build & Verify Protocol (for code tasks)
+After ANY code changes (file_write, file_create, replace_in_file), you MUST:
+1. **Build/compile** — Run the project's build command (npm run build, npx tsc --noEmit, npx electron-vite build, etc.) using terminal_execute
+2. **Check output** — Read the terminal output with terminal_read to check for errors
+3. **Fix all errors** — If there are compile/type/lint errors, fix them immediately, then re-build
+4. **Repeat until clean** — Do NOT call attempt_completion until the build passes with 0 errors
+5. **Run tests** — If the project has tests (npm test, pytest, etc.), run them too
+
+NEVER consider a coding task complete until you have verified it builds successfully.
+Do NOT skip verification — it is MORE IMPORTANT than the code itself.${toolSection}`
   }
 
   /**
