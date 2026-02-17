@@ -135,21 +135,31 @@ export class StreamingXmlParser {
 
           if (char === '>' || char === '\n') {
             // Tag closed or newline — check if it's a tool opening tag
-            const match = this.buffer.match(/^<([a-z_]+)(?:\s*>|\s*\n)$/)
-            if (match && STREAMING_TOOL_NAMES.has(match[1])) {
-              // It's a known tool! Enter tool block state
-              this.state = 'inside-tool'
-              this.currentToolName = match[1]
-              this.currentToolStart = this.fullRaw.length - this.buffer.length
-              this.toolContent = ''
+            // Supports qualified names like <local::directory_list> or <bundled::fs::tool>
+            const match = this.buffer.match(/^<([a-z][a-z0-9_:.-]*)(?:\s*>|\s*\n)$/)
+            if (match) {
+              const tagName = match[1]
+              const shortName = tagName.includes('::') ? tagName.split('::').pop()! : tagName
+              if (STREAMING_TOOL_NAMES.has(tagName) || STREAMING_TOOL_NAMES.has(shortName)) {
+                // It's a known tool! Enter tool block state
+                this.state = 'inside-tool'
+                this.currentToolName = tagName
+                this.currentToolStart = this.fullRaw.length - this.buffer.length
+                this.toolContent = ''
+              } else {
+                // Not a tool tag — flush buffer as display text
+                result.displayText += this.buffer
+                this.fullDisplay += this.buffer
+                this.state = 'text'
+              }
             } else {
-              // Not a tool tag — flush buffer as display text
+              // No regex match at all — flush buffer as display text
               result.displayText += this.buffer
               this.fullDisplay += this.buffer
               this.state = 'text'
             }
             this.buffer = ''
-          } else if (this.buffer.length > 40) {
+          } else if (this.buffer.length > 60) {
             // Too long for a tool name — not a tool tag
             result.displayText += this.buffer
             this.fullDisplay += this.buffer

@@ -131,7 +131,8 @@ export function parseAssistantMessage(content: string): ParsedMessage {
     }
 
     // Try to match an opening tag: <tool_name> or <tool_name\n (no attributes)
-    const openMatch = content.slice(tagStart).match(/^<([a-z_]+)(?:\s*>|\s*\n)/)
+    // Supports qualified names like <local::directory_list> or <bundled::fs::tool>
+    const openMatch = content.slice(tagStart).match(/^<([a-z][a-z0-9_:.-]*)(?:\s*>|\s*\n)/)
 
     if (!openMatch) {
       // Not a valid opening tag — treat '<' as text
@@ -140,12 +141,11 @@ export function parseAssistantMessage(content: string): ParsedMessage {
       continue
     }
 
-    const tagName = openMatch[0].endsWith('\n')
-      ? openMatch[1]
-      : openMatch[1]
+    const tagName = openMatch[1]
 
-    // Check if this is a known tool name
-    if (!TOOL_NAMES.has(tagName)) {
+    // Check if this is a known tool name (supports qualified names like local::tool_name)
+    const shortName = tagName.includes('::') ? tagName.split('::').pop()! : tagName
+    if (!TOOL_NAMES.has(tagName) && !TOOL_NAMES.has(shortName)) {
       // Not a tool — keep as text
       textParts.push(content.slice(tagStart, tagStart + openMatch[0].length))
       cursor = tagStart + openMatch[0].length
@@ -289,6 +289,18 @@ export function xmlToolToLocalCall(toolUse: ParsedToolUse): {
   tool: string
   args: Record<string, unknown>
 } {
+  // If the tool name already has a qualified prefix (e.g. local::directory_list,
+  // bundled::filesystem::list_directory), preserve the prefix and map the short name
+  if (toolUse.tool.includes('::')) {
+    const shortName = toolUse.tool.split('::').pop()!
+    const mappedShort = TOOL_NAME_MAP[shortName] ?? shortName
+    // Rebuild: keep prefix, swap short name for its mapped equivalent
+    const prefix = toolUse.tool.slice(0, toolUse.tool.lastIndexOf('::') + 2)
+    const tool = prefix + mappedShort
+    const args = mapParamsToArgs(shortName, toolUse.params)
+    return { tool, args }
+  }
+
   const localName = TOOL_NAME_MAP[toolUse.tool] ?? toolUse.tool
   const tool = `local::${localName}`
 
@@ -476,6 +488,8 @@ export function containsToolUse(content: string): boolean {
     if (content.includes(`<${toolName}>`)) return true
     if (content.includes(`<${toolName}\n`)) return true
   }
+  // Also detect prefixed tool names (e.g. <local::directory_list>, <bundled::fs::tool>)
+  if (/<[a-z_]+::[a-z][a-z0-9_:.-]*[>\n]/.test(content)) return true
   return false
 }
 

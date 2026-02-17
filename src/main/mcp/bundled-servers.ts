@@ -170,10 +170,10 @@ export const BUNDLED_SERVERS: BundledServerPreset[] = [
     id: 'sqlite',
     name: 'SQLite',
     description: 'Read/write SQLite databases with SQL queries',
-    package: '@modelcontextprotocol/server-sqlite',
+    package: 'mcp-server-sqlite',
     category: 'database',
-    command: 'npx',
-    args: ['-y', '@modelcontextprotocol/server-sqlite'],
+    command: 'uvx',
+    args: ['mcp-server-sqlite'],
     envVars: [],
     configArgs: [
       {
