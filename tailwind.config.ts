@@ -54,6 +54,7 @@ const config: Config = {
         'pulse-glow': 'pulse-glow 2s ease-in-out infinite',
         'slide-in': 'slide-in 0.2s ease-out',
         'fade-in': 'fade-in 0.15s ease-out',
+        'spin-slow': 'spin 2s linear infinite',
       },
       keyframes: {
         'pulse-glow': {

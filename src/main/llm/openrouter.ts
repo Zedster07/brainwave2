@@ -170,7 +170,8 @@ export class OpenRouterProvider implements LLMAdapter {
       // Guard against unexpected response shapes from OpenRouter
       const embedding = response?.data?.[0]?.embedding
       if (!embedding || !Array.isArray(embedding)) {
-        throw new Error(`OpenRouter embedding response malformed: data=${JSON.stringify(response?.data?.slice?.(0, 1)).slice(0, 200)}`)
+        const preview = JSON.stringify(response?.data?.slice?.(0, 1) ?? null) ?? ''
+        throw new Error(`OpenRouter embedding response malformed: data=${preview.slice(0, 200)}`)
       }
       return new Float32Array(embedding)
     } catch (err) {

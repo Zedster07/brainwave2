@@ -8,7 +8,7 @@ import type { TaskSubmission, MemoryQuery, CreateScheduledJobInput } from '@shar
 import { getScheduler } from '../services/scheduler.service'
 import { getDatabase } from '../db/database'
 import { LLMFactory, getAllCircuitBreakerStatus } from '../llm'
-import { MODEL_MODE_PRESETS } from '../llm/types'
+import { MODEL_MODE_PRESETS, getModelCapabilities } from '../llm/types'
 import { OllamaProvider } from '../llm/ollama'
 import { getMcpRegistry } from '../mcp'
 import type { McpServerConfig } from '../mcp'
@@ -211,8 +211,17 @@ export function applyModelOverrides(db: ReturnType<typeof getDatabase>, mode: st
     const overrides: Record<string, string> = JSON.parse(row.value)
     for (const [agent, modelId] of Object.entries(overrides)) {
       if (modelId) {
-        LLMFactory.setAgentModel(agent, { provider: 'openrouter', model: modelId })
-        console.log(`[Model Override] Restored ${agent} → ${modelId}`)
+        // Merge with existing preset config to preserve useNativeTools, temperature, etc.
+        const existing = LLMFactory.getAgentConfig(agent)
+        const caps = getModelCapabilities(modelId)
+        LLMFactory.setAgentModel(agent, {
+          ...existing,
+          provider: 'openrouter',
+          model: modelId,
+          useNativeTools: caps.supportsNativeTools || undefined,
+          temperature: existing?.temperature,
+        })
+        console.log(`[Model Override] Restored ${agent} → ${modelId} (nativeTools=${caps.supportsNativeTools})`)
       }
     }
   } catch (err) {
@@ -995,9 +1004,17 @@ export function registerIpcHandlers(): void {
       JSON.stringify(overrides)
     )
 
-    // Apply immediately
-    LLMFactory.setAgentModel(agent, { provider: 'openrouter', model: modelId })
-    console.log(`[Model Override] ${agent} → ${modelId} (mode: ${mode})`)
+    // Apply immediately — merge with existing preset to preserve useNativeTools, temperature, etc.
+    const existing = LLMFactory.getAgentConfig(agent)
+    const caps = getModelCapabilities(modelId)
+    LLMFactory.setAgentModel(agent, {
+      ...existing,
+      provider: 'openrouter',
+      model: modelId,
+      useNativeTools: caps.supportsNativeTools || undefined,
+      temperature: existing?.temperature,
+    })
+    console.log(`[Model Override] ${agent} → ${modelId} (mode: ${mode}, nativeTools=${caps.supportsNativeTools})`)
   })
 
   ipcMain.handle(IPC_CHANNELS.MODEL_OVERRIDE_RESET, async (_event, agent: string) => {

@@ -16,6 +16,7 @@
     "package:linux": "electron-vite build && electron-builder --linux"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.74.0",
     "@electron-toolkit/utils": "^4.0.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@types/d3": "^7.4.3",

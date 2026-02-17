@@ -2,13 +2,28 @@
  * Conversation Manager — Multi-turn conversation history with token budgeting
  *
  * Manages the message array sent to the LLM. Handles:
- * - Appending user/assistant messages
+ * - Appending user/assistant messages (flat string — legacy XML path)
+ * - Structured content block messages (native tool calling path — M2.5/Claude)
  * - Token estimation per message
  * - Auto-trimming when context budget is exceeded (sliding window)
  * - Preserving the first message (task definition) and recent messages
  * - Formatting tool results as user messages
+ *
+ * Two message tracks:
+ * - `messages` (ConversationMessage[]): Flat string messages, used by XML protocol
+ * - `structuredMessages` (StructuredMessage[]): Content block messages for native tools
+ *
+ * When native tool calling is active, ONLY structuredMessages is used.
+ * When XML protocol is active, ONLY messages is used (existing behavior).
  */
 import type { ConversationMessage } from '../llm/types'
+import type {
+  StructuredMessage,
+  ContentBlock,
+  ToolResultBlock,
+  ThinkingBlock,
+} from '../llm/types'
+import { extractTextFromBlocks, blocksToText } from '../llm/types'
 import { countTokens } from '../llm/token-counter'
 
 // ─── Tool Result Formatting ─────────────────────────────────
@@ -80,12 +95,28 @@ export class ConversationManager {
   private trimCount = 0
   private llmCondensationCount = 0
 
+  // ─── Structured Message Track (Native Tool Calling) ─────
+  private structuredMsgs: StructuredMessage[] = []
+  private structuredTokenEstimates: number[] = []
+  private structuredTotalTokens = 0
+  private _isNativeMode = false
+
   constructor(
     /** Maximum tokens for the entire conversation (input budget) */
     private maxTokenBudget: number = 80_000,
     /** Tokens reserved for the LLM's response (excluded from budget) */
     private reservedForResponse: number = 8_000,
   ) {}
+
+  /** Whether this conversation is using native tool calling (structured messages) */
+  get isNativeMode(): boolean {
+    return this._isNativeMode
+  }
+
+  /** Enable native tool calling mode — switches to structured messages */
+  enableNativeMode(): void {
+    this._isNativeMode = true
+  }
 
   // ─── Core API ───────────────────────────────────────────
 
@@ -167,6 +198,177 @@ export class ConversationManager {
     this.totalTokens = 0
     this.trimCount = 0
     this.llmCondensationCount = 0
+    this.structuredMsgs = []
+    this.structuredTokenEstimates = []
+    this.structuredTotalTokens = 0
+  }
+
+  // ─── Structured Message API (Native Tool Calling) ───────
+
+  /**
+   * Add a structured message with content blocks.
+   * Used by the native tool calling path (M2.5 / Claude).
+   *
+   * M2.5 CARDINAL RULE: For assistant messages, content MUST include
+   * ALL blocks (thinking + text + tool_use) — never strip thinking blocks.
+   */
+  addStructuredMessage(role: 'user' | 'assistant', content: ContentBlock[]): void {
+    const textForTokens = content
+      .map(b => {
+        switch (b.type) {
+          case 'thinking': return b.thinking
+          case 'text': return b.text
+          case 'tool_use': return JSON.stringify(b.input)
+          case 'tool_result': return typeof b.content === 'string' ? b.content : b.content.map(c => c.text).join('')
+          default: return ''
+        }
+      })
+      .join(' ')
+
+    const tokens = countTokens(textForTokens)
+    this.structuredMsgs.push({ role, content })
+    this.structuredTokenEstimates.push(tokens)
+    this.structuredTotalTokens += tokens
+
+    // Also maintain the flat message track for backward compat / condensation
+    const flatContent = blocksToText(content)
+    this.addMessage(role, flatContent || '[structured content]')
+
+    // Auto-trim structured messages if over budget
+    const budget = this.maxTokenBudget - this.reservedForResponse
+    if (this.structuredTotalTokens > budget) {
+      this.trimStructured()
+    }
+  }
+
+  /**
+   * Add a user message containing tool_result blocks.
+   * Used after executing tool calls from the assistant's response.
+   *
+   * Each tool_result MUST reference the tool_use_id from the assistant's
+   * tool_use block, or M2.5 will reject the request.
+   */
+  addNativeToolResults(results: ToolResultBlock[]): void {
+    this.addStructuredMessage('user', results)
+  }
+
+  /**
+   * Add a text-only user message to the structured track.
+   * Convenience wrapper for simple text messages.
+   */
+  addStructuredUserMessage(text: string): void {
+    this.addStructuredMessage('user', [{ type: 'text', text }])
+  }
+
+  /**
+   * Add a system notice to the structured track.
+   * Wrapped in text block so it's compatible with the Anthropic API.
+   */
+  addStructuredNotice(notice: string): void {
+    this.addStructuredUserMessage(`<system_notice>\n${notice}\n</system_notice>`)
+  }
+
+  /**
+   * Get the structured conversation for the native tool calling API.
+   * Returns a copy of the structured messages array.
+   */
+  getStructuredMessages(): StructuredMessage[] {
+    return [...this.structuredMsgs]
+  }
+
+  /** Get total tokens for the structured track */
+  getStructuredTokenCount(): number {
+    return this.structuredTotalTokens
+  }
+
+  /** Check if structured track is near budget */
+  isStructuredNearBudget(threshold = 0.85): boolean {
+    const budget = this.maxTokenBudget - this.reservedForResponse
+    return budget > 0 ? (this.structuredTotalTokens / budget) >= threshold : false
+  }
+
+  /**
+   * Trim structured messages when over budget.
+   *
+   * Strategy: Similar to flat message trimming, but handles content blocks.
+   * Special care: NEVER split an assistant message from its matching tool_result
+   * user message — they must stay paired or M2.5 will error.
+   *
+   * Approach:
+   * 1. Keep first message (task definition) and last N messages
+   * 2. Replace middle with a condensed summary text block
+   * 3. Strip thinking blocks from old messages (they're only needed for
+   *    the most recent turn in practice)
+   */
+  private trimStructured(): void {
+    const budget = this.maxTokenBudget - this.reservedForResponse
+    if (this.structuredTotalTokens <= budget || this.structuredMsgs.length <= 6) return
+
+    const keepFirst = 1 // task definition
+    const keepLast = Math.min(8, Math.floor(this.structuredMsgs.length * 0.4))
+
+    if (this.structuredMsgs.length <= keepFirst + keepLast + 1) return
+
+    // First pass: strip thinking blocks from all but the last 4 messages
+    // (M2.5 only needs thinking from the most recent assistant turn)
+    const thinkingCutoff = Math.max(0, this.structuredMsgs.length - 4)
+    for (let i = 0; i < thinkingCutoff; i++) {
+      const msg = this.structuredMsgs[i]
+      if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+        const withoutThinking = msg.content.filter(b => b.type !== 'thinking')
+        if (withoutThinking.length < msg.content.length) {
+          msg.content = withoutThinking
+        }
+      }
+    }
+
+    // Recalculate tokens after stripping thinking
+    this.structuredTokenEstimates = this.structuredMsgs.map((msg, _i) => {
+      const content = msg.content
+      if (typeof content === 'string') return countTokens(content)
+      return countTokens(content.map(b => {
+        switch (b.type) {
+          case 'thinking': return b.thinking
+          case 'text': return b.text
+          case 'tool_use': return JSON.stringify(b.input)
+          case 'tool_result': return typeof b.content === 'string' ? b.content : b.content.map(c => c.text).join('')
+          default: return ''
+        }
+      }).join(' '))
+    })
+    this.structuredTotalTokens = this.structuredTokenEstimates.reduce((a, b) => a + b, 0)
+
+    // If still over budget, drop middle messages
+    if (this.structuredTotalTokens > budget) {
+      const middleStart = keepFirst
+      const middleEnd = this.structuredMsgs.length - keepLast
+
+      let removedTokens = 0
+      for (let i = middleStart; i < middleEnd; i++) {
+        removedTokens += this.structuredTokenEstimates[i]
+      }
+
+      const condensedCount = middleEnd - middleStart
+      const notice: StructuredMessage = {
+        role: 'user',
+        content: [{
+          type: 'text',
+          text: `[${condensedCount} earlier messages were condensed to manage context limits. ` +
+                `The task definition and recent messages are preserved.]`,
+        }],
+      }
+      const noticeTokens = countTokens('[condensed messages notice]')
+
+      this.structuredMsgs.splice(middleStart, condensedCount, notice)
+      this.structuredTokenEstimates.splice(middleStart, condensedCount, noticeTokens)
+      this.structuredTotalTokens = this.structuredTotalTokens - removedTokens + noticeTokens
+      this.trimCount++
+
+      // Recursive trim if still over
+      if (this.structuredTotalTokens > budget && this.structuredMsgs.length > 6) {
+        this.trimStructured()
+      }
+    }
   }
 
   // ─── LLM Condensation Support ───────────────────────────

@@ -3,13 +3,18 @@
  *
  * Creates provider instances and manages per-agent model assignments.
  * Caches provider instances by API key to avoid re-initialization.
+ * Supports OpenRouter, Replicate, Ollama, and Anthropic (MiniMax M2.5 / Claude).
  */
 import { OpenRouterProvider } from './openrouter'
 import { ReplicateProvider } from './replicate'
 import { OllamaProvider } from './ollama'
+import { AnthropicProvider } from './anthropic-adapter'
 import { FallbackLLMAdapter } from './fallback-adapter'
 import type { LLMAdapter, LLMConfig, AgentModelConfig, ModelMode } from './types'
 import { DEFAULT_AGENT_MODELS, MODEL_MODE_PRESETS } from './types'
+
+/** All supported provider types */
+export type ProviderType = 'openrouter' | 'replicate' | 'ollama' | 'anthropic'
 
 export class LLMFactory {
   private static providers = new Map<string, LLMAdapter>()
@@ -18,20 +23,20 @@ export class LLMFactory {
   private static currentMode: ModelMode = 'normal'
 
   /** Register API keys / config for providers */
-  static configure(provider: 'openrouter' | 'replicate' | 'ollama', config: LLMConfig): void {
+  static configure(provider: ProviderType, config: LLMConfig): void {
     this.configs[provider] = config
     // Invalidate cached provider so next call creates fresh instance
     this.providers.delete(provider)
   }
 
   /** Check if a provider is configured */
-  static isConfigured(provider: 'openrouter' | 'replicate' | 'ollama'): boolean {
+  static isConfigured(provider: ProviderType): boolean {
     if (provider === 'ollama') return !!this.configs[provider] // Ollama doesn't need an API key
     return !!this.configs[provider]?.apiKey
   }
 
   /** Get or create a provider instance */
-  static getProvider(provider: 'openrouter' | 'replicate' | 'ollama'): LLMAdapter {
+  static getProvider(provider: ProviderType): LLMAdapter {
     const cached = this.providers.get(provider)
     if (cached) return cached
 
@@ -44,6 +49,26 @@ export class LLMFactory {
         const instance: LLMAdapter = new OllamaProvider(defaultConfig)
         this.providers.set(provider, instance)
         return instance
+      }
+      if (provider === 'anthropic') {
+        // Auto-configure Anthropic to use MiniMax endpoint if OpenRouter key is available
+        const openrouterConfig = this.configs['openrouter']
+        if (openrouterConfig?.apiKey) {
+          console.log('[LLM] Auto-configuring Anthropic adapter with OpenRouter key for MiniMax M2.5')
+          const autoConfig: LLMConfig = {
+            apiKey: openrouterConfig.apiKey,
+            baseURL: 'https://openrouter.ai/api',  // SDK adds /v1/messages
+            defaultModel: 'minimax/minimax-m2.5',
+          }
+          this.configs[provider] = autoConfig
+          const instance: LLMAdapter = new AnthropicProvider(autoConfig)
+          this.providers.set(provider, instance)
+          return instance
+        }
+        throw new Error(
+          'No API key configured for Anthropic/MiniMax. ' +
+          'Either configure the anthropic provider directly, or ensure OpenRouter is configured.'
+        )
       }
       throw new Error(
         `No API key configured for ${provider}. Call LLMFactory.configure() first.`
@@ -61,6 +86,9 @@ export class LLMFactory {
       case 'ollama':
         instance = new OllamaProvider(config)
         break
+      case 'anthropic':
+        instance = new AnthropicProvider(config)
+        break
     }
 
     this.providers.set(provider, instance)
@@ -71,6 +99,10 @@ export class LLMFactory {
    * Get the LLM adapter for a specific agent type.
    * Returns a FallbackLLMAdapter that tries the primary provider first,
    * then falls back to the alternate provider if both are configured.
+   *
+   * For agents configured with native tool calling (useNativeTools: true),
+   * the Anthropic provider is preferred. If not configured, falls back to
+   * OpenRouter which also supports M2.5 via their routing.
    */
   static getForAgent(agentType: string): LLMAdapter {
     const agentConfig = this.agentModels[agentType]
@@ -82,7 +114,7 @@ export class LLMFactory {
     const primary = this.getProvider(agentConfig.provider)
 
     // Try fallback providers (exclude the primary)
-    const allProviders: Array<'openrouter' | 'replicate' | 'ollama'> = ['openrouter', 'replicate', 'ollama']
+    const allProviders: ProviderType[] = ['openrouter', 'replicate', 'ollama', 'anthropic']
     const fallbackCandidates = allProviders.filter(p => p !== agentConfig.provider)
 
     let fallback: LLMAdapter | null = null
@@ -98,6 +130,19 @@ export class LLMFactory {
     }
 
     return new FallbackLLMAdapter(primary, fallback, agentConfig.model)
+  }
+
+  /**
+   * Get the raw provider for an agent (without fallback wrapping).
+   * Used by the native tool calling loop which needs direct access to
+   * streamStructured() and other provider-specific methods.
+   */
+  static getRawProviderForAgent(agentType: string): LLMAdapter {
+    const agentConfig = this.agentModels[agentType]
+    if (!agentConfig) {
+      return this.getProvider('openrouter')
+    }
+    return this.getProvider(agentConfig.provider)
   }
 
   /** Get the model config for a specific agent */

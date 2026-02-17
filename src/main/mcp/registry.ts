@@ -33,6 +33,29 @@ import {
 
 const SETTINGS_KEY = 'mcp_servers'
 
+/**
+ * Split a tool key into serverId and toolName.
+ * Tool keys are formatted as "serverId::toolName", but server IDs may
+ * themselves contain "::" (e.g. "bundled::brave-search"). Convention:
+ * the LAST segment after splitting on "::" is always the tool name;
+ * everything before it is the server ID.
+ *
+ * Examples:
+ *   "sqlite::query"       → { serverId: "sqlite",                toolName: "query" }
+ *   "bundled::brave-search::brave_web_search"
+ *                          → { serverId: "bundled::brave-search", toolName: "brave_web_search" }
+ */
+function splitToolKey(toolKey: string): { serverId: string; toolName: string } {
+  const lastSep = toolKey.lastIndexOf('::')
+  if (lastSep <= 0) {
+    return { serverId: '', toolName: '' }
+  }
+  return {
+    serverId: toolKey.slice(0, lastSep),
+    toolName: toolKey.slice(lastSep + 2),
+  }
+}
+
 /** Default global config file path: ~/.brainwave/mcp.json */
 function getGlobalConfigPath(): string {
   return path.join(app.getPath('userData'), 'mcp.json')
@@ -329,15 +352,15 @@ class McpRegistry {
     return this.getAllTools().find((t) => t.key === toolKey)
   }
 
-  /** Call a tool by its key */
+  /** Call a tool by its key (serverId::toolName or bundled::slug::toolName) */
   async callTool(
     toolKey: string,
     args: Record<string, unknown> = {}
   ): Promise<McpToolCallResult> {
-    const [serverId, toolName] = toolKey.split('::')
-    if (!serverId || !toolName) {
-      throw new Error(`Invalid tool key format: "${toolKey}" — expected "serverId::toolName"`)
-    }
+    // Tool keys use :: as separator. Server IDs may themselves contain ::
+    // (e.g. "bundled::brave-search"), so the last segment is always the tool name
+    // and everything before it is the server ID.
+    const { serverId, toolName } = splitToolKey(toolKey)
 
     const client = this.clients.get(serverId)
     if (!client) {
@@ -355,7 +378,7 @@ class McpRegistry {
    * @returns true if the tool should bypass the approval prompt
    */
   isToolAutoApproved(toolKey: string): boolean {
-    const [serverId, toolName] = toolKey.split('::')
+    const { serverId, toolName } = splitToolKey(toolKey)
     if (!serverId || !toolName) return false
 
     // Check all config sources
