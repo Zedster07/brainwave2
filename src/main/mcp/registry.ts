@@ -541,6 +541,14 @@ class McpRegistry {
 
       // Build args: static args + user-configured args
       const args = [...preset.args]
+
+      // Resolve built-in server paths (compiled alongside the main process)
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === '__BUILTIN_TERMINAL_SERVER__') {
+          args[i] = path.join(__dirname, 'terminal-server.js')
+        }
+      }
+
       for (const ca of preset.configArgs) {
         const val = s.configArgs[ca.key]
         if (val) {

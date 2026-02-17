@@ -201,7 +201,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'shell_execute',
-    description: 'Execute a shell command. Returns stdout/stderr. For long-running servers (http-server, python -m http.server, etc.), set "background": true to start them detached — returns immediately with a process ID you can later kill with shell_kill.',
+    description: '[DEPRECATED — prefer the Terminal MCP tools (terminal_execute, terminal_read, terminal_write, terminal_kill, terminal_list) for ALL command execution. They provide persistent sessions, readable output from background processes, and stdin support.] Simple shell command execution. Returns stdout/stderr. For long-running servers, set "background": true — but NOTE: background output cannot be read later (use Terminal MCP instead).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -218,7 +218,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'shell_kill',
-    description: 'Kill a background process started with shell_execute(background=true). Provide the pid returned by the background shell_execute call.',
+    description: '[DEPRECATED — prefer terminal_kill from the Terminal MCP.] Kill a background process started with shell_execute(background=true). Provide the pid returned by the background shell_execute call.',
     inputSchema: {
       type: 'object',
       properties: {

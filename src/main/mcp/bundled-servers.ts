@@ -200,6 +200,18 @@ export const BUNDLED_SERVERS: BundledServerPreset[] = [
     configArgs: [],
     defaultEnabled: false,
   },
+  {
+    id: 'terminal',
+    name: 'Terminal',
+    description: 'Persistent terminal sessions — execute, read output, send input, kill, and list running processes',
+    package: '__builtin__',
+    category: 'utility',
+    command: 'node',
+    args: ['__BUILTIN_TERMINAL_SERVER__'],
+    envVars: [],
+    configArgs: [],
+    defaultEnabled: true,
+  },
 ]
 
 // ─── Helpers ────────────────────────────────────────────────
