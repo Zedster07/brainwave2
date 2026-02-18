@@ -14,6 +14,7 @@
  * Uses grammy (TypeScript-first Telegram Bot API framework) with long polling.
  */
 
+import { randomUUID } from 'node:crypto'
 import { Bot, GrammyError, HttpError } from 'grammy'
 import { getEventBus } from '../agents/event-bus'
 import { getDatabase } from '../db/database'
@@ -26,7 +27,7 @@ interface TelegramConfig {
   authorizedIds: string[] // Chat IDs allowed to send prompts
 }
 
-type TaskSubmitFn = (prompt: string, sessionId: string) => Promise<void>
+type TaskSubmitFn = (prompt: string, sessionId: string, isNewSession: boolean) => Promise<string>
 
 // ─── Telegram Service ───────────────────────────────────────
 
@@ -38,7 +39,14 @@ class TelegramService {
   private submitTask: TaskSubmitFn | null = null
 
   // Track which Telegram messages map to which tasks (for reply threading)
+  // Keyed by taskId (from orchestrator) — multiple tasks can share a session
   private pendingTasks = new Map<string, { chatId: string; messageId: number }>()
+
+  // Persistent chat sessions: one session per Telegram chatId for context continuity
+  private chatSessions = new Map<string, string>() // chatId → sessionId
+
+  // Typing indicator intervals: cleared when task completes/fails
+  private typingIntervals = new Map<string, NodeJS.Timeout>() // taskId → interval
 
   /**
    * Initialize the Telegram bot.
@@ -54,6 +62,9 @@ class TelegramService {
     // Must happen BEFORE the config check — user may configure the bot later
     // via reconfigure(), and listeners need to be ready to catch task:completed events.
     this.setupEventListeners()
+
+    // Restore persistent chatId → sessionId mapping from DB
+    this.loadChatSessions()
 
     // Load config from DB
     this.config = this.loadConfig()
@@ -181,6 +192,16 @@ class TelegramService {
         await ctx.reply('⏹ Task cancellation not yet implemented. Use the desktop app to cancel tasks.')
       })
 
+      // Command: /new — start a fresh session (new conversation context)
+      this.bot.command('new', async (ctx) => {
+        const chatId = String(ctx.chat.id)
+        if (!this.isAuthorized(chatId)) return
+        this.chatSessions.delete(chatId)
+        this.saveChatSessions()
+        await ctx.reply('🆕 Fresh session started. Your next message will begin a new conversation context.')
+        console.log(`[Telegram] /new from chat ${chatId} — session reset`)
+      })
+
       // Handle all text messages → submit as tasks
       this.bot.on('message:text', async (ctx) => {
         const chatId = String(ctx.chat.id)
@@ -198,26 +219,25 @@ class TelegramService {
         const prompt = ctx.message.text.trim()
         if (!prompt) return
 
-        // Acknowledge receipt
-        await ctx.reply(`⏳ Processing: "${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}"`)
+        // Get or create persistent session for this chat
+        const { sessionId, isNew } = this.getOrCreateSession(chatId)
 
-        // Create a session ID for this Telegram task
-        const { randomUUID } = await import('node:crypto')
-        const sessionId = randomUUID()
-
-        // Track the pending task so we can reply when it completes
-        this.pendingTasks.set(sessionId, { chatId, messageId: ctx.message.message_id })
+        // Show typing indicator (no "Processing..." message — feels more natural)
+        await ctx.api.sendChatAction(Number(chatId), 'typing').catch(() => {})
 
         // Submit to orchestrator
         try {
           if (this.submitTask) {
-            await this.submitTask(prompt, sessionId)
-            console.log(`[Telegram] Task submitted from chat ${chatId}: "${prompt.slice(0, 80)}"`)
+            const taskId = await this.submitTask(prompt, sessionId, isNew)
+            // Track pending task by taskId (not sessionId — sessions are shared)
+            this.pendingTasks.set(taskId, { chatId, messageId: ctx.message.message_id })
+            // Keep typing indicator alive every 4s until task completes
+            this.startTyping(chatId, taskId)
+            console.log(`[Telegram] Task ${taskId} submitted from chat ${chatId}: "${prompt.slice(0, 80)}"`)
           }
         } catch (err) {
           console.error('[Telegram] Failed to submit task:', err)
           await ctx.reply(`❌ Failed to submit task: ${err instanceof Error ? err.message : 'Unknown error'}`)
-          this.pendingTasks.delete(sessionId)
         }
       })
 
@@ -258,6 +278,12 @@ class TelegramService {
   }
 
   private async stopBot(): Promise<void> {
+    // Clear all typing intervals
+    for (const [taskId, interval] of this.typingIntervals) {
+      clearInterval(interval)
+    }
+    this.typingIntervals.clear()
+
     if (this.bot) {
       try {
         this.bot.stop()
@@ -277,23 +303,19 @@ class TelegramService {
 
     // Task completed → send result to Telegram
     bus.onEvent('task:completed', (data) => {
-      const pending = data.sessionId ? this.pendingTasks.get(data.sessionId) : undefined
-      if (pending && data.sessionId) {
-        // This was a Telegram-initiated task — reply in the chat
+      this.stopTyping(data.taskId)
+      const pending = this.pendingTasks.get(data.taskId)
+      if (pending) {
+        // Telegram-initiated task — reply directly (natural conversation, no prefix)
         const result = typeof data.result === 'string'
           ? data.result
           : 'Task completed successfully.'
 
-        this.sendMessage(
-          `✅ *Task Completed*\n\n${this.escapeMarkdown(result)}`,
-          pending.chatId,
-          { replyToMessageId: pending.messageId, parseMode: 'Markdown' },
-        ).catch(() => {
-          // Fallback: send without markdown if escaping fails
-          this.sendMessage(`✅ Task Completed\n\n${result}`, pending.chatId)
-        })
+        this.sendMessage(result, pending.chatId, {
+          replyToMessageId: pending.messageId,
+        }).catch(() => {})
 
-        this.pendingTasks.delete(data.sessionId!)
+        this.pendingTasks.delete(data.taskId)
       } else if (this.config?.chatId) {
         // Desktop-initiated task — still notify Telegram
         const result = typeof data.result === 'string'
@@ -310,18 +332,17 @@ class TelegramService {
 
     // Task failed → notify Telegram
     bus.onEvent('task:failed', (data) => {
-      const pending = data.sessionId ? this.pendingTasks.get(data.sessionId) : undefined
+      this.stopTyping(data.taskId)
+      const pending = this.pendingTasks.get(data.taskId)
       const errorMsg = data.error ?? 'Unknown error'
 
-      if (pending && data.sessionId) {
+      if (pending) {
         this.sendMessage(
-          `❌ *Task Failed*\n\n${this.escapeMarkdown(errorMsg)}`,
+          `❌ ${errorMsg}`,
           pending.chatId,
-          { replyToMessageId: pending.messageId, parseMode: 'Markdown' },
-        ).catch(() => {
-          this.sendMessage(`❌ Task Failed\n\n${errorMsg}`, pending.chatId)
-        })
-        this.pendingTasks.delete(data.sessionId!)
+          { replyToMessageId: pending.messageId },
+        ).catch(() => {})
+        this.pendingTasks.delete(data.taskId)
       } else if (this.config?.chatId) {
         this.sendMessage(
           `❌ *Task Failed*\n\n${this.escapeMarkdown(errorMsg)}`,
@@ -367,14 +388,15 @@ class TelegramService {
 
       const botToken = tokenRow?.value ? JSON.parse(tokenRow.value) : ''
       const chatId = chatIdRow?.value ? JSON.parse(chatIdRow.value) : ''
-      const authorizedIds: string[] = authorizedRow?.value
-        ? JSON.parse(authorizedRow.value)
-        : []
+      const rawAuthorized = authorizedRow?.value ? JSON.parse(authorizedRow.value) : ''
+      const authorizedIds: string[] = typeof rawAuthorized === 'string'
+        ? rawAuthorized.split(',').map((s: string) => s.trim()).filter(Boolean)
+        : Array.isArray(rawAuthorized) ? rawAuthorized : []
 
       if (!botToken) return null
 
       // Always include the primary chat ID in authorized IDs
-      const allAuthorized = new Set([...authorizedIds])
+      const allAuthorized = new Set(authorizedIds)
       if (chatId) allAuthorized.add(chatId)
 
       return {
@@ -397,6 +419,80 @@ class TelegramService {
       return chatId === this.config.chatId
     }
     return this.config.authorizedIds.includes(chatId)
+  }
+
+  // ─── Private: Session Management ────────────────────────
+
+  /**
+   * Get or create a persistent session ID for a Telegram chatId.
+   * Each chatId gets ONE session — all messages go into the same context.
+   * Use /new command to start a fresh session.
+   */
+  private getOrCreateSession(chatId: string): { sessionId: string; isNew: boolean } {
+    const existing = this.chatSessions.get(chatId)
+    if (existing) return { sessionId: existing, isNew: false }
+
+    const sessionId = randomUUID()
+    this.chatSessions.set(chatId, sessionId)
+    this.saveChatSessions()
+    return { sessionId, isNew: true }
+  }
+
+  /** Load persistent chatId → sessionId mapping from DB */
+  private loadChatSessions(): void {
+    try {
+      const db = getDatabase()
+      const row = db.get<{ value: string }>(
+        `SELECT value FROM settings WHERE key = ?`,
+        'telegram_chat_sessions',
+      )
+      if (row?.value) {
+        const map = JSON.parse(row.value) as Record<string, string>
+        for (const [chatId, sessionId] of Object.entries(map)) {
+          this.chatSessions.set(chatId, sessionId)
+        }
+        console.log(`[Telegram] Restored ${this.chatSessions.size} chat session(s)`)
+      }
+    } catch {
+      // Fresh start — no sessions saved yet
+    }
+  }
+
+  /** Persist chatId → sessionId mapping to DB */
+  private saveChatSessions(): void {
+    try {
+      const db = getDatabase()
+      const obj: Record<string, string> = {}
+      for (const [chatId, sessionId] of this.chatSessions) {
+        obj[chatId] = sessionId
+      }
+      db.run(
+        `INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`,
+        'telegram_chat_sessions',
+        JSON.stringify(obj),
+      )
+    } catch (err) {
+      console.error('[Telegram] Failed to save chat sessions:', err)
+    }
+  }
+
+  // ─── Private: Typing Indicator ──────────────────────────
+
+  /** Start sending typing action every 4s (Telegram expires it after ~5s) */
+  private startTyping(chatId: string, taskId: string): void {
+    const interval = setInterval(() => {
+      this.bot?.api.sendChatAction(Number(chatId), 'typing').catch(() => {})
+    }, 4000)
+    this.typingIntervals.set(taskId, interval)
+  }
+
+  /** Stop the typing indicator for a task */
+  private stopTyping(taskId: string): void {
+    const interval = this.typingIntervals.get(taskId)
+    if (interval) {
+      clearInterval(interval)
+      this.typingIntervals.delete(taskId)
+    }
   }
 
   /** Escape special Markdown characters for Telegram */

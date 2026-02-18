@@ -151,19 +151,25 @@ app.whenReady().then(() => {
 
   // ── Initialize Telegram Bot (two-way messaging) ──
   const orchestrator = getOrchestrator()
-  getTelegramService().init(async (prompt, sessionId) => {
-    // Create an autonomous session for Telegram tasks (visible in the UI)
-    const now = Date.now()
-    const sessionTitle = `📱 Telegram: ${prompt.slice(0, 60)}${prompt.length > 60 ? '...' : ''}`
-    db.run(
-      `INSERT INTO chat_sessions (id, title, session_type, created_at, updated_at) VALUES (?, ?, 'autonomous', ?, ?)`,
-      sessionId, sessionTitle, now, now
-    )
-    // Forward to renderer so it appears immediately
-    BrowserWindow.getAllWindows().forEach((win) => {
-      win.webContents.send('session:created', { id: sessionId, title: sessionTitle, type: 'autonomous', createdAt: now, updatedAt: now })
-    })
-    await orchestrator.submitTask(prompt, 'normal', sessionId)
+  getTelegramService().init(async (prompt, sessionId, isNewSession) => {
+    if (isNewSession) {
+      // Create a new chat session in DB (first message from this Telegram chatId)
+      const now = Date.now()
+      const sessionTitle = `📱 Telegram`
+      db.run(
+        `INSERT INTO chat_sessions (id, title, session_type, created_at, updated_at) VALUES (?, ?, 'autonomous', ?, ?)`,
+        sessionId, sessionTitle, now, now
+      )
+      // Forward to renderer so it appears immediately
+      BrowserWindow.getAllWindows().forEach((win) => {
+        win.webContents.send('session:created', { id: sessionId, title: sessionTitle, type: 'autonomous', createdAt: now, updatedAt: now })
+      })
+    } else {
+      // Reusing existing session — update timestamp
+      db.run(`UPDATE chat_sessions SET updated_at = ? WHERE id = ?`, Date.now(), sessionId)
+    }
+    const task = await orchestrator.submitTask(prompt, 'normal', sessionId)
+    return task.id
   }).catch((err) => {
     console.warn('[Main] Telegram initialization error:', err)
   })
