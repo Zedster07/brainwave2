@@ -85,6 +85,77 @@ export async function performCondensation(
 }
 
 /**
+ * Perform LLM-powered condensation on the STRUCTURED message track.
+ *
+ * Similar to performCondensation but operates on ContentBlock[] messages.
+ * Converts structured blocks (tool_use, tool_result, text) into a readable
+ * text format, summarizes via LLM, and replaces middle messages in the
+ * structured track with a summary text block.
+ *
+ * Falls back to proactiveCompact() if LLM call fails.
+ */
+export async function performStructuredCondensation(
+    conversation: ConversationManager,
+    context: AgentContext,
+    agentType: AgentType,
+    fileRegistry: Map<string, FileRegistryEntry>,
+    fileTracker: FileContextTracker,
+    bus: EventBus,
+): Promise<void> {
+    const { toSummarize } = conversation.getStructuredMessagesToCondense(4)
+    if (toSummarize.length < 3) return
+
+    const foldedContext = buildFoldedFileContext(fileRegistry)
+
+    // Convert structured messages to readable text for the summarizer
+    const messagesText = conversation.structuredMessagesToText(toSummarize)
+
+    // Cap total input to avoid exceeding the summarizer's own context limit
+    const cappedText = messagesText.slice(0, 100_000)
+
+    const summaryPrompt =
+        `Summarize the following AI agent conversation that used tool calls. Preserve:\n` +
+        `- All file paths mentioned and their relevance\n` +
+        `- All code changes made (what was changed and why)\n` +
+        `- Tool call outcomes — which succeeded and which failed\n` +
+        `- Current task progress and remaining work\n` +
+        `- Any errors encountered and how they were resolved\n` +
+        `- Key decisions and their rationale\n\n` +
+        `Be concise but thorough. DO NOT call any tools. Return ONLY a text summary.\n\n` +
+        `--- CONVERSATION TO SUMMARIZE (${toSummarize.length} messages) ---\n\n${cappedText}`
+
+    try {
+        const adapter = LLMFactory.getForAgent(agentType)
+        const modelConfig = LLMFactory.getAgentConfig(agentType)
+
+        const response = await adapter.complete({
+            model: modelConfig?.model,
+            system: 'You are a precise conversation summarizer for an AI coding agent. Extract key facts, tool outcomes, file changes, decisions, and progress concisely. Never call tools.',
+            user: summaryPrompt,
+            temperature: 0.1,
+            maxTokens: 2500,
+        })
+
+        conversation.applyStructuredCondensation(response.content, foldedContext)
+
+        const ctxAfter = conversation.getContextSummary()
+        console.log(
+            `[${agentType}] Structured LLM condensation complete — ${toSummarize.length} messages summarized, ` +
+            `context now at ${ctxAfter.usagePercent}% (${formatTokenCount(ctxAfter.tokensUsed)})`
+        )
+
+        bus.emitEvent('agent:acting', {
+            agentType,
+            taskId: context.taskId,
+            action: `🗜️ Structured context condensed (${toSummarize.length} messages → summary, ${ctxAfter.usagePercent}% used)`,
+        })
+    } catch (err) {
+        console.warn(`[${agentType}] Structured LLM condensation failed, falling back to proactive compaction:`, err)
+        conversation.proactiveCompact(0.55)
+    }
+}
+
+/**
  * Build folded file context from the file registry.
  *
  * Extracts function/class/type signatures from cached file contents

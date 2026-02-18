@@ -637,6 +637,8 @@ export function registerIpcHandlers(): void {
       messageCount: data.messageCount,
       condensations: data.condensations,
       step: data.step,
+      cacheCreationTokens: data.cacheCreationTokens,
+      cacheReadTokens: data.cacheReadTokens,
     })
   })
 

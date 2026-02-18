@@ -9,6 +9,8 @@ export interface ContextUsageData {
   messageCount: number
   condensations: number
   step: number
+  cacheCreationTokens?: number
+  cacheReadTokens?: number
 }
 
 function formatTokens(n: number): string {
@@ -55,6 +57,16 @@ export function ContextIndicator({ data }: { data: ContextUsageData }) {
         <span className="flex items-center gap-0.5 text-[9px] text-purple-400/70" title={`${data.condensations} context condensation${data.condensations > 1 ? 's' : ''}`}>
           <Zap className="w-2.5 h-2.5" />
           {data.condensations}
+        </span>
+      )}
+
+      {/* Cache hit indicator */}
+      {(data.cacheReadTokens ?? 0) > 0 && (
+        <span
+          className="text-[9px] font-mono text-cyan-400/70 flex-shrink-0"
+          title={`Cache: ${formatTokens(data.cacheReadTokens!)} read, ${formatTokens(data.cacheCreationTokens ?? 0)} created`}
+        >
+          ⚡{formatTokens(data.cacheReadTokens!)}
         </span>
       )}
     </div>

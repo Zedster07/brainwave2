@@ -530,6 +530,120 @@ export class ConversationManager {
     this.llmCondensationCount++
   }
 
+  // ─── Structured Track Condensation ─────────────────────
+
+  /**
+   * Get structured messages that should be summarized vs kept.
+   * Splits the structured track: keeps first message (task def) + last N recent.
+   * Everything in between is returned for summarization.
+   */
+  getStructuredMessagesToCondense(keepRecent = 4): {
+    toSummarize: StructuredMessage[]
+    toKeep: StructuredMessage[]
+  } {
+    if (this.structuredMsgs.length <= keepRecent + 2) {
+      return { toSummarize: [], toKeep: [...this.structuredMsgs] }
+    }
+
+    const toSummarize = this.structuredMsgs.slice(1, -keepRecent)
+    const toKeep = [this.structuredMsgs[0], ...this.structuredMsgs.slice(-keepRecent)]
+    return { toSummarize, toKeep }
+  }
+
+  /**
+   * Convert structured messages to plain text for summarization.
+   * Extracts text, tool usage, tool results, and thinking into a readable format.
+   * Strips thinking blocks from the summary input (they're verbose).
+   */
+  structuredMessagesToText(messages: StructuredMessage[]): string {
+    return messages.map((msg, i) => {
+      const role = msg.role.toUpperCase()
+      const content = msg.content
+      if (typeof content === 'string') return `[${role} #${i}]: ${content.slice(0, 4000)}`
+
+      const parts: string[] = []
+      for (const block of content) {
+        switch (block.type) {
+          case 'text':
+            if (block.text.trim()) parts.push(block.text.slice(0, 3000))
+            break
+          case 'tool_use':
+            parts.push(`[Tool: ${block.name}(${JSON.stringify(block.input).slice(0, 500)})]`)
+            break
+          case 'tool_result': {
+            const resultText = typeof block.content === 'string'
+              ? block.content
+              : block.content.map(c => c.text).join('')
+            const status = block.is_error ? 'ERROR' : 'OK'
+            parts.push(`[Result ${status}: ${resultText.slice(0, 1000)}]`)
+            break
+          }
+          // Skip thinking blocks — too verbose for summaries
+          default:
+            break
+        }
+      }
+      return `[${role} #${i}]: ${parts.join(' | ')}`
+    }).join('\n\n---\n\n')
+  }
+
+  /**
+   * Apply LLM-generated condensation to the structured track.
+   * Replaces middle messages with a summary text block + optional folded context.
+   * Also syncs the flat track.
+   */
+  applyStructuredCondensation(summary: string, foldedFileContext?: string): void {
+    const keepRecent = 4
+    if (this.structuredMsgs.length <= keepRecent + 2) return
+
+    const toKeep = [this.structuredMsgs[0], ...this.structuredMsgs.slice(-keepRecent)]
+
+    // Build condensed content
+    let condensedContent = `## Previous Conversation Summary\n${summary}`
+    if (foldedFileContext) {
+      condensedContent += `\n\n## File Structure Context\n${foldedFileContext}`
+    }
+
+    // Replace structured history with: task def + summary + recent
+    const summaryMsg: StructuredMessage = {
+      role: 'user',
+      content: [{
+        type: 'text',
+        text: `<system_notice>\n${condensedContent}\n</system_notice>`,
+      }],
+    }
+
+    this.structuredMsgs = [
+      toKeep[0],
+      summaryMsg,
+      ...toKeep.slice(1),
+    ]
+
+    // Recalculate structured token estimates
+    this.structuredTokenEstimates = this.structuredMsgs.map(msg => {
+      const content = msg.content
+      if (typeof content === 'string') return countTokens(content)
+      return countTokens(content.map(b => {
+        switch (b.type) {
+          case 'thinking': return b.thinking
+          case 'text': return b.text
+          case 'tool_use': return JSON.stringify(b.input)
+          case 'tool_result': return typeof b.content === 'string'
+            ? b.content
+            : b.content.map(c => c.text).join('')
+          default: return ''
+        }
+      }).join(' '))
+    })
+    this.structuredTotalTokens = this.structuredTokenEstimates.reduce((a, b) => a + b, 0)
+    this.llmCondensationCount++
+
+    // Also sync the flat track
+    this.applyCondensation(summary, foldedFileContext)
+    // Undo the double-increment from applyCondensation
+    this.llmCondensationCount--
+  }
+
   /**
    * Get a context summary object for environment details injection.
    * Used by the agent to report context usage in periodic updates.

@@ -5,8 +5,11 @@
  * stores them as BLOBs in SQLite, and performs cosine similarity search.
  *
  * For < 100K memories, in-memory cosine search is fast enough.
+ *
+ * The generation cache (text → embedding) is persisted to SQLite
+ * (embedding_cache table) so API calls aren't repeated after restart.
  */
-import { randomUUID } from 'crypto'
+import { createHash } from 'crypto'
 import { getDatabase } from '../db/database'
 import { LLMFactory } from '../llm'
 
@@ -24,23 +27,111 @@ export interface VectorSearchResult {
 export class EmbeddingService {
   private db = getDatabase()
   private cache = new Map<string, Float32Array>() // hot cache for recent embeddings
-  private maxCacheSize = 500
+  private maxCacheSize = 1000
+  private maxDbCacheSize = 5000
+  private dbLoaded = false
+
+  /**
+   * Load persisted embedding cache from SQLite into memory.
+   * Called lazily on first generate() call.
+   */
+  private loadFromDb(): void {
+    if (this.dbLoaded) return
+    this.dbLoaded = true
+
+    try {
+      const rows = this.db.all<{ text_hash: string; text_prefix: string; embedding: Buffer; dims: number }>(
+        `SELECT text_hash, text_prefix, embedding, dims FROM embedding_cache ORDER BY last_used DESC LIMIT ?`,
+        this.maxCacheSize
+      )
+
+      for (const row of rows) {
+        const arr = bufferToFloat32(row.embedding)
+        if (arr.length === row.dims) {
+          // Use text_hash as cache key (we can't reconstruct full text)
+          this.cache.set(row.text_hash, arr)
+        }
+      }
+
+      if (rows.length > 0) {
+        console.log(`[Embeddings] Loaded ${rows.length} cached embeddings from SQLite`)
+      }
+    } catch (err) {
+      console.warn('[Embeddings] Failed to load cache from SQLite:', err)
+    }
+  }
+
+  /**
+   * Persist an embedding to the SQLite cache.
+   */
+  private persistToDb(textHash: string, textPrefix: string, embedding: Float32Array): void {
+    try {
+      const buffer = Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength)
+      this.db.run(
+        `INSERT INTO embedding_cache (text_hash, text_prefix, embedding, dims, created_at, last_used)
+         VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+         ON CONFLICT(text_hash) DO UPDATE SET last_used = datetime('now')`,
+        textHash,
+        textPrefix,
+        buffer,
+        embedding.length
+      )
+    } catch (err) {
+      console.warn('[Embeddings] Failed to persist to SQLite:', err)
+    }
+  }
+
+  /**
+   * Prune old entries from the SQLite cache to stay within limits.
+   * Called periodically after inserts.
+   */
+  private pruneDbCache(): void {
+    try {
+      const count = this.db.get<{ count: number }>(
+        `SELECT COUNT(*) as count FROM embedding_cache`
+      )?.count ?? 0
+
+      if (count > this.maxDbCacheSize) {
+        const toDelete = count - this.maxDbCacheSize
+        this.db.run(
+          `DELETE FROM embedding_cache WHERE text_hash IN (
+            SELECT text_hash FROM embedding_cache ORDER BY last_used ASC LIMIT ?
+          )`,
+          toDelete
+        )
+        console.log(`[Embeddings] Pruned ${toDelete} old entries from SQLite cache`)
+      }
+    } catch (err) {
+      console.warn('[Embeddings] Failed to prune SQLite cache:', err)
+    }
+  }
+
+  /**
+   * Compute a SHA-256 hash of the text for cache keying.
+   */
+  private hashText(text: string): string {
+    return createHash('sha256').update(text).digest('hex')
+  }
 
   /**
    * Generate an embedding for text via OpenRouter.
    * Falls back to a simple hash-based pseudo-embedding if no API key is configured.
    */
   async generate(text: string): Promise<Float32Array> {
-    // Check cache
-    const cacheKey = text // full text as cache key
-    const cached = this.cache.get(cacheKey)
+    // Ensure DB cache is loaded
+    this.loadFromDb()
+
+    // Check in-memory cache (keyed by text hash)
+    const textHash = this.hashText(text)
+    const cached = this.cache.get(textHash)
     if (cached) return cached
 
     try {
       if (LLMFactory.isConfigured('openrouter')) {
         const adapter = LLMFactory.getProvider('openrouter')
         const embedding = await adapter.embeddings(text)
-        this.addToCache(cacheKey, embedding)
+        this.addToCache(textHash, embedding)
+        this.persistToDb(textHash, text.slice(0, 200), embedding)
         return embedding
       }
     } catch (err) {
@@ -49,7 +140,8 @@ export class EmbeddingService {
 
     // Fallback: deterministic pseudo-embedding (for offline / no API key)
     const fallback = this.pseudoEmbedding(text)
-    this.addToCache(cacheKey, fallback)
+    this.addToCache(textHash, fallback)
+    this.persistToDb(textHash, text.slice(0, 200), fallback)
     return fallback
   }
 
@@ -138,7 +230,7 @@ export class EmbeddingService {
   }
 
   /** Get index stats */
-  getStats(): { total: number; byType: Record<string, number> } {
+  getStats(): { total: number; byType: Record<string, number>; cacheSize: number; dbCacheSize: number } {
     const total = this.db.get<{ count: number }>(
       `SELECT COUNT(*) as count FROM embeddings_index`
     )?.count ?? 0
@@ -152,7 +244,11 @@ export class EmbeddingService {
       byType[row.memory_type] = row.count
     }
 
-    return { total, byType }
+    const dbCacheSize = this.db.get<{ count: number }>(
+      `SELECT COUNT(*) as count FROM embedding_cache`
+    )?.count ?? 0
+
+    return { total, byType, cacheSize: this.cache.size, dbCacheSize }
   }
 
   // ─── Internal ─────────────────────────────────────────────
@@ -165,6 +261,11 @@ export class EmbeddingService {
       if (firstKey) this.cache.delete(firstKey)
     }
     this.cache.set(key, embedding)
+
+    // Prune DB cache every 100 inserts
+    if (this.cache.size % 100 === 0) {
+      this.pruneDbCache()
+    }
   }
 
   /**

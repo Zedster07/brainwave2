@@ -106,7 +106,7 @@ export interface EventMap {
   'agent:condense-requested': Record<string, never>
 
   // Context usage (Phase 16 — real-time context window indicator)
-  'agent:context-usage': { taskId: string; agentType: AgentType; tokensUsed: number; budgetTotal: number; usagePercent: number; messageCount: number; condensations: number; step: number }
+  'agent:context-usage': { taskId: string; agentType: AgentType; tokensUsed: number; budgetTotal: number; usagePercent: number; messageCount: number; condensations: number; step: number; cacheCreationTokens?: number; cacheReadTokens?: number }
 
   // Cost update (Phase 5D — real-time cost visibility)
   'agent:cost-update': { taskId: string; sessionId?: string; tokensIn: number; tokensOut: number; costUsd: number; model: string; runCount: number }

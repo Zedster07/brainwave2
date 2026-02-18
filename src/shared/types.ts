@@ -389,6 +389,8 @@ export interface ContextUsageInfo {
   messageCount: number
   condensations: number
   step: number
+  cacheCreationTokens?: number
+  cacheReadTokens?: number
 }
 
 // ─── Structured Tool Call (Phase 16) ───

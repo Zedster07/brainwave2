@@ -411,6 +411,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         messageCount: usage.messageCount,
         condensations: usage.condensations,
         step: usage.step,
+        cacheCreationTokens: usage.cacheCreationTokens,
+        cacheReadTokens: usage.cacheReadTokens,
       }
       return {
         messages: updateAssistant(s.messages, usage.taskId, (msg) => ({

@@ -46,6 +46,7 @@ import { detectWorkspace, getEnvironmentDetails } from './environment'
 import { getInstructionManager } from '../instructions'
 import { CancellationError } from './cancellation'
 import { summarizeForUI, emitToolCallInfo } from './ui-helpers'
+import { performStructuredCondensation } from './condensation'
 import type { SubTask, AgentContext, AgentResult, Artifact, BaseAgentHandle } from './types'
 
 /**
@@ -125,6 +126,8 @@ export async function executeWithNativeTools(
 
     let totalTokensIn = 0
     let totalTokensOut = 0
+    let totalCacheCreation = 0
+    let totalCacheRead = 0
     const artifacts: Artifact[] = []
     const toolResults: Array<{ tool: string; success: boolean; content: string }> = []
 
@@ -291,6 +294,18 @@ export async function executeWithNativeTools(
                 conversation.proactiveCompact(0.55)
             }
 
+            // ── LLM-powered structured condensation at 75% ──
+            if (step > 3 && conversation.isStructuredNearBudget(0.75)) {
+                const ratio = conversation.getStructuredUsageRatio()
+                console.log(
+                    `[${agent.type}] Step ${step}: Context still at ${Math.round(ratio * 100)}% — attempting LLM condensation`
+                )
+                await performStructuredCondensation(
+                    conversation, context, agent.type as AgentType,
+                    fileRegistry, fileTracker, agent.bus,
+                )
+            }
+
             // ── Per-task cumulative token limit check ──
             if (totalTokensIn + totalTokensOut > MAX_TOTAL_TOKENS) {
                 console.warn(
@@ -349,6 +364,8 @@ export async function executeWithNativeTools(
             // ── Log cache metrics if available ──
             if (response.cacheMetrics) {
                 const { cacheCreationInputTokens, cacheReadInputTokens } = response.cacheMetrics
+                totalCacheCreation += cacheCreationInputTokens
+                totalCacheRead += cacheReadInputTokens
                 if (cacheCreationInputTokens > 0 || cacheReadInputTokens > 0) {
                     console.log(
                         `[${agent.type}] Step ${step} cache: ` +
@@ -859,13 +876,27 @@ export async function executeWithNativeTools(
                 conversation.addNativeToolResults(resultBlocks as ToolResultBlock[])
             }
 
-            // ── Context usage reporting (every 5 steps) ──
-            if (step % 5 === 0) {
+            // ── Context usage reporting (every step → UI, console every 5) ──
+            {
                 const ctxSummary = conversation.getContextSummary()
-                console.log(
-                    `[${agent.type}] Step ${step}: Context ${ctxSummary.usagePercent}% ` +
-                    `(${formatTokenCount(ctxSummary.tokensUsed)} / ${formatTokenCount(ctxSummary.budgetTotal)})`
-                )
+                agent.bus.emitEvent('agent:context-usage', {
+                    taskId: context.taskId,
+                    agentType: agent.type,
+                    tokensUsed: ctxSummary.tokensUsed,
+                    budgetTotal: ctxSummary.budgetTotal,
+                    usagePercent: ctxSummary.usagePercent,
+                    messageCount: ctxSummary.messageCount,
+                    condensations: ctxSummary.condensations,
+                    step,
+                    cacheCreationTokens: totalCacheCreation,
+                    cacheReadTokens: totalCacheRead,
+                })
+                if (step % 5 === 0) {
+                    console.log(
+                        `[${agent.type}] Step ${step}: Context ${ctxSummary.usagePercent}% ` +
+                        `(${formatTokenCount(ctxSummary.tokensUsed)} / ${formatTokenCount(ctxSummary.budgetTotal)})`
+                    )
+                }
             }
         }
 
