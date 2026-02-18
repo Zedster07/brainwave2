@@ -15,11 +15,15 @@ import { randomUUID } from 'node:crypto'
 import { IPC_CHANNELS } from '@shared/types'
 import type { NotificationPayload, NotificationType } from '@shared/types'
 import { getEventBus } from '../agents/event-bus'
+import { getDatabase } from '../db/database'
+import { getSoftEngine } from '../rules'
 
 // ─── Notification Service ───────────────────────────────────
 
 class NotificationService {
   private initialized = false
+  /** Track last budget alert to avoid spamming (one per threshold crossing) */
+  private lastBudgetAlertPercent = 0
 
   /** Wire up all event bus listeners */
   init(): void {
@@ -60,6 +64,11 @@ class NotificationService {
         taskId: data.taskId,
         jobId: data.jobId,
       })
+    })
+
+    // 4. Cost update — check monthly budget
+    bus.onEvent('agent:cost-update', () => {
+      this.checkMonthlyBudget()
     })
 
     console.log('[NotificationService] Initialized — listening for events')
@@ -113,6 +122,45 @@ class NotificationService {
     })
 
     console.log(`[Notification] ${payload.type}: ${payload.title} — ${payload.body}`)
+  }
+
+  /**
+   * Check monthly spend against budget alert threshold.
+   * Fires a notification when spend exceeds the configured limit.
+   * Throttled to one alert per hour to avoid spam.
+   */
+  private lastBudgetAlertAt = 0
+  private checkMonthlyBudget(): void {
+    // Throttle: max one alert per hour
+    const now = Date.now()
+    if (now - this.lastBudgetAlertAt < 3_600_000) return
+
+    try {
+      const db = getDatabase()
+      const threshold = getSoftEngine().getMonthlyBudgetAlert()
+
+      // Sum cost_usd for current month
+      const row = db.get(
+        `SELECT COALESCE(SUM(cost_usd), 0.0) as total
+         FROM agent_runs
+         WHERE started_at >= date('now', 'start of month')`,
+      ) as { total: number } | undefined
+
+      const monthlySpend = row?.total ?? 0
+      if (monthlySpend >= threshold) {
+        this.lastBudgetAlertAt = now
+        this.send({
+          title: '💰 Monthly Budget Alert',
+          body: `Monthly spend $${monthlySpend.toFixed(2)} has reached the $${threshold.toFixed(2)} alert threshold.`,
+          type: 'system',
+        })
+        console.warn(
+          `[NotificationService] Budget alert: $${monthlySpend.toFixed(2)} / $${threshold.toFixed(2)} threshold`,
+        )
+      }
+    } catch (err) {
+      console.warn('[NotificationService] Failed to check monthly budget:', err)
+    }
   }
 }
 

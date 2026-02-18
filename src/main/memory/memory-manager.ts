@@ -233,10 +233,16 @@ export class MemoryManager {
       }
       const peopleContext = Array.from(peopleMap.values()).map((p) => {
         const parts = [`[Person] ${p.name}`]
-        if (p.relationship) parts.push(`relationship: ${p.relationship}`)
-        if (p.traits.length > 0) parts.push(`traits: ${p.traits.join(', ')}`)
-        if (Object.keys(p.preferences).length > 0) parts.push(`preferences: ${JSON.stringify(p.preferences)}`)
-        return parts.join(' — ')
+        if (p.nickname && p.nickname !== p.name) parts.push(`aka "${p.nickname}"`)
+        if (p.fullName && p.fullName !== p.name) parts.push(`(full name: ${p.fullName})`)
+        if (p.relationship) parts.push(`[${p.relationship}]`)
+        if (p.occupation) parts.push(`— ${p.occupation}${p.company ? ` @ ${p.company}` : ''}`)
+        if (p.age) parts.push(`— age: ${p.age}`)
+        if (p.email) parts.push(`— email: ${p.email}`)
+        if (p.address) parts.push(`— location: ${p.address}`)
+        if (p.traits.length > 0) parts.push(`— traits: ${p.traits.join(', ')}`)
+        if (Object.keys(p.preferences).length > 0) parts.push(`— preferences: ${JSON.stringify(p.preferences)}`)
+        return parts.join(' ')
       })
 
       // Search procedural memory for relevant learned workflows

@@ -50,16 +50,19 @@ export interface ModeConfig {
 const TOOL_GROUP_MAP: Record<ToolGroup, string[]> = {
   read: [
     'file_read', 'directory_list', 'search_files', 'list_code_definition_names',
+    'grep_search', 'git_info', 'repo_map', 'find_usage', 'get_file_diagnostics',
   ],
   edit: [
     'file_write', 'file_create', 'file_edit', 'file_delete', 'file_move',
     'apply_patch', 'create_directory',
+    'generate_pdf', 'generate_docx', 'generate_xlsx', 'generate_pptx',
   ],
   command: [
-    'shell_execute',
+    'shell_execute', 'shell_kill', 'run_test',
   ],
   search: [
     'web_search', 'webpage_fetch', 'http_request',
+    'discover_tools',
   ],
   browser: [
     'web_search', 'webpage_fetch',

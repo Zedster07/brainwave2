@@ -32,6 +32,7 @@ import { countTokens } from '../llm/token-counter'
 import { Blackboard } from './blackboard'
 import { createTaskToken, cancelTaskToken } from './cancellation'
 import { getModeRegistry, resolveToolGroups, modeAllowsMcp } from '../modes'
+import { StreamRepetitionWatchdog } from './stream-repetition-watchdog'
 
 // ─── Task Record (stored in DB) ────────────────────────────
 
@@ -870,10 +871,18 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
         // Buffer to detect and strip tool_call artifacts mid-stream
         let streamBuffer = ''
         const TOOL_OPEN_PATTERN = /<tool[-_]?call>|\[\s*\{\s*"tool"/i
+        const streamWatchdog = new StreamRepetitionWatchdog()
         try {
           for await (const chunk of adapter.stream(streamRequest)) {
             accumulated += chunk
             streamBuffer += chunk
+
+            // Feed watchdog for repetition detection
+            streamWatchdog.feed(chunk)
+            if (streamWatchdog.isTriggered()) {
+              console.warn('[Orchestrator] Stream repetition detected — aborting conversational stream')
+              break
+            }
 
             // If we detect a potential tool call opening, buffer until we can strip it
             if (TOOL_OPEN_PATTERN.test(streamBuffer)) {
