@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2, Globe, ArrowRightLeft, FilePlus2, FolderTree, RotateCcw, Sun, ShieldCheck, Search, Code2, HardDrive, GitBranch, Package } from 'lucide-react'
+import { Settings as SettingsIcon, Key, Cpu, Shield, Database, Save, Check, Loader2, Eye, EyeOff, Zap, Activity, Wallet, Download, Upload, Monitor, Wifi, WifiOff, RefreshCw, ArrowDownCircle, Plug, Plus, Trash2, Power, PowerOff, Pencil, X, Wrench, Terminal, FileText, FolderOpen, Link2, Unlink2, Globe, ArrowRightLeft, FilePlus2, FolderTree, RotateCcw, Sun, ShieldCheck, Search, Code2, HardDrive, GitBranch, Package, Send, Bot, CheckCircle2, XCircle, AlertCircle } from 'lucide-react'
 import { ModelSelector } from '../../components/ModelSelector'
 import type { PluginInfoData, McpServerConfigInfo, McpServerStatusInfo, BundledMcpServerInfo } from '@shared/types'
 
-type SettingsTab = 'general' | 'models' | 'rules' | 'storage' | 'plugins' | 'tools' | 'daily-pulse' | 'approval'
+type SettingsTab = 'general' | 'models' | 'rules' | 'storage' | 'plugins' | 'tools' | 'daily-pulse' | 'approval' | 'telegram'
 
 const TABS: { id: SettingsTab; label: string; icon: typeof Key }[] = [
   { id: 'general', label: 'General', icon: SettingsIcon },
@@ -14,6 +14,7 @@ const TABS: { id: SettingsTab; label: string; icon: typeof Key }[] = [
   { id: 'storage', label: 'Storage', icon: Database },
   { id: 'plugins', label: 'Plugins', icon: Plug },
   { id: 'tools', label: 'Tools', icon: Wrench },
+  { id: 'telegram', label: 'Telegram', icon: Send },
 ]
 
 export function Settings() {
@@ -59,6 +60,7 @@ export function Settings() {
         {activeTab === 'plugins' && <PluginSettings />}
         {activeTab === 'tools' && <ToolsSettings />}
         {activeTab === 'approval' && <ApprovalSettings />}
+        {activeTab === 'telegram' && <TelegramSettings />}
       </div>
     </div>
   )
@@ -2183,6 +2185,190 @@ function BundledConfigPanel({ preset, isSaving, onSave, onClose }: {
           {isSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
           Save & Reconnect
         </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Telegram Settings ───
+
+function TelegramSettings() {
+  const [botToken, setBotToken] = useSetting<string>('telegram_bot_token', '')
+  const [chatId, setChatId] = useSetting<string>('telegram_chat_id', '')
+  const [authorizedIds, setAuthorizedIds] = useSetting<string>('telegram_authorized_ids', '')
+  const [showToken, setShowToken] = useState(false)
+  const [status, setStatus] = useState<{ username: string; running: boolean; configured: boolean } | null>(null)
+  const [statusLoading, setStatusLoading] = useState(false)
+  const [testResult, setTestResult] = useState<{ success: boolean; error?: string | null } | null>(null)
+  const [testLoading, setTestLoading] = useState(false)
+
+  const refreshStatus = useCallback(async () => {
+    setStatusLoading(true)
+    try {
+      const s = await window.brainwave.getTelegramStatus()
+      setStatus(s)
+    } catch {
+      setStatus(null)
+    } finally {
+      setStatusLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    refreshStatus()
+  }, [refreshStatus])
+
+  const handleTest = useCallback(async () => {
+    setTestLoading(true)
+    setTestResult(null)
+    try {
+      const result = await window.brainwave.testTelegram()
+      setTestResult(result)
+    } catch (err) {
+      setTestResult({ success: false, error: String(err) })
+    } finally {
+      setTestLoading(false)
+    }
+  }, [])
+
+  return (
+    <div className="space-y-6">
+      {/* Status Banner */}
+      <div className={`flex items-center gap-3 p-3 rounded-lg border ${
+        status?.running
+          ? 'border-green-500/20 bg-green-500/5'
+          : status?.configured
+            ? 'border-yellow-500/20 bg-yellow-500/5'
+            : 'border-white/[0.06] bg-white/[0.02]'
+      }`}>
+        {statusLoading ? (
+          <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />
+        ) : status?.running ? (
+          <CheckCircle2 className="w-4 h-4 text-green-400" />
+        ) : status?.configured ? (
+          <AlertCircle className="w-4 h-4 text-yellow-400" />
+        ) : (
+          <Bot className="w-4 h-4 text-gray-500" />
+        )}
+        <div className="flex-1">
+          <p className="text-sm text-white font-medium">
+            {status?.running
+              ? `Bot active — @${status.username}`
+              : status?.configured
+                ? 'Bot configured but not running'
+                : 'Not configured'}
+          </p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {status?.running
+              ? 'Receiving messages and sending notifications'
+              : 'Add your bot token and chat ID below to get started'}
+          </p>
+        </div>
+        <button
+          onClick={refreshStatus}
+          disabled={statusLoading}
+          className="p-1.5 rounded-md text-gray-400 hover:text-white hover:bg-white/[0.05] transition-colors"
+          title="Refresh status"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${statusLoading ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+
+      {/* Bot Token */}
+      <SettingRow
+        label="Bot Token"
+        description="Create a bot via @BotFather on Telegram and paste the token here"
+      >
+        <div className="flex items-center gap-2">
+          <input
+            type={showToken ? 'text' : 'password'}
+            value={botToken ?? ''}
+            onChange={(e) => setBotToken(e.target.value)}
+            placeholder="123456:ABCdefGhIJKlmNoPQRstuVWXyz"
+            className="w-72 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-accent/40 font-mono"
+          />
+          <button
+            onClick={() => setShowToken(!showToken)}
+            className="p-1.5 text-gray-500 hover:text-gray-300 transition-colors"
+            title={showToken ? 'Hide token' : 'Show token'}
+          >
+            {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+          </button>
+        </div>
+      </SettingRow>
+
+      {/* Chat ID */}
+      <SettingRow
+        label="Default Chat ID"
+        description="Your Telegram user or group chat ID for notifications"
+      >
+        <input
+          type="text"
+          value={chatId ?? ''}
+          onChange={(e) => setChatId(e.target.value)}
+          placeholder="123456789"
+          className="w-48 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-accent/40 font-mono"
+        />
+      </SettingRow>
+
+      {/* Authorized IDs */}
+      <SettingRow
+        label="Authorized Chat IDs"
+        description="Comma-separated list of chat IDs allowed to send commands to the bot"
+      >
+        <input
+          type="text"
+          value={authorizedIds ?? ''}
+          onChange={(e) => setAuthorizedIds(e.target.value)}
+          placeholder="123456789, 987654321"
+          className="w-64 bg-white/[0.05] border border-white/[0.08] rounded-md px-3 py-1.5 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-accent/40 font-mono"
+        />
+      </SettingRow>
+
+      {/* Test Connection */}
+      <div className="border-t border-white/[0.04] pt-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-white font-medium">Test Connection</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Send a test message to verify the bot is properly configured
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            {testResult && (
+              <span className={`flex items-center gap-1.5 text-xs ${
+                testResult.success ? 'text-green-400' : 'text-red-400'
+              }`}>
+                {testResult.success
+                  ? <><CheckCircle2 className="w-3.5 h-3.5" /> Message sent!</>
+                  : <><XCircle className="w-3.5 h-3.5" /> {testResult.error || 'Failed'}</>}
+              </span>
+            )}
+            <button
+              onClick={handleTest}
+              disabled={testLoading || !botToken || !chatId}
+              className="flex items-center gap-2 px-4 py-2 text-sm rounded-lg bg-accent/10 text-accent border border-accent/20 hover:bg-accent/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {testLoading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Send className="w-3.5 h-3.5" />
+              )}
+              Send Test
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Setup Instructions */}
+      <div className="p-3 rounded-lg border border-white/[0.06] bg-white/[0.02]">
+        <p className="text-xs text-gray-500">
+          <strong className="text-gray-400">Setup:</strong>{' '}
+          1. Message <span className="text-accent">@BotFather</span> on Telegram and create a new bot with <span className="font-mono text-gray-400">/newbot</span>.{' '}
+          2. Copy the token and paste it above.{' '}
+          3. Message your bot, then use <span className="text-accent">@userinfobot</span> to find your Chat ID.{' '}
+          4. Add your Chat ID above and click "Send Test" to verify.
+        </p>
       </div>
     </div>
   )
