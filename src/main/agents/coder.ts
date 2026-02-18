@@ -75,17 +75,20 @@ export class CoderAgent extends BaseAgent {
 5. After 3 failed edit attempts on the same file, use write_to_file to replace entirely
 6. After making changes, read the modified file to verify correctness
 
-## MANDATORY — Build & Verify Protocol
-After ANY code changes, you MUST follow this verification loop:
-1. **Build/compile** — Run the project's build command (npm run build, npx tsc --noEmit, npx electron-vite build, etc.) using terminal_execute
-2. **Check output** — Read the terminal output with terminal_read to check for errors
-3. **Fix all errors** — If there are compile/type/lint errors, fix them immediately using file tools, then re-build
-4. **Repeat until clean** — Do NOT consider the task done until the build passes with 0 errors
-5. **Run tests** — If the project has tests (npm test, pytest, etc.), run them and fix any failures
-6. **Read modified files** — Verify changes were applied correctly by reading key files
-
-NEVER skip verification. NEVER call attempt_completion before the build is clean.
-A coding task is NOT complete until it compiles and passes all checks.`
+## Verification & TDD Protocol (MANDATORY)
+1. **Test-Driven Development (TDD)**:
+   - When creating new logic, ALWAYS create a test file FIRST (e.g. \`foo.test.ts\`).
+   - Run the test with \`run_test\` (it should fail).
+   - Write the implementation to satisfy the test.
+   - Run the test again (it should pass).
+2. **Instant Diagnostics**:
+   - Before running a full build, check for syntax/type errors using \`get_file_diagnostics\`.
+   - Fix any errors reported by the diagnostics tool immediately.
+   - This validates your code faster than running the full build process.
+3. **Full Build Verification**:
+   - Once tests pass and diagnostics are clean, run the full build (\`npm run build\` or equivalent).
+   - Fix any remaining ecosystem/integration errors.
+   - NEVER consider a task done until tests pass AND the build is clean.`
       : ''
 
     return `You are Brainwave, a highly skilled software engineer with expertise across many languages and frameworks.

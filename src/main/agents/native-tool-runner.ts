@@ -370,6 +370,22 @@ export async function executeWithNativeTools(
                 // Map API name back to internal tool key
                 const internalKey = toolNameMap.toInternalKey(toolUse.name)
 
+                // ── Unknown tool guard ──
+                // Catch hallucinated tool names (e.g. "read_text_file" instead of "file_read")
+                // that pass through ToolNameMap's fallback unsanitize path.
+                if (!toolNameMap.isKnownTool(toolUse.name)) {
+                    const suggestions = toolNameMap.suggestSimilar(toolUse.name)
+                    const hint = suggestions.length > 0
+                        ? ` Did you mean: ${suggestions.join(', ')}?`
+                        : ' Check the available tools list — only use tool names EXACTLY as provided.'
+                    const errMsg = `ERROR: "${toolUse.name}" is NOT a valid tool name.${hint}`
+                    console.warn(`[${agent.type}] Step ${step}: HALLUCINATED TOOL: "${toolUse.name}" → suggestions: [${suggestions.join(', ')}]`)
+                    toolResults.push({ tool: toolUse.name, success: false, content: errMsg })
+                    resultBlocks.push(createToolResult(toolUse.id, errMsg, true))
+                    consecutiveErrors++
+                    continue
+                }
+
                 // Permission check
                 const perm = canAgentCallTool(agent.type, internalKey)
                 if (!perm.allowed) {

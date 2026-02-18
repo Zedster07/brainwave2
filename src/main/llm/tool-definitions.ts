@@ -145,9 +145,61 @@ export class ToolNameMap {
     return unsanitizeToolName(apiName)
   }
 
-  /** Check if an API name is known */
+  /** Check if an API name is known (exact or fuzzy match) */
   hasApiName(apiName: string): boolean {
     return this.apiToKey.has(apiName)
+  }
+
+  /**
+   * Check if a tool name resolves to a KNOWN registered tool.
+   * Unlike hasApiName(), this also checks fuzzy suffix matching.
+   * Returns false for hallucinated tool names that would fall through to unsanitize.
+   */
+  isKnownTool(apiName: string): boolean {
+    // Exact match
+    if (this.apiToKey.has(apiName)) return true
+    // Fuzzy suffix match
+    for (const knownApi of this.apiToKey.keys()) {
+      if (apiName.endsWith(knownApi) || apiName.endsWith(`__${knownApi}`)) return true
+    }
+    return false
+  }
+
+  /**
+   * Suggest the closest known tool names for a hallucinated tool name.
+   * Uses substring matching on the base name (after stripping prefixes).
+   * Returns up to 3 suggestions sorted by similarity.
+   */
+  suggestSimilar(apiName: string, maxSuggestions = 3): string[] {
+    const target = apiName.replace(/^.*__/, '').toLowerCase()
+    const scored: Array<{ name: string; score: number }> = []
+
+    for (const [knownApi, key] of this.apiToKey) {
+      const knownBase = knownApi.replace(/^.*__/, '').toLowerCase()
+      // Score: shared words/fragments
+      const targetWords = new Set(target.split(/[_-]/))
+      const knownWords = new Set(knownBase.split(/[_-]/))
+      let shared = 0
+      for (const w of targetWords) {
+        if (w.length > 1 && (knownWords.has(w) || knownBase.includes(w))) shared++
+      }
+      for (const w of knownWords) {
+        if (w.length > 1 && target.includes(w)) shared++
+      }
+      if (shared > 0) {
+        scored.push({ name: key, score: shared })
+      }
+    }
+
+    return scored
+      .sort((a, b) => b.score - a.score)
+      .slice(0, maxSuggestions)
+      .map(s => s.name)
+  }
+
+  /** Get all registered API names */
+  getAllApiNames(): string[] {
+    return [...this.apiToKey.keys()]
   }
 }
 

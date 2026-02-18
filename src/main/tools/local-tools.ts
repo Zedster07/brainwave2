@@ -464,6 +464,64 @@ const TOOL_DEFS: McpTool[] = [
       required: ['url'],
     },
   },
+  {
+    key: 'local::run_test',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'run_test',
+    description: 'Run unit tests for a specific file using Vitest. Always run this after creating or modifying code to ensure it works.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target_file: { type: 'string', description: 'Relative path to the test file (e.g., src/utils.test.ts) or source file to test' },
+      },
+      required: ['target_file'],
+    },
+  },
+  {
+    key: 'local::get_file_diagnostics',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'get_file_diagnostics',
+    description: 'Get TypeScript semantic diagnostics (errors/warnings) for a specific file. Use this to check for compilation errors without running a full build.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Absolute path to the file to check' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    key: 'local::repo_map',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'repo_map',
+    description: 'Generate a high-level map of the codebase structure, listing files and their key definitions (classes, functions, etc.). Useful for understanding project architecture.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        root: { type: 'string', description: 'Root directory to map (default: current working directory)' },
+      },
+      required: [],
+    },
+  },
+  {
+    key: 'local::find_usage',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'find_usage',
+    description: 'Find all usages of a specific text or symbol in the codebase. Supports smart literal matching (escapes regex characters).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'The text or symbol to matching' },
+        path: { type: 'string', description: 'Root directory to search in (default: current working directory)' },
+        file_pattern: { type: 'string', description: 'Glob pattern to filter files (e.g. "*.ts").' },
+      },
+      required: ['text'],
+    },
+  },
 ]
 
 // ─── Provider ───────────────────────────────────────────────
@@ -548,6 +606,15 @@ class LocalToolProvider {
         return this.generatePptx(args)
       case 'play_youtube_video':
         return this.playYouTubeVideo(args)
+      case 'run_test':
+        return this.runTest(args)
+      case 'get_file_diagnostics':
+        return this.getFileDiagnostics(args)
+      case 'repo_map':
+        return this.repoMap(args)
+      case 'find_usage':
+        return this.findUsage(args)
+
       default:
         return {
           toolKey: `local::${toolName}`,
@@ -2400,6 +2467,189 @@ class LocalToolProvider {
     } catch (err) {
       return this.error('local::generate_pptx', this.errMsg(err), start)
     }
+  }
+
+  // ─── Testing Tools ────────────────────────────────────────
+
+  private async runTest(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const start = Date.now()
+    const targetFile = args.target_file ? String(args.target_file) : undefined
+
+    // Safety check - only allow running tests
+    if (targetFile) {
+      const allowed = getHardEngine().evaluate({ type: 'file_read', path: targetFile })
+      if (!allowed.allowed) return this.blocked('local::run_test', allowed.reason, start)
+    }
+
+    try {
+      const { exec } = require('child_process')
+      const util = require('util')
+      const execAsync = util.promisify(exec)
+
+      // Run vitest. If targetFile is provided, run only that file.
+      // We use --no-color to make parsing easier, and --passWithNoTests to avoid error on empty filtering
+      const cmd = `npx vitest run ${targetFile ? `"${targetFile}"` : ''} --no-color --passWithNoTests`
+
+      console.log(`[LocalTools] Running test: ${cmd}`)
+
+      const { stdout, stderr } = await execAsync(cmd)
+
+      return {
+        toolKey: 'local::run_test',
+        success: true,
+        content: `Test execution successful:\n\n${stdout}\n${stderr}`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err: any) {
+      // Vitest exit code 1 means tests failed, which is a "successful run" of the tool (it reported the failure)
+      // but we want to show the output clearly.
+      if (err.stdout || err.stderr) {
+        return {
+          toolKey: 'local::run_test',
+          success: true, // The tool ran successfully, the *tests* failed
+          content: `Test execution failed (Tests did not pass):\n\n${err.stdout}\n${err.stderr}`,
+          isError: false,
+          duration: Date.now() - start,
+        }
+      }
+      return this.error('local::run_test', this.errMsg(err), start)
+    }
+  }
+
+  private async getFileDiagnostics(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const start = Date.now()
+    const filePath = args.path ? String(args.path) : undefined
+
+    if (!filePath) return this.error('local::get_file_diagnostics', 'path is required', start)
+
+    const allowed = getHardEngine().evaluate({ type: 'file_read', path: filePath })
+    if (!allowed.allowed) return this.blocked('local::get_file_diagnostics', allowed.reason, start)
+
+    try {
+      // Lazy load typescript to keep startup fast
+      const ts = require('typescript')
+
+      // Create a program for just this file to get diagnostics
+      // We assume a standard tsconfig setup or default options
+      const program = ts.createProgram([filePath], {
+        noEmit: true,
+        target: ts.ScriptTarget.ESNext,
+        module: ts.ModuleKind.CommonJS,
+        moduleResolution: ts.ModuleResolutionKind.NodeJs,
+        esModuleInterop: true,
+        skipLibCheck: true,
+        jsx: ts.JsxEmit.React, // Assumption for this project
+      })
+
+      const diagnostics = ts.getPreEmitDiagnostics(program)
+
+      // Filter diagnostics for the target file only
+      const FileDiagnostics = diagnostics.filter((d: any) => d.file && resolve(d.file.fileName) === resolve(filePath))
+
+      if (FileDiagnostics.length === 0) {
+        return {
+          toolKey: 'local::get_file_diagnostics',
+          success: true,
+          content: `No errors found in ${basename(filePath)}.`,
+          isError: false,
+          duration: Date.now() - start
+        }
+      }
+
+      const formatted = FileDiagnostics.map((d: any) => {
+        const { line, character } = d.file!.getLineAndCharacterOfPosition(d.start!)
+        const message = ts.flattenDiagnosticMessageText(d.messageText, '\n')
+        return `Line ${line + 1}:${character + 1} - ${message} (TS${d.code})`
+      }).join('\n')
+
+      return {
+        toolKey: 'local::get_file_diagnostics',
+        success: true,
+        content: `Found ${FileDiagnostics.length} error(s) in ${basename(filePath)}:\n\n${formatted}`,
+        isError: false, // Return success=true so the agent sees the errors as data, not tool failure
+        duration: Date.now() - start
+      }
+
+    } catch (err) {
+      return this.error('local::get_file_diagnostics', this.errMsg(err), start)
+    }
+  }
+
+  // ─── Context Awareness Tools ──────────────────────────────
+
+  private async repoMap(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const rootPath = args.root ? resolve(String(args.root)) : process.cwd()
+    const start = Date.now()
+
+    const allowed = getHardEngine().evaluate({ type: 'file_read', path: rootPath })
+    if (!allowed.allowed) return this.blocked('local::repo_map', allowed.reason, start)
+
+    try {
+      const structure: string[] = []
+      const MAX_FILES = 100
+      let fileCount = 0
+
+      await this.walkDir(rootPath, async (filePath) => {
+        if (fileCount >= MAX_FILES) return
+        fileCount++
+
+        const relativePath = filePath.replace(rootPath, '').replace(/^[\\\/]/, '')
+        try {
+          const content = await readFile(filePath, 'utf-8')
+          const defs: string[] = []
+
+          if (filePath.endsWith('.ts') || filePath.endsWith('.tsx') || filePath.endsWith('.js') || filePath.endsWith('.jsx')) {
+            this.extractTsDefinitions(content, defs)
+          } else if (filePath.endsWith('.go')) {
+            this.extractGoDefinitions(content, defs)
+          } // Add other languages as needed
+
+          if (defs.length > 0) {
+            structure.push(`File: ${relativePath}\n  ${defs.join('\n  ')}`)
+          } else {
+            structure.push(`File: ${relativePath}`)
+          }
+        } catch { /* skip */ }
+      })
+
+      return {
+        toolKey: 'local::repo_map',
+        success: true,
+        content: `Repository Map (Root: ${rootPath}):\n\n${structure.join('\n\n')}`,
+        isError: false,
+        duration: Date.now() - start
+      }
+    } catch (err) {
+      return this.error('local::repo_map', this.errMsg(err), start)
+    }
+  }
+
+  private extractTsDefinitions(content: string, defs: string[]): void {
+    const lines = content.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim()
+      const m = line.match(/^export\s+(class|interface|type|enum|const|function|let|var)\s+(\w+)/)
+      if (m) {
+        defs.push(`${m[1]} ${m[2]} (L${i + 1})`)
+      }
+    }
+  }
+
+  private async findUsage(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const text = String(args.text ?? '')
+    const path = args.path ? resolve(String(args.path)) : process.cwd()
+
+    // Reuse searchFiles logic but with literal string escaping
+    const regex = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') // Escape regex special chars
+
+    // Call searchFiles internally (simulated)
+    // We can't call this.searchFiles directly because it returns a different format/result type 
+    // effectively, or we can just reuse the implementation.
+    // For simplicity, I'll just adapt searchFiles logic here or call it if I Refactored it.
+    // I will just use the same logic as searchFiles but pre-process the regex.
+
+    return this.searchFiles({ ...args, regex, path })
   }
 
   // ─── YouTube Player ────────────────────────────────────
