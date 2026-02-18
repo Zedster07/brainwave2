@@ -618,22 +618,43 @@ export async function executeWithNativeTools(
                 }
 
                 // Map API name back to internal tool key
-                const internalKey = toolNameMap.toInternalKey(toolUse.name)
+                let internalKey = toolNameMap.toInternalKey(toolUse.name)
 
-                // ── Unknown tool guard ──
-                // Catch hallucinated tool names (e.g. "read_text_file" instead of "file_read")
-                // that pass through ToolNameMap's fallback unsanitize path.
+                // ── Unknown tool guard with alias auto-resolution ──
+                // When the model hallucinates a tool name (e.g. "read_file" instead of "local__file_read"),
+                // try to auto-resolve via the alias map before erroring out.
                 if (!toolNameMap.isKnownTool(toolUse.name)) {
-                    const suggestions = toolNameMap.suggestSimilar(toolUse.name)
-                    const hint = suggestions.length > 0
-                        ? ` Did you mean: ${suggestions.join(', ')}?`
-                        : ' Check the available tools list — only use tool names EXACTLY as provided.'
-                    const errMsg = `ERROR: "${toolUse.name}" is NOT a valid tool name.${hint}`
-                    console.warn(`[${agent.type}] Step ${step}: HALLUCINATED TOOL: "${toolUse.name}" → suggestions: [${suggestions.join(', ')}]`)
-                    toolResults.push({ tool: toolUse.name, success: false, content: errMsg })
-                    resultBlocks.push(createToolResult(toolUse.id, errMsg, true))
-                    consecutiveErrors++
-                    continue
+                    const alias = toolNameMap.resolveAlias(toolUse.name)
+                    if (alias) {
+                        // Auto-reroute: silently fix the hallucinated name
+                        console.log(`[${agent.type}] Step ${step}: Alias resolved: "${toolUse.name}" → "${alias.resolved}" (key: ${alias.internalKey})`)
+                        toolUse.name = alias.resolved
+                        internalKey = alias.internalKey
+                    } else {
+                        const suggestions = toolNameMap.suggestSimilar(toolUse.name)
+                        const desc = suggestions.length > 0
+                            ? suggestions.map(s => {
+                                const d = toolNameMap.getToolDescription(s)
+                                return d ? `  • ${s} — ${d.slice(0, 80)}` : `  • ${s}`
+                            }).join('\n')
+                            : ''
+                        const hint = suggestions.length > 0
+                            ? ` Did you mean:\n${desc}\nUse the EXACT tool name from the list above.`
+                            : ' No similar tool found. Call discover_tools to see all available tools.'
+                        const errMsg = `ERROR: "${toolUse.name}" is NOT a valid tool name.${hint}`
+                        console.warn(`[${agent.type}] Step ${step}: HALLUCINATED TOOL: "${toolUse.name}" → no alias, suggestions: [${suggestions.join(', ')}]`)
+                        toolResults.push({ tool: toolUse.name, success: false, content: errMsg })
+                        resultBlocks.push(createToolResult(toolUse.id, errMsg, true))
+                        consecutiveErrors++
+
+                        // After 3 consecutive errors, inject the full tool catalog as a reminder
+                        if (consecutiveErrors >= 3) {
+                            const catalog = toolNameMap.buildToolCatalog()
+                            conversation.addStructuredNotice(catalog)
+                            console.log(`[${agent.type}] Step ${step}: Injected tool catalog after ${consecutiveErrors} consecutive errors`)
+                        }
+                        continue
+                    }
                 }
 
                 // Permission check

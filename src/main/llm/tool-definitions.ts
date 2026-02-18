@@ -101,21 +101,106 @@ export function toOpenAITools(tools: ToolLike[]): OpenAIToolDefinition[] {
   return tools.map(toOpenAITool)
 }
 
+// ─── Tool Alias Map ─────────────────────────────────────────
+// Common hallucinated tool names → correct API names.
+// Models trained on Copilot/Cursor/Aider emit these names from training priors.
+// The alias map silently auto-resolves them instead of erroring out.
+
+const TOOL_ALIASES: Record<string, string> = {
+  // File operations — most common hallucination source
+  'read_file':             'local__file_read',
+  'write_file':            'local__file_write',
+  'create_file':           'local__file_create',
+  'edit_file':             'local__file_edit',
+  'delete_file':           'local__file_delete',
+  'move_file':             'local__file_move',
+  'rename_file':           'local__file_move',
+  'list_dir':              'local__directory_list',
+  'list_directory':        'local__directory_list',
+  'ls':                    'local__directory_list',
+  'mkdir':                 'local__create_directory',
+  'make_directory':        'local__create_directory',
+  'replace_in_file':       'local__file_edit',
+  'replace_string_in_file': 'local__file_edit',
+  'multi_replace_string_in_file': 'local__file_edit',
+  'insert_code_at_line':   'local__file_edit',
+
+  // Shell / terminal
+  'run_in_terminal':       'local__shell_execute',
+  'run_command':           'local__shell_execute',
+  'execute_command':       'local__shell_execute',
+  'terminal_execute':      'local__shell_execute',
+  'run_terminal_command':  'local__shell_execute',
+  'bash':                  'local__shell_execute',
+  'shell':                 'local__shell_execute',
+
+  // Search
+  'grep':                  'local__grep_search',
+  'ripgrep':               'local__grep_search',
+  'search':                'local__search_files',
+  'find_files':            'local__search_files',
+  'file_search':           'local__search_files',
+  'code_search':           'local__grep_search',
+  'semantic_search':       'local__grep_search',
+  'codebase_search':       'local__grep_search',
+
+  // Web
+  'browser_navigate':      'local__webpage_fetch',
+  'fetch_webpage':         'local__webpage_fetch',
+  'web_fetch':             'local__webpage_fetch',
+  'http':                  'local__http_request',
+  'curl':                  'local__http_request',
+  'fetch':                 'local__http_request',
+
+  // Git
+  'git_status':            'local__git_info',
+  'git_diff':              'local__git_info',
+  'git_log':               'local__git_info',
+
+  // Misc
+  'get_errors':            'local__get_file_diagnostics',
+  'diagnostics':           'local__get_file_diagnostics',
+  'run_tests':             'local__run_test',
+  'test':                  'local__run_test',
+  'ask_user':              'local__ask_followup_question',
+  'ask_question':          'local__ask_followup_question',
+  'ask_questions':         'local__ask_followup_question',
+  'notify':                'local__send_notification',
+  'notification':          'local__send_notification',
+  'tool_search':           'local__discover_tools',
+  'tool_search_tool_regex': 'local__discover_tools',
+  'find_tool':             'local__discover_tools',
+  'list_tools':            'local__discover_tools',
+
+  // Delegation
+  'runSubagent':           'delegate_to_agent',
+  'run_subagent':          'delegate_to_agent',
+  'spawn_agent':           'delegate_to_agent',
+  'sub_agent':             'delegate_to_agent',
+}
+
 // ─── Name Mapping ───────────────────────────────────────────
 
 /**
  * Bidirectional name mapping between API-safe names and internal tool keys.
  * Used to translate tool calls from the API response back to internal keys.
+ *
+ * Also includes alias resolution: common hallucinated tool names (from model
+ * training priors) are silently auto-resolved to the correct tool.
  */
 export class ToolNameMap {
   private keyToApi = new Map<string, string>()
   private apiToKey = new Map<string, string>()
+  private toolDescriptions = new Map<string, string>()
 
   constructor(tools: ToolLike[]) {
     for (const tool of tools) {
       const apiName = sanitizeToolName(tool.key)
       this.keyToApi.set(tool.key, apiName)
       this.apiToKey.set(apiName, tool.key)
+      if (tool.description) {
+        this.toolDescriptions.set(apiName, tool.description)
+      }
     }
   }
 
@@ -152,17 +237,57 @@ export class ToolNameMap {
 
   /**
    * Check if a tool name resolves to a KNOWN registered tool.
-   * Unlike hasApiName(), this also checks fuzzy suffix matching.
+   * Unlike hasApiName(), this also checks fuzzy suffix matching AND alias map.
    * Returns false for hallucinated tool names that would fall through to unsanitize.
    */
   isKnownTool(apiName: string): boolean {
     // Exact match
     if (this.apiToKey.has(apiName)) return true
+    // Alias match
+    if (TOOL_ALIASES[apiName] && this.apiToKey.has(TOOL_ALIASES[apiName])) return true
     // Fuzzy suffix match
     for (const knownApi of this.apiToKey.keys()) {
       if (apiName.endsWith(knownApi) || apiName.endsWith(`__${knownApi}`)) return true
     }
     return false
+  }
+
+  /**
+   * Resolve a tool alias to the correct API name.
+   * Returns the resolved API name if an alias exists and the target tool is registered,
+   * or null if no alias matches.
+   */
+  resolveAlias(apiName: string): { resolved: string; internalKey: string } | null {
+    const target = TOOL_ALIASES[apiName]
+    if (!target) return null
+    // Check if the alias target is a registered tool
+    const internalKey = this.apiToKey.get(target)
+    if (internalKey) {
+      return { resolved: target, internalKey }
+    }
+    return null
+  }
+
+  /**
+   * Get the description of a tool by its API name.
+   * Returns undefined if the tool is not found.
+   */
+  getToolDescription(apiName: string): string | undefined {
+    return this.toolDescriptions.get(apiName)
+  }
+
+  /**
+   * Build a compact tool catalog string listing all available tools.
+   * Used for error recovery — injected into conversation when model is confused.
+   */
+  buildToolCatalog(): string {
+    const lines: string[] = ['Available tools (use EXACT names):']
+    for (const [apiName, key] of this.apiToKey) {
+      const desc = this.toolDescriptions.get(apiName)
+      const shortDesc = desc ? ` — ${desc.slice(0, 80)}` : ''
+      lines.push(`  • ${apiName}${shortDesc}`)
+    }
+    return lines.join('\n')
   }
 
   /**

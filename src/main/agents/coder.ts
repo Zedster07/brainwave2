@@ -59,7 +59,25 @@ export class CoderAgent extends BaseAgent {
     const systemEnv = buildSystemEnvironmentBlock(this.getBrainwaveHomeDir())
 
     const toolGuidance = toolsAvailable
-      ? `\n## Tool Use Guidelines
+      ? `\n## Tool Name Quick Reference
+Use EXACTLY these tool names — do NOT invent or shorten tool names:
+| Task | Tool Name | Common Mistakes to Avoid |
+|------|-----------|--------------------------|
+| Read a file | file_read | NOT read_file, cat, open_file |
+| Edit a file (partial) | file_edit | NOT replace_in_file, edit_file, patch |
+| Write/overwrite file | file_write | NOT write_file, write_to_file, save_file |
+| Create new file | file_create | NOT create_file, touch, new_file |
+| Search code patterns | grep_search | NOT grep, search, ripgrep, semantic_search |
+| Find file by name | search_files | NOT find, locate, glob |
+| Find symbol usages | find_usage | NOT find_references, list_usages |
+| List directory | directory_list | NOT ls, dir, list_dir, list_directory |
+| Code structure | code_definitions | NOT list_definitions, get_symbols |
+| Run shell command | shell_execute* | NOT run_command, bash, exec, run_in_terminal |
+| Git info | git_info | NOT git_status, git_diff, git_log |
+| Load more tools | discover_tools | Call this FIRST if a tool you need is missing |
+*shell_execute is a deferred tool — call discover_tools first to load it.
+
+## Tool Use Guidelines
 - Use file_read to examine existing code BEFORE modifying it
 - Use directory_list and search_files to understand project structure
 - Use file_write / file_create to write code to actual files

@@ -96,7 +96,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'file_read',
-    description: 'Read the contents of a file. Returns text content. For large files, use start_line/end_line to read specific sections. Automatically extracts readable text from PDF, DOCX, and XLSX files.',
+    description: 'Read the contents of a file at a given path. Returns text content with line numbers. For large files, use start_line/end_line to read specific sections instead of reading the whole file. Automatically extracts readable text from PDF, DOCX, and XLSX files. ALWAYS read a file before editing it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -113,7 +113,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'file_write',
-    description: 'Write/overwrite content to an existing or new file. Creates parent directories automatically.',
+    description: 'Write/overwrite an ENTIRE file with new content. Creates parent directories automatically. WARNING: This REPLACES the entire file contents — use file_edit for surgical changes to specific sections. Use file_create if the file must not already exist.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -128,7 +128,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'file_create',
-    description: 'Create a new file with content. Fails if the file already exists. Creates parent directories automatically.',
+    description: 'Create a new file with content. Fails if the file already exists (use file_write to overwrite). Creates parent directories automatically.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -172,7 +172,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'directory_list',
-    description: 'List files and subdirectories in a directory. Returns names, sizes, and types (file/directory).',
+    description: 'List files and subdirectories in a directory. Returns names, sizes, and types (file/directory). Use this to explore project structure before reading specific files.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -294,7 +294,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'file_edit',
-    description: 'Edit an existing file by replacing a specific string with new content. Supports single old_string/new_string replacement OR multiple SEARCH/REPLACE diff blocks. For small changes, use old_string/new_string. For multi-edit, pass diff_blocks as a JSON array of {search, replace} objects. Include 2-3 lines of context around the target to ensure a unique match.',
+    description: 'Make targeted edits to an existing file by replacing specific text. PREFERRED over file_write for modifying existing files — preserves unchanged content. Supports single old_string/new_string replacement OR multiple SEARCH/REPLACE diff blocks via diff_blocks. Include 2-3 lines of context around the target to ensure a unique match. For large rewrites affecting most of the file, use file_write instead.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -311,7 +311,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'search_files',
-    description: 'Search for files matching a regex pattern within a directory. Returns matching lines with file paths and line numbers. Useful for finding code patterns, function definitions, or specific strings across a project.',
+    description: 'Search for files by name pattern OR search file contents with regex. Returns matching file paths with line numbers. Use grep_search instead for fast regex content searching with better output. Use find_usage for searching a specific symbol/identifier across the codebase.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -341,7 +341,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'list_code_definition_names',
-    description: 'Parse source code files to extract top-level definitions (classes, functions, interfaces, types, exports). Shows the structure of a file or directory without reading full contents. Supports TypeScript, JavaScript, Python, Go, Rust, Java, C/C++.',
+    description: 'Parse source code to extract top-level definitions (classes, functions, interfaces, types, exports) WITHOUT reading full file contents. Use this to understand file structure before diving into details with file_read. Supports TypeScript, JavaScript, Python, Go, Rust, Java, C/C++.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -511,7 +511,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'find_usage',
-    description: 'Find all usages of a specific text or symbol in the codebase. Supports smart literal matching (escapes regex characters).',
+    description: 'Find all usages of a specific symbol, function name, or exact text across the codebase. Smart literal matching (escapes regex characters). Use this when looking for where a specific identifier is used (e.g. "MyClass", "handleClick"). Use grep_search instead for regex pattern matching.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -528,7 +528,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'grep_search',
-    description: 'Search files using a regex or literal pattern. Returns matching lines with file paths and line numbers. Supports case-insensitive search and file type filtering. Use this for fast, targeted code searches — more powerful than search_files for pattern matching.',
+    description: 'Fast regex-based code search across files. Returns matching lines with file paths and line numbers. PREFERRED over search_files for finding code patterns, imports, function calls, or any text across the codebase. Supports case-insensitive search and file type filtering via include_pattern (e.g. "*.ts"). Use find_usage for exact symbol/identifier matching.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -547,7 +547,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'git_info',
-    description: 'Get git information for the workspace. Actions: "status" (modified/staged/untracked files), "diff" (uncommitted changes or diff between refs), "log" (recent commit history). Use this to understand what changed and the project history.',
+    description: 'Get git information for the workspace. Actions: "status" (modified/staged/untracked files), "diff" (uncommitted changes or diff between refs), "log" (recent commit history). Use this to understand what changed and the project history. For running git commands (commit, push, checkout), use shell_execute instead (discover it first with discover_tools).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -566,7 +566,7 @@ const TOOL_DEFS: McpTool[] = [
     serverId: 'local',
     serverName: 'Built-in Tools',
     name: 'discover_tools',
-    description: 'Search for and load additional tools that are not in your core set. Use when you need a capability not available in your current tools (e.g. document generation, shell execution, web fetching). Returns matching tool names and descriptions. Once discovered, tools become immediately available for use in subsequent calls.',
+    description: 'Search for and load additional tools not in your core set. You MUST call this before using deferred tools like shell_execute, web_search, webpage_fetch, generate_pdf, play_youtube_video, etc. Returns matching tool names and descriptions. Once discovered, tools become immediately available. Example queries: "shell", "web", "pdf", "youtube", "notification".',
     inputSchema: {
       type: 'object',
       properties: {
