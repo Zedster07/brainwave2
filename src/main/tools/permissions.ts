@@ -125,6 +125,36 @@ function classifyLocalTool(toolName: string): 'read' | 'write' | 'execute' {
   return 'execute' // unknown tools default to most restrictive
 }
 
+/**
+ * Classify an MCP tool by its name using verb-pattern heuristics.
+ * Read-only operations (get, list, search, etc.) → 'read'
+ * Mutation operations (create, update, write, etc.) → 'write'
+ * Destructive/dangerous operations (delete, drop, kill, etc.) → 'execute'
+ * Unknown patterns default to 'write' (mid-restrictive).
+ */
+function classifyMcpTool(toolKey: string): 'read' | 'write' | 'execute' {
+  // toolKey format: "serverId::toolName" — extract tool name
+  const toolName = (toolKey.includes('::') ? toolKey.split('::').pop() : toolKey)?.toLowerCase() ?? ''
+
+  // Destructive / dangerous patterns → execute
+  if (/(?:^|_)(delete|remove|drop|destroy|purge|clean|clear|kill|terminate|stop|uninstall|revoke)/.test(toolName)) {
+    return 'execute'
+  }
+
+  // Mutation patterns → write
+  if (/(?:^|_)(create|write|update|edit|modify|set|put|post|add|insert|save|store|upload|send|move|rename|copy|merge|push|publish|deploy|install|grant|assign|transition|comment)/.test(toolName)) {
+    return 'write'
+  }
+
+  // Read-only patterns → read
+  if (/(?:^|_)(get|list|search|find|query|fetch|read|describe|show|info|status|check|browse|view|look|count|export|download|inspect|resolve|whoami|snapshot|screenshot|take_screenshot|take_snapshot|navigate|hover|wait|select|tabs|console|network|performance)/.test(toolName)) {
+    return 'read'
+  }
+
+  // Unknown MCP tools default to write (mid-restrictive)
+  return 'write'
+}
+
 // ─── Public API ─────────────────────────────────────────────
 
 /** Get the permission config for an agent type */
@@ -166,9 +196,18 @@ export function canAgentCallTool(
     return { allowed: true }
   }
 
-  // For MCP tools — allow all MCP tools for read and readWrite tiers
-  // MCP tools are generally safe (they're external services, not local system access)
+  // For MCP tools — classify by verb patterns and check against agent tier
   if (!isLocal) {
+    const mcpClass = classifyMcpTool(toolKey)
+
+    if (config.tier === 'read' && mcpClass !== 'read') {
+      return { allowed: false, reason: `MCP tool "${toolName}" classified as ${mcpClass} — agent "${agentType}" only has read access` }
+    }
+
+    if (config.tier === 'readWrite' && mcpClass === 'execute') {
+      return { allowed: false, reason: `MCP tool "${toolName}" classified as execute — agent "${agentType}" has readWrite access` }
+    }
+
     return { allowed: true }
   }
 

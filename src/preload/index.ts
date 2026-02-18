@@ -246,6 +246,9 @@ const api: BrainwaveAPI = {
   listOpenRouterModels: () =>
     ipcRenderer.invoke(IPC_CHANNELS.OPENROUTER_LIST_MODELS) as Promise<Array<{ id: string; name: string }>>,
 
+  getOpenRouterBalance: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.OPENROUTER_GET_BALANCE) as Promise<{ usage: number; limit: number | null; isFreeTier: boolean; remaining: number | null }>,
+
   setAgentModel: (agent: string, modelId: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.MODEL_OVERRIDE_SET, agent, modelId) as Promise<void>,
 

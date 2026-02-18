@@ -87,6 +87,7 @@ export const IPC_CHANNELS = {
   MODEL_MODE_GET_CONFIGS: 'model-mode:get-configs',
   MODEL_MODE_GET_PRESETS: 'model-mode:get-presets',
   OPENROUTER_LIST_MODELS: 'openrouter:list-models',
+  OPENROUTER_GET_BALANCE: 'openrouter:get-balance',
   MODEL_OVERRIDE_SET: 'model-override:set',
   MODEL_OVERRIDE_RESET: 'model-override:reset',
   MODEL_OVERRIDE_RESET_ALL: 'model-override:reset-all',
@@ -641,6 +642,7 @@ export interface BrainwaveAPI {
   getModelConfigs: () => Promise<Record<string, { provider: string; model: string }>>
   getModelPresets: () => Promise<Record<string, Record<string, { provider: string; model: string }>>>
   listOpenRouterModels: () => Promise<Array<{ id: string; name: string }>>
+  getOpenRouterBalance: () => Promise<{ usage: number; limit: number | null; isFreeTier: boolean; remaining: number | null }>
   setAgentModel: (agent: string, modelId: string) => Promise<void>
   resetAgentModel: (agent: string) => Promise<void>
   resetAllAgentModels: () => Promise<void>

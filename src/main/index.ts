@@ -8,6 +8,7 @@ import { getDatabase } from './db/database'
 import { MigrationRunner } from './db/migrations'
 import { ALL_MIGRATIONS } from './db/migrations/index'
 import { LLMFactory } from './llm'
+import { loadTokenCacheFromDB, saveTokenCacheToDB } from './llm/token-counter'
 import { initMemoryManager } from './memory/memory-manager'
 import { getDecayService } from './memory/decay'
 import { getHardEngine, getSoftEngine } from './rules'
@@ -93,6 +94,9 @@ app.whenReady().then(() => {
   if (applied.length > 0) {
     console.log(`[Main] Applied ${applied.length} migration(s), schema at v${current}`)
   }
+
+  // ── Warm token cache from SQLite ──
+  loadTokenCacheFromDB()
 
   // ── Load saved LLM API keys from DB ──
   try {
@@ -250,6 +254,7 @@ app.on('before-quit', () => {
   app.isQuitting = true
   getScheduler().stop()
   saveScheduledJobs()  // Persist scheduler state before exit
+  saveTokenCacheToDB()  // Persist token cache for next startup
   getDecayService().stop()
   getTelegramService().stop().catch(() => {})
   getMcpRegistry().disconnectAll().catch(() => {})

@@ -1133,6 +1133,27 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  // ─── OpenRouter Credit Balance ───
+  ipcMain.handle(IPC_CHANNELS.OPENROUTER_GET_BALANCE, async () => {
+    try {
+      const { OpenRouterProvider } = await import('../llm/openrouter')
+      const provider = LLMFactory.getProvider('openrouter') as InstanceType<typeof OpenRouterProvider>
+      if (!provider || !('getBalance' in provider)) {
+        return { usage: 0, limit: null, isFreeTier: false, remaining: null }
+      }
+      const balance = await provider.getBalance()
+      return {
+        usage: balance.usage,
+        limit: balance.limit,
+        isFreeTier: balance.isFreeTier,
+        remaining: balance.limit != null ? Math.max(0, balance.limit - balance.usage) : null,
+      }
+    } catch (err) {
+      console.error('[OpenRouter] Failed to fetch balance:', err)
+      return { usage: 0, limit: null, isFreeTier: false, remaining: null }
+    }
+  })
+
   // ─── Per-Agent Model Overrides ───
   ipcMain.handle(IPC_CHANNELS.MODEL_OVERRIDE_SET, async (_event, agent: string, modelId: string) => {
     const mode = LLMFactory.getMode()

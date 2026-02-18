@@ -262,6 +262,10 @@ export function DailyPulse() {
 
       {/* Card Grid — 2 columns on large, 1 on small */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Spending — full width */}
+        <div className="lg:col-span-2">
+          <SpendingCard state={spending} onRetry={() => fetchSection('spending')} />
+        </div>
         {/* Weather — full width top */}
         <div className="lg:col-span-2">
           <WeatherCard state={weather} onRetry={() => fetchSection('weather')} />
@@ -409,10 +413,7 @@ export function DailyPulse() {
           ) : null}
         </SectionCard>
 
-        {/* Spending — full width */}
-        <div className="lg:col-span-2">
-          <SpendingCard state={spending} onRetry={() => fetchSection('spending')} />
-        </div>
+        
       </div>
     </div>
   )

@@ -22,6 +22,6 @@ export {
   LOCAL_MODE_MODELS,
   MODEL_MODE_PRESETS,
 } from './types'
-export { countTokens, estimateRequestTokens, calculateBudget, shouldCompactContext, formatTokenCount, clearTokenCache, getContextLimit, DEFAULT_COMPACTION_THRESHOLD } from './token-counter'
+export { countTokens, estimateRequestTokens, calculateBudget, shouldCompactContext, formatTokenCount, clearTokenCache, getContextLimit, DEFAULT_COMPACTION_THRESHOLD, saveTokenCacheToDB, loadTokenCacheFromDB } from './token-counter'
 export type { TokenBudget } from './token-counter'
 export { calculateCost, formatCost, getModelPricing } from './pricing'

@@ -2,10 +2,11 @@
  * Token Counter — Context-window-aware token estimation
  *
  * Uses gpt-tokenizer (o200k_base, same as GPT-4o/Claude) to provide:
- *   - Fast, cached token counting for text
+ *   - Fast, cached token counting for text (hash-keyed for persistence)
  *   - Full prompt size estimation (system + user + context + tool catalog)
  *   - Model context limit lookup
  *   - Budget checking for context compaction triggers
+ *   - SQLite persistence: save top 1K entries on quit, reload on startup
  *
  * Inspired by Goose's TokenCounter (tiktoken o200k_base + DashMap cache).
  */
@@ -18,15 +19,31 @@ const MAX_CACHE_SIZE = 5_000
 const MAX_CACHEABLE_LENGTH = 50_000 // don't cache very large strings — hash would be slow
 
 /**
+ * Fast hash for token cache keys. Combines two FNV-1a variants + length
+ * for negligible collision probability with up to 5K entries.
+ */
+function textHash(text: string): string {
+  let h1 = 0x811c9dc5
+  let h2 = 0xc9dc5811
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i)
+    h1 = ((h1 ^ c) * 0x01000193) >>> 0
+    h2 = ((h2 ^ c) * 0x19310100) >>> 0
+  }
+  return `${h1.toString(36)}_${h2.toString(36)}_${text.length}`
+}
+
+/**
  * Count tokens in a text string.
- * Uses an LRU-style cache for repeated calls with the same text.
+ * Uses a hash-keyed LRU-style cache for repeated calls with the same text.
  */
 export function countTokens(text: string): number {
   if (!text) return 0
 
   // For short/medium strings, use cache
   if (text.length <= MAX_CACHEABLE_LENGTH) {
-    const cached = TOKEN_CACHE.get(text)
+    const hash = textHash(text)
+    const cached = TOKEN_CACHE.get(hash)
     if (cached !== undefined) return cached
 
     const count = encode(text).length
@@ -37,12 +54,81 @@ export function countTokens(text: string): number {
       if (firstKey !== undefined) TOKEN_CACHE.delete(firstKey)
     }
 
-    TOKEN_CACHE.set(text, count)
+    TOKEN_CACHE.set(hash, count)
     return count
   }
 
   // For very large strings, count directly without caching
   return encode(text).length
+}
+
+// ─── Cache Persistence ──────────────────────────────────────
+
+/**
+ * Save the current token cache to SQLite.
+ * Call this during app shutdown (before-quit) to persist across restarts.
+ * Saves up to 1000 most recent entries.
+ */
+export function saveTokenCacheToDB(): void {
+  try {
+    // Lazy import to avoid circular dependency
+    const { getDatabase } = require('../db/database')
+    const db = getDatabase()
+
+    // Check if table exists
+    const tableExists = db.get<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='token_cache'`
+    )
+    if (!tableExists) return
+
+    // Clear existing and insert current cache (transaction for atomicity)
+    const entries = Array.from(TOKEN_CACHE.entries())
+    // Keep only the 1000 most recent (last 1000 from map iteration order)
+    const toSave = entries.slice(-1000)
+
+    db.transaction(() => {
+      db.run('DELETE FROM token_cache')
+      const stmt = db.prepare('INSERT INTO token_cache (text_hash, token_count) VALUES (?, ?)')
+      for (const [hash, count] of toSave) {
+        stmt.run(hash, count)
+      }
+    })
+
+    console.log(`[TokenCache] Saved ${toSave.length} entries to SQLite`)
+  } catch (err) {
+    console.warn('[TokenCache] Failed to save cache to DB:', err)
+  }
+}
+
+/**
+ * Load persisted token cache from SQLite.
+ * Call this during app initialization to warm the cache.
+ */
+export function loadTokenCacheFromDB(): void {
+  try {
+    const { getDatabase } = require('../db/database')
+    const db = getDatabase()
+
+    const tableExists = db.get<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name='token_cache'`
+    )
+    if (!tableExists) return
+
+    const rows = db.all<{ text_hash: string; token_count: number }>(
+      'SELECT text_hash, token_count FROM token_cache'
+    )
+
+    let loaded = 0
+    for (const row of rows) {
+      if (loaded >= MAX_CACHE_SIZE) break
+      TOKEN_CACHE.set(row.text_hash, row.token_count)
+      loaded++
+    }
+
+    console.log(`[TokenCache] Loaded ${loaded} entries from SQLite`)
+  } catch (err) {
+    console.warn('[TokenCache] Failed to load cache from DB:', err)
+  }
 }
 
 // ─── Prompt Estimation ──────────────────────────────────────

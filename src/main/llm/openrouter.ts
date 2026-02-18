@@ -2,16 +2,21 @@
  * OpenRouter Provider — 200+ models via OpenAI-compatible API
  *
  * Uses the official OpenAI SDK with baseURL override.
- * Supports completions, streaming, and embeddings.
+ * Supports completions, streaming, embeddings, and prompt caching.
+ * For models that support prompt caching (Claude, MiniMax), cache_control
+ * markers are added to system messages via OpenRouter's pass-through.
  */
 import OpenAI from 'openai'
+import { net } from 'electron'
 import type { LLMAdapter, LLMConfig, LLMRequest, LLMResponse } from './types'
+import { getModelCapabilities } from './types'
 import { withRetry, getCircuitBreaker } from './retry'
 
 export class OpenRouterProvider implements LLMAdapter {
   readonly provider = 'openrouter'
   private client: OpenAI
   private defaultModel: string
+  private apiKey: string
 
   constructor(config: LLMConfig) {
     this.client = new OpenAI({
@@ -24,6 +29,55 @@ export class OpenRouterProvider implements LLMAdapter {
       },
     })
     this.defaultModel = config.defaultModel ?? 'anthropic/claude-sonnet-4-20250514'
+    this.apiKey = config.apiKey
+  }
+
+  /**
+   * Build system messages with optional prompt caching markers.
+   * For cacheable models, system content is wrapped in a content array with cache_control.
+   * OpenRouter transparently forwards cache_control to supported providers (Anthropic, MiniMax).
+   */
+  private buildSystemMessages(system: string, context: string | undefined, model: string): OpenAI.Chat.ChatCompletionMessageParam[] {
+    const caps = getModelCapabilities(model)
+    const msgs: OpenAI.Chat.ChatCompletionMessageParam[] = []
+
+    if (caps.supportsPromptCaching) {
+      // Use content array format with cache_control for cacheable models
+      // OpenRouter passes cache_control through to the underlying provider
+      const systemContent: any[] = [
+        { type: 'text', text: system, cache_control: { type: 'ephemeral' } },
+      ]
+      if (context) {
+        systemContent.push({
+          type: 'text',
+          text: `<context>\n${context}\n</context>`,
+          cache_control: { type: 'ephemeral' },
+        })
+      }
+      msgs.push({ role: 'system', content: systemContent as any })
+    } else {
+      msgs.push({ role: 'system', content: system })
+      if (context) {
+        msgs.push({ role: 'system', content: `<context>\n${context}\n</context>` })
+      }
+    }
+
+    return msgs
+  }
+
+  /**
+   * Extract cache metrics from OpenRouter response if available.
+   * Anthropic models via OpenRouter include cache_creation_input_tokens
+   * and cache_read_input_tokens in the usage object.
+   */
+  private extractCacheMetrics(usage: any): LLMResponse['cacheMetrics'] {
+    if (!usage) return undefined
+    const creation = usage.cache_creation_input_tokens ?? usage.prompt_tokens_details?.cached_tokens_creation ?? 0
+    const read = usage.cache_read_input_tokens ?? usage.prompt_tokens_details?.cached_tokens ?? 0
+    if (creation > 0 || read > 0) {
+      return { cacheCreationInputTokens: creation, cacheReadInputTokens: read }
+    }
+    return undefined
   }
 
   async complete(request: LLMRequest): Promise<LLMResponse> {
@@ -35,15 +89,8 @@ export class OpenRouterProvider implements LLMAdapter {
     const model = request.model ?? this.defaultModel
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-      { role: 'system', content: request.system },
+      ...this.buildSystemMessages(request.system, request.context, model),
     ]
-
-    if (request.context) {
-      messages.push({
-        role: 'system',
-        content: `<context>\n${request.context}\n</context>`,
-      })
-    }
 
     // Multi-turn conversation: use full message history if provided
     if (request.messages && request.messages.length > 0) {
@@ -98,12 +145,18 @@ export class OpenRouterProvider implements LLMAdapter {
 
       console.log(`[OpenRouter] ← ${model} | finish=${choice.finish_reason} | tokens=${response.usage?.prompt_tokens ?? 0}+${response.usage?.completion_tokens ?? 0} | response=${(choice.message.content ?? '').slice(0, 150)}...`)
 
+      const cacheMetrics = this.extractCacheMetrics(response.usage)
+      if (cacheMetrics) {
+        console.log(`[OpenRouter] Cache: created=${cacheMetrics.cacheCreationInputTokens} read=${cacheMetrics.cacheReadInputTokens} (${cacheMetrics.cacheReadInputTokens > 0 ? 'HIT' : 'MISS'})`)
+      }
+
       return {
         content: choice.message.content ?? '',
         model: response.model,
         tokensIn: response.usage?.prompt_tokens ?? 0,
         tokensOut: response.usage?.completion_tokens ?? 0,
         finishReason: choice.finish_reason ?? 'unknown',
+        cacheMetrics,
       }
     } catch (err) {
       cb.recordFailure()
@@ -115,15 +168,8 @@ export class OpenRouterProvider implements LLMAdapter {
     const model = request.model ?? this.defaultModel
 
     const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-      { role: 'system', content: request.system },
+      ...this.buildSystemMessages(request.system, request.context, model),
     ]
-
-    if (request.context) {
-      messages.push({
-        role: 'system',
-        content: `<context>\n${request.context}\n</context>`,
-      })
-    }
 
     // Multi-turn conversation: use full message history if provided
     if (request.messages && request.messages.length > 0) {
@@ -188,5 +234,42 @@ export class OpenRouterProvider implements LLMAdapter {
       cb.recordFailure()
       throw err
     }
+  }
+
+  /**
+   * Fetch current API key balance / usage from OpenRouter.
+   * Calls GET /auth/key to retrieve credit usage and limits.
+   */
+  async getBalance(): Promise<{ usage: number; limit: number | null; isFreeTier: boolean; rateLimit?: { requests: number; interval: string } }> {
+    return new Promise((resolve, reject) => {
+      const request = net.request({
+        method: 'GET',
+        url: 'https://openrouter.ai/api/v1/auth/key',
+      })
+      request.setHeader('Authorization', `Bearer ${this.apiKey}`)
+      request.setHeader('Content-Type', 'application/json')
+
+      let body = ''
+      request.on('response', (response) => {
+        response.on('data', (chunk) => { body += chunk.toString() })
+        response.on('end', () => {
+          try {
+            const json = JSON.parse(body)
+            const data = json.data ?? json
+            resolve({
+              usage: data.usage ?? 0,
+              limit: data.limit ?? null,
+              isFreeTier: data.is_free_tier ?? false,
+              rateLimit: data.rate_limit,
+            })
+          } catch (err) {
+            reject(new Error(`Failed to parse OpenRouter balance response: ${body.slice(0, 200)}`))
+          }
+        })
+        response.on('error', reject)
+      })
+      request.on('error', reject)
+      request.end()
+    })
   }
 }
