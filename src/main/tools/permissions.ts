@@ -51,7 +51,7 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
   // Read filesystem + write code — can read context, write files
   coder: {
     tier: 'readWrite',
-    allowedLocalTools: ['file_read', 'file_write', 'file_create', 'file_edit', 'directory_list', 'web_search', 'webpage_fetch', 'search_files', 'apply_patch', 'list_code_definition_names', 'ask_followup_question'],
+    allowedLocalTools: ['file_read', 'file_write', 'file_create', 'file_edit', 'directory_list', 'web_search', 'webpage_fetch', 'search_files', 'apply_patch', 'list_code_definition_names', 'ask_followup_question', 'run_test', 'get_file_diagnostics', 'repo_map', 'find_usage'],
     blockedLocalTools: ['shell_execute', 'file_delete'],
     timeoutMs: 10 * 60 * 1000, // 10 min — complex multi-file edits
   },
@@ -59,7 +59,7 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
   // Read-only — can check actual code/files for review
   reviewer: {
     tier: 'read',
-    allowedLocalTools: ['file_read', 'directory_list', 'web_search', 'webpage_fetch', 'search_files', 'list_code_definition_names', 'ask_followup_question'],
+    allowedLocalTools: ['file_read', 'directory_list', 'web_search', 'webpage_fetch', 'search_files', 'list_code_definition_names', 'ask_followup_question', 'get_file_diagnostics', 'repo_map', 'find_usage'],
     timeoutMs: 5 * 60 * 1000, // 5 min
   },
 
@@ -85,7 +85,7 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
   // Read-only reconnaissance — can inspect project structure before planning
   planner: {
     tier: 'read',
-    allowedLocalTools: ['file_read', 'directory_list', 'search_files', 'list_code_definition_names'],
+    allowedLocalTools: ['file_read', 'directory_list', 'search_files', 'list_code_definition_names', 'get_file_diagnostics', 'repo_map', 'find_usage'],
     maxSteps: 12,
     timeoutMs: 3 * 60 * 1000, // 3 min
   },
@@ -108,15 +108,19 @@ function classifyLocalTool(toolName: string): 'read' | 'write' | 'execute' {
   const READ_TOOLS = new Set([
     'file_read', 'directory_list', 'web_search', 'webpage_fetch',
     'http_request', 'send_notification', 'search_files', 'list_code_definition_names',
-    'ask_followup_question', 'condense',
+    'ask_followup_question', 'condense', 'get_file_diagnostics', 'repo_map', 'find_usage',
   ])
   const WRITE_TOOLS = new Set([
     'file_write', 'file_create', 'file_delete', 'file_move', 'file_edit', 'apply_patch',
   ])
+  const EXECUTE_TOOLS = new Set([
+    'shell_execute', 'shell_kill', 'run_test',
+  ])
 
   if (READ_TOOLS.has(toolName)) return 'read'
   if (WRITE_TOOLS.has(toolName)) return 'write'
-  return 'execute' // shell_execute, unknown tools
+  if (EXECUTE_TOOLS.has(toolName)) return 'execute'
+  return 'execute' // unknown tools default to most restrictive
 }
 
 // ─── Public API ─────────────────────────────────────────────
