@@ -564,26 +564,30 @@ FINAL CHECK — before outputting, verify:
     try {
       // Detect whether this is an autonomous (cron/scheduled) task
       let isAutonomous = false
+      let isTelegramSession = false
       if (sessionId) {
         try {
           const session = this.db.get(
-            `SELECT session_type FROM chat_sessions WHERE id = ?`,
+            `SELECT session_type, title FROM chat_sessions WHERE id = ?`,
             sessionId
-          ) as { session_type?: string } | undefined
+          ) as { session_type?: string; title?: string } | undefined
           isAutonomous = session?.session_type === 'autonomous'
+          isTelegramSession = session?.title?.includes('Telegram') ?? false
         } catch { /* ignore */ }
       }
 
       // 0. Memory recall — gather relevant context from past experiences
-      // Skip for autonomous tasks — cron jobs should NOT receive user task memories
-      // as they cause context contamination (e.g. Reminders reading webOS files)
+      // Skip for pure autonomous tasks (cron/scheduled) but allow for interactive
+      // autonomous sessions like Telegram — they need user memory for coherent replies.
       const memoryManager = getMemoryManager()
       const workingMemory = getWorkingMemory()
 
       workingMemory.setTask(task.id, task.prompt)
 
+      const skipMemory = isAutonomous && !isTelegramSession
+
       let relevantMemories: string[] = []
-      if (!isAutonomous) {
+      if (!skipMemory) {
         try {
           relevantMemories = await memoryManager.recallForContext(task.prompt, 8)
           if (relevantMemories.length > 0) {
@@ -598,7 +602,7 @@ FINAL CHECK — before outputting, verify:
           console.warn('[Orchestrator] Memory recall failed, continuing without:', err)
         }
       } else {
-        console.log(`[Orchestrator] Autonomous task — skipping memory recall to avoid cross-task contamination`)
+        console.log(`[Orchestrator] Fresh autonomous task — skipping memory recall to avoid cross-task contamination`)
       }
 
       // 0b. Fetch session conversation history for context continuity
