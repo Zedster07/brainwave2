@@ -176,8 +176,6 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       }
 
       const updated = updateAssistant(s.messages, update.taskId, (msg) => {
-        const newBlocks = [...msg.blocks]
-
         // Infer live activity from the step string (used for the header indicator)
         const liveActivity = update.currentStep
           ? inferActivity(update.currentStep)
@@ -189,6 +187,34 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           : update.status === 'failed'
             ? 'error' as const
             : liveActivity
+
+        // ── Snap-fill on completion ──
+        // When a task completes with a result, immediately replace any
+        // still-streaming text with the final result. This prevents the
+        // word-by-word streaming delay when the full answer is already
+        // available (e.g. Telegram tasks, fast completions).
+        if (update.status === 'completed' && update.result && typeof update.result === 'string') {
+          const finalBlocks: ContentBlockUI[] = msg.blocks
+            .filter((b) => b.type !== 'text') // keep thinking + tool_call blocks
+            .map((b): ContentBlockUI =>
+              b.type === 'thinking' && b.isStreaming ? { ...b, isStreaming: false } : b,
+            )
+          finalBlocks.push({ type: 'text', content: update.result, isStreaming: false })
+
+          return {
+            ...msg,
+            status: 'completed',
+            activity: 'completed',
+            result: update.result,
+            error: msg.error,
+            isStreaming: false,
+            plainText: update.result,
+            blocks: finalBlocks,
+            taskList: update.taskList ?? msg.taskList,
+          }
+        }
+
+        const newBlocks = [...msg.blocks]
 
         // NOTE: We intentionally do NOT add status blocks here.
         // The AssistantBubble header shows `AgentStatusIndicator`
