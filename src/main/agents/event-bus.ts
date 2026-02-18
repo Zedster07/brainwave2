@@ -71,7 +71,7 @@ export interface PlanTaskItem {
 
 export interface EventMap {
   // Task lifecycle
-  'task:submitted': { taskId: string; prompt: string; priority: string }
+  'task:submitted': { taskId: string; prompt: string; priority: string; sessionId?: string }
   'task:planning': { taskId: string }
   'task:executing': { taskId: string; step: string }
   'task:progress': { taskId: string; progress: number; currentStep: string }

@@ -268,6 +268,10 @@ export interface TaskUpdate {
   result?: unknown
   error?: string
   timestamp: number
+  /** Session ID — included in task:submitted so renderer can auto-create messages for external sources (Telegram, scheduler) */
+  sessionId?: string
+  /** Prompt text — included in task:submitted for external task message creation */
+  prompt?: string
   /** Task list from planner (sent once when plan is created) */
   taskList?: TaskListItem[]
   /** Individual task list item update */

@@ -151,6 +151,30 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   handleTaskUpdate: (update) =>
     set((s) => {
+      // Auto-create user + assistant messages for externally-initiated tasks
+      // (Telegram, scheduler) that arrive for the active session
+      const idx = findByTaskId(s.messages, update.taskId)
+      if (idx === -1 && update.sessionId && update.sessionId === s.activeSessionId && update.prompt) {
+        const userMsg: UserMessage = {
+          id: `user-${update.taskId}`,
+          role: 'user',
+          content: update.prompt,
+          timestamp: update.timestamp,
+        }
+        const assistantMsg: AssistantMessage = {
+          id: `assistant-${update.taskId}`,
+          role: 'assistant',
+          taskId: update.taskId,
+          blocks: [],
+          activity: 'idle',
+          plainText: '',
+          isStreaming: true,
+          status: update.status,
+          timestamp: update.timestamp,
+        }
+        return { messages: [...s.messages, userMsg, assistantMsg] }
+      }
+
       const updated = updateAssistant(s.messages, update.taskId, (msg) => {
         const newBlocks = [...msg.blocks]
 

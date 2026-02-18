@@ -449,6 +449,7 @@ export function registerIpcHandlers(): void {
     updateLiveState(data.taskId, { status: 'queued' })
     forwardToRenderer(IPC_CHANNELS.AGENT_TASK_UPDATE, {
       taskId: data.taskId, status: 'queued', timestamp: Date.now(),
+      sessionId: data.sessionId, prompt: data.prompt,
     })
   })
   eventBus.onEvent('task:planning', (data) => {

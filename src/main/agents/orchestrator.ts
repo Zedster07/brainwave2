@@ -463,7 +463,7 @@ FINAL CHECK — before outputting, verify:
       this.db.run(`UPDATE chat_sessions SET updated_at = ? WHERE id = ?`, Date.now(), sessionId)
     }
 
-    this.bus.emitEvent('task:submitted', { taskId, prompt, priority })
+    this.bus.emitEvent('task:submitted', { taskId, prompt, priority, sessionId })
 
     // Run asynchronously — don't block the caller
     this.processTask(task, sessionId, cancellationToken).catch((err) => {
