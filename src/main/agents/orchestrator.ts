@@ -120,11 +120,18 @@ export class Orchestrator extends BaseAgent {
       const connected = statuses.filter((s) => s.state === 'connected')
       const failed = statuses.filter((s) => s.state === 'error')
       if (connected.length === 0 && failed.length === 0) return '\nMCP Servers: None configured.'
-      let summary = `\nMCP SERVERS (${connected.length} connected, ${failed.length} failed):`
+
+      // Section 1: Local tools
+      let summary = '\n\n## Local Built-in Tools'
+      summary += '\nAlways available (core): file_read, file_write, file_create, file_edit, directory_list, grep_search, search_files, list_code_definition_names, get_file_diagnostics, run_test, apply_patch, repo_map, git_info, discover_tools'
+      summary += '\nLoadable via discover_tools: file_delete, file_move, create_directory, shell_execute, shell_kill, http_request, web_search, webpage_fetch, send_notification, generate_pdf, generate_docx, generate_xlsx, generate_pptx, play_youtube_video, find_usage'
+
+      // Section 2: MCP server tools (equally prominent)
+      summary += `\n\n## MCP Server Tools (${connected.length} connected)`
       for (const s of connected) {
         const serverTools = allTools.filter((t) => t.serverName === s.name || t.serverId === s.id)
         const toolNames = serverTools.map((t) => t.name).join(', ')
-        summary += `\n- ${s.name} — CONNECTED (${s.toolCount} tools: ${toolNames || 'none listed'})`
+        summary += `\n- **${s.name}** (${s.toolCount} tools): ${toolNames || 'none listed'}`
       }
       for (const s of failed) {
         summary += `\n- ${s.name} — FAILED: ${s.error ?? 'unknown error'}`
@@ -133,8 +140,7 @@ export class Orchestrator extends BaseAgent {
       if (disconnected.length > 0) {
         summary += `\n- ${disconnected.length} more server(s) configured but not connected`
       }
-      summary += '\n\nLocal built-in tools (always available): file_read, file_write, file_create, file_edit, directory_list, grep_search, search_files, list_code_definition_names, get_file_diagnostics, run_test, apply_patch, repo_map, git_info, discover_tools'
-      summary += '\nAdditional tools (loadable via discover_tools): file_delete, file_move, create_directory, shell_execute, shell_kill, http_request, web_search, webpage_fetch, send_notification, generate_pdf, generate_docx, generate_xlsx, generate_pptx, play_youtube_video, find_usage'
+
       return summary
     } catch {
       return '\nMCP Servers: Unable to query status.'
@@ -760,6 +766,7 @@ CRITICAL RULES:
 - Keep responses focused and helpful
 - NEVER output tool calls, XML tags, JSON blocks, or code markers like <tool_call>, [TOOL_CALL], {"tool":...} etc. Just reply in plain natural language.
 - When asked about your capabilities, tools, or MCP servers, ONLY report what is listed in SYSTEM CAPABILITIES below. Do NOT guess or hallucinate additional servers/tools.
+- When listing tools, ALWAYS include MCP server tools (listed under "MCP SERVERS" below) — they are just as important as local tools. List each MCP server and its tools explicitly.
 ${task.images?.length ? '- The user has attached image(s). Describe and reference them naturally in your response.' : ''}
 ${task.documents?.length ? `- The user has attached ${task.documents.length} document(s). Their extracted text is included in the prompt. Reference and analyze the document content in your response.` : ''}
 
