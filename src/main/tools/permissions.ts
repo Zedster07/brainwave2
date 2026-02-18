@@ -44,14 +44,14 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
   // Read + web search — can look things up, can't modify
   researcher: {
     tier: 'read',
-    allowedLocalTools: ['web_search', 'webpage_fetch', 'file_read', 'directory_list', 'http_request', 'search_files', 'list_code_definition_names', 'ask_followup_question', 'grep_search', 'git_info', 'discover_tools'],
+    allowedLocalTools: ['web_search', 'webpage_fetch', 'file_read', 'directory_list', 'http_request', 'search_files', 'list_code_definition_names', 'ask_followup_question', 'grep_search', 'git_info', 'discover_tools', 'generate_pdf', 'generate_docx', 'generate_xlsx', 'generate_pptx', 'send_notification'],
     timeoutMs: 8 * 60 * 1000, // 8 min — web research chains can be lengthy
   },
 
   // Read filesystem + write code — can read context, write files
   coder: {
     tier: 'readWrite',
-    allowedLocalTools: ['file_read', 'file_write', 'file_create', 'file_edit', 'directory_list', 'web_search', 'webpage_fetch', 'search_files', 'apply_patch', 'list_code_definition_names', 'ask_followup_question', 'run_test', 'get_file_diagnostics', 'repo_map', 'find_usage', 'grep_search', 'git_info', 'discover_tools'],
+    allowedLocalTools: ['file_read', 'file_write', 'file_create', 'file_edit', 'directory_list', 'web_search', 'webpage_fetch', 'search_files', 'apply_patch', 'list_code_definition_names', 'ask_followup_question', 'run_test', 'get_file_diagnostics', 'repo_map', 'find_usage', 'grep_search', 'git_info', 'discover_tools', 'generate_pdf', 'generate_docx', 'generate_xlsx', 'generate_pptx'],
     blockedLocalTools: ['shell_execute', 'file_delete'],
     timeoutMs: 10 * 60 * 1000, // 10 min — complex multi-file edits
   },
@@ -113,6 +113,7 @@ function classifyLocalTool(toolName: string): 'read' | 'write' | 'execute' {
   ])
   const WRITE_TOOLS = new Set([
     'file_write', 'file_create', 'file_delete', 'file_move', 'file_edit', 'apply_patch',
+    'generate_pdf', 'generate_docx', 'generate_xlsx', 'generate_pptx',
   ])
   const EXECUTE_TOOLS = new Set([
     'shell_execute', 'shell_kill', 'run_test',

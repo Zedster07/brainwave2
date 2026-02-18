@@ -177,6 +177,23 @@ const TOOL_ALIASES: Record<string, string> = {
   'run_subagent':          'delegate_to_agent',
   'spawn_agent':           'delegate_to_agent',
   'sub_agent':             'delegate_to_agent',
+
+  // Document generation
+  'create_xlsx':           'local__generate_xlsx',
+  'create_excel':          'local__generate_xlsx',
+  'write_excel':           'local__generate_xlsx',
+  'make_spreadsheet':      'local__generate_xlsx',
+  'create_spreadsheet':    'local__generate_xlsx',
+  'excel':                 'local__generate_xlsx',
+  'create_pdf':            'local__generate_pdf',
+  'write_pdf':             'local__generate_pdf',
+  'make_pdf':              'local__generate_pdf',
+  'create_docx':           'local__generate_docx',
+  'write_docx':            'local__generate_docx',
+  'create_document':       'local__generate_docx',
+  'create_pptx':           'local__generate_pptx',
+  'write_pptx':            'local__generate_pptx',
+  'create_presentation':   'local__generate_pptx',
 }
 
 // ─── Name Mapping ───────────────────────────────────────────
