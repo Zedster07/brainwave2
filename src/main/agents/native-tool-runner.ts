@@ -707,6 +707,11 @@ export async function executeWithNativeTools(
                 const toolDuration = Date.now() - toolStartTime
                 console.log(`[${agent.type}] Step ${step}: ${internalKey} → ${result.success ? 'OK' : 'FAIL'} (${toolDuration}ms)`)
 
+                // Log error details so failures are diagnosable from console
+                if (!result.success) {
+                    console.error(`[${agent.type}] Step ${step}: ${internalKey} ERROR — ${result.content.slice(0, 500)}`)
+                }
+
                 toolResults.push({
                     tool: internalKey,
                     success: result.success,

@@ -2569,8 +2569,8 @@ class LocalToolProvider {
     if (!verdict.allowed) return this.blocked('local::generate_pdf', verdict.reason, start)
 
     try {
-      const sections = args.sections ? JSON.parse(String(args.sections)) : undefined
-      const tables = args.tables ? JSON.parse(String(args.tables)) : undefined
+      const sections = args.sections ? this.parseJsonArg(args.sections) : undefined
+      const tables = args.tables ? this.parseJsonArg(args.tables) : undefined
       const result = await generatePDF(outputPath, {
         title: args.title ? String(args.title) : undefined,
         author: args.author ? String(args.author) : undefined,
@@ -2597,8 +2597,8 @@ class LocalToolProvider {
     if (!verdict.allowed) return this.blocked('local::generate_docx', verdict.reason, start)
 
     try {
-      const sections = args.sections ? JSON.parse(String(args.sections)) : undefined
-      const tables = args.tables ? JSON.parse(String(args.tables)) : undefined
+      const sections = args.sections ? this.parseJsonArg(args.sections) : undefined
+      const tables = args.tables ? this.parseJsonArg(args.tables) : undefined
       const result = await generateDOCX(outputPath, {
         title: args.title ? String(args.title) : undefined,
         author: args.author ? String(args.author) : undefined,
@@ -2625,7 +2625,8 @@ class LocalToolProvider {
     if (!verdict.allowed) return this.blocked('local::generate_xlsx', verdict.reason, start)
 
     try {
-      const sheets = JSON.parse(String(args.sheets ?? '[]'))
+      // Accept sheets as JSON string OR direct array (models may send either format)
+      const sheets = this.parseJsonArg(args.sheets, '[]')
       const result = await generateXLSX(outputPath, {
         sheets,
         author: args.author ? String(args.author) : undefined,
@@ -2650,7 +2651,7 @@ class LocalToolProvider {
     if (!verdict.allowed) return this.blocked('local::generate_pptx', verdict.reason, start)
 
     try {
-      const slides = JSON.parse(String(args.slides ?? '[]'))
+      const slides = this.parseJsonArg(args.slides, '[]')
       const result = await generatePPTX(outputPath, {
         slides,
         title: args.title ? String(args.title) : undefined,
@@ -3157,6 +3158,20 @@ class LocalToolProvider {
 
   private errMsg(err: unknown): string {
     return err instanceof Error ? err.message : String(err)
+  }
+
+  /**
+   * Parse a tool argument that may be a JSON string OR an already-parsed object/array.
+   * Models may send either format depending on native tool calling mode.
+   */
+  private parseJsonArg(value: unknown, fallback = '[]'): unknown {
+    if (value == null) return JSON.parse(fallback)
+    // Already parsed (object or array) — return as-is
+    if (typeof value === 'object') return value
+    // String — parse it
+    const str = String(value).trim()
+    if (!str) return JSON.parse(fallback)
+    return JSON.parse(str)
   }
 }
 
