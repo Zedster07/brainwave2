@@ -658,18 +658,57 @@ class LocalToolProvider {
     return [...TOOL_DEFS]
   }
 
-  /** Search deferred tools by query and load matches into the session */
+  /** Search deferred tools by query and load matches into the session.
+   *  Uses tokenized word matching — any query word hitting name/desc/key is a match.
+   *  Common synonyms (e.g. "excel" → "xlsx") are expanded automatically. */
   discoverTools(query: string): McpTool[] {
-    const q = query.toLowerCase()
+    // Synonym expansion — common search terms → canonical tool terms
+    const SYNONYMS: Record<string, string[]> = {
+      excel: ['xlsx', 'spreadsheet'],
+      spreadsheet: ['xlsx', 'excel'],
+      word: ['docx', 'document'],
+      document: ['docx'],
+      powerpoint: ['pptx', 'presentation', 'slides'],
+      presentation: ['pptx', 'powerpoint'],
+      slides: ['pptx', 'presentation'],
+      pdf: ['generate_pdf'],
+      terminal: ['shell', 'execute', 'command'],
+      command: ['shell', 'execute'],
+      run: ['shell', 'execute'],
+      browser: ['webpage', 'fetch', 'web'],
+      website: ['webpage', 'fetch', 'web'],
+      url: ['webpage', 'fetch', 'http'],
+      api: ['http', 'request'],
+      delete: ['file_delete', 'remove'],
+      remove: ['file_delete', 'delete'],
+      move: ['file_move', 'rename'],
+      rename: ['file_move', 'move'],
+      notify: ['notification', 'send_notification'],
+      alert: ['notification', 'send_notification'],
+      youtube: ['play_youtube', 'video'],
+      video: ['youtube', 'play'],
+      usage: ['find_usage', 'references'],
+      references: ['find_usage', 'usage'],
+    }
+
+    const rawTokens = query.toLowerCase().split(/[\s,;|]+/).filter(w => w.length >= 2)
+    // Expand synonyms
+    const tokens = new Set(rawTokens)
+    for (const t of rawTokens) {
+      const syns = SYNONYMS[t]
+      if (syns) syns.forEach(s => tokens.add(s))
+    }
+
     const matches = TOOL_DEFS.filter((t) => {
       if (!DEFERRED_TOOL_KEYS.has(t.key)) return false
-      // Match against name, description, and key
-      return (
-        t.name.toLowerCase().includes(q) ||
-        t.description.toLowerCase().includes(q) ||
-        t.key.toLowerCase().includes(q)
-      )
+      const haystack = `${t.name} ${t.description} ${t.key}`.toLowerCase()
+      // Match if ANY token appears in the haystack
+      for (const token of tokens) {
+        if (haystack.includes(token)) return true
+      }
+      return false
     })
+
     // Load matched tools into the session
     for (const t of matches) {
       this._loadedDeferredKeys.add(t.key)
