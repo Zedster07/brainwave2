@@ -133,7 +133,8 @@ export class Orchestrator extends BaseAgent {
       if (disconnected.length > 0) {
         summary += `\n- ${disconnected.length} more server(s) configured but not connected`
       }
-      summary += '\n\nLocal built-in tools: file_read, file_write, file_create, file_delete, file_move, directory_list, create_directory, shell_execute, http_request, web_search, webpage_fetch, send_notification'
+      summary += '\n\nLocal built-in tools (always available): file_read, file_write, file_create, file_edit, directory_list, grep_search, search_files, list_code_definition_names, get_file_diagnostics, run_test, apply_patch, repo_map, git_info, discover_tools'
+      summary += '\nAdditional tools (loadable via discover_tools): file_delete, file_move, create_directory, shell_execute, shell_kill, http_request, web_search, webpage_fetch, send_notification, generate_pdf, generate_docx, generate_xlsx, generate_pptx, play_youtube_video, find_usage'
       return summary
     } catch {
       return '\nMCP Servers: Unable to query status.'
@@ -774,16 +775,44 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
         // Stream the conversational response for real-time display
         let accumulated = ''
         let isFirst = true
+        // Buffer to detect and strip tool_call artifacts mid-stream
+        let streamBuffer = ''
+        const TOOL_OPEN_PATTERN = /<tool[-_]?call>|\[\s*\{\s*"tool"/i
         try {
           for await (const chunk of adapter.stream(streamRequest)) {
             accumulated += chunk
-            this.bus.emitEvent('agent:stream-chunk', {
-              taskId: task.id,
-              agentType: 'orchestrator' as const,
-              chunk,
-              isFirst,
-            })
-            isFirst = false
+            streamBuffer += chunk
+
+            // If we detect a potential tool call opening, buffer until we can strip it
+            if (TOOL_OPEN_PATTERN.test(streamBuffer)) {
+              // Keep buffering — don't emit yet; the sanitizer will strip it at the end
+              continue
+            }
+
+            // Emit sanitized chunk
+            const cleanChunk = this.sanitizeConversationalReply(streamBuffer)
+            if (cleanChunk.length > 0) {
+              this.bus.emitEvent('agent:stream-chunk', {
+                taskId: task.id,
+                agentType: 'orchestrator' as const,
+                chunk: cleanChunk,
+                isFirst,
+              })
+              isFirst = false
+            }
+            streamBuffer = ''
+          }
+          // Flush any remaining buffer (could be a partial that turned out clean)
+          if (streamBuffer.length > 0) {
+            const cleanRemainder = this.sanitizeConversationalReply(streamBuffer)
+            if (cleanRemainder.length > 0) {
+              this.bus.emitEvent('agent:stream-chunk', {
+                taskId: task.id,
+                agentType: 'orchestrator' as const,
+                chunk: cleanRemainder,
+                isFirst,
+              })
+            }
           }
         } catch (streamErr: unknown) {
           // If streaming fails but we got some content, use it
@@ -828,12 +857,21 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
    */
   private sanitizeConversationalReply(text: string): string {
     let cleaned = text
-    // Remove <tool_call>...</tool_call> and <tool-call>...</tool-call> blocks (with any whitespace)
+    // Remove <tool_call>...</tool_call> blocks (greedy — captures anything between tags)
+    cleaned = cleaned.replace(/<tool[-_]?call>[\s\S]*?<\/tool[-_]?call>/gi, '')
+    // Remove standalone opening/closing tags that weren't paired
     cleaned = cleaned.replace(/<\/?tool[-_]?call>\s*/gi, '')
     // Remove [TOOL_CALL]...JSON...[/TOOL_CALL] or standalone [TOOL_CALL]
     cleaned = cleaned.replace(/\[\/?\s*TOOL[-_]?CALL\s*\]\s*/gi, '')
+    // Remove <function_call>...</function_call> blocks
+    cleaned = cleaned.replace(/<function[-_]?call>[\s\S]*?<\/function[-_]?call>/gi, '')
+    cleaned = cleaned.replace(/<\/?function[-_]?call>\s*/gi, '')
+    // Remove JSON arrays of tool objects: [ { "tool": "...", ... } ]
+    cleaned = cleaned.replace(/\[\s*\{\s*"tool"\s*:[\s\S]*?\}\s*\]\s*/g, '')
     // Remove standalone JSON tool objects: { "tool": "...", ... }
     cleaned = cleaned.replace(/\{\s*"tool"\s*:\s*"[^"]*"[\s\S]*?\}\s*/g, '')
+    // Remove JSON arrays of function calls: [ { "name": "...", "arguments": ... } ]
+    cleaned = cleaned.replace(/\[\s*\{\s*"name"\s*:\s*"[^"]*"\s*,\s*"arguments"[\s\S]*?\}\s*\]\s*/g, '')
     // Collapse multiple newlines left by removals
     cleaned = cleaned.replace(/\n{3,}/g, '\n\n')
     return cleaned.trim()
