@@ -28,7 +28,11 @@ import {
     toAnthropicTools,
     ToolNameMap,
     buildCompletionToolDefinition,
+    buildDelegationToolDefinition,
+    buildParallelDelegationToolDefinition,
 } from '../llm/tool-definitions'
+import { getDelegationTargets, canDelegate, canDelegateAtDepth } from './delegation'
+import type { AgentType } from './event-bus'
 import { calculateBudget, formatTokenCount, MAX_INPUT_BUDGET, REASONING_RESERVE_TOKENS, PROACTIVE_COMPACTION_THRESHOLD } from '../llm/token-counter'
 import { getMcpRegistry } from '../mcp'
 import { getLocalToolProvider } from '../tools'
@@ -85,6 +89,14 @@ export async function executeWithNativeTools(
     // Add completion signal tool
     nativeTools.push(buildCompletionToolDefinition())
 
+    // Add delegation tools if this agent has delegation targets
+    const delegationTargets = getDelegationTargets(agent.type as AgentType)
+    if (delegationTargets.length > 0 && canDelegateAtDepth(context.delegationDepth ?? 0)) {
+        nativeTools.push(buildDelegationToolDefinition(delegationTargets))
+        nativeTools.push(buildParallelDelegationToolDefinition(delegationTargets))
+        console.log(`[${agent.type}] Delegation enabled → targets: [${delegationTargets.join(', ')}]`)
+    }
+
     // Helper: rebuild tool list when discover_tools loads new deferred tools
     const rebuildToolList = (): void => {
         const updatedAll = [...localProvider.getTools(), ...registry.getAllTools()]
@@ -94,6 +106,11 @@ export async function executeWithNativeTools(
         nativeTools = toAnthropicTools(updatedAllowed)
         toolNameMap = new ToolNameMap(updatedAllowed)
         nativeTools.push(buildCompletionToolDefinition())
+        // Re-add delegation tools
+        if (delegationTargets.length > 0 && canDelegateAtDepth(context.delegationDepth ?? 0)) {
+            nativeTools.push(buildDelegationToolDefinition(delegationTargets))
+            nativeTools.push(buildParallelDelegationToolDefinition(delegationTargets))
+        }
         console.log(`[${agent.type}] Tool list rebuilt: ${nativeTools.length} tools (after discover_tools)`)
     }
 
@@ -378,6 +395,226 @@ export async function executeWithNativeTools(
                         anySuccess ? 0.9 : 0.7,
                         totalTokensIn, totalTokensOut, model, startTime, artifacts,
                     )
+                }
+
+                // ── Delegation: delegate_to_agent ──
+                if (toolUse.name === 'delegate_to_agent') {
+                    const { agent: targetAgent, task: delegatedTask } = toolUse.input as { agent?: string; task?: string }
+
+                    let delegResult: string
+                    let delegSuccess = false
+
+                    if (!targetAgent || !delegatedTask) {
+                        delegResult = 'INVALID ARGS: requires agent and task parameters'
+                    } else if (!context.delegateFn) {
+                        delegResult = 'DELEGATION UNAVAILABLE in this context'
+                    } else if (!canDelegateAtDepth(context.delegationDepth ?? 0)) {
+                        delegResult = 'DELEGATION DEPTH EXCEEDED — complete the task yourself'
+                    } else {
+                        const delegPerm = canDelegate(agent.type as AgentType, targetAgent as AgentType)
+                        if (!delegPerm.allowed) {
+                            delegResult = `DELEGATION DENIED: ${delegPerm.reason}`
+                        } else {
+                            console.log(`[${agent.type}] Step ${step}: Delegating to ${targetAgent}: "${delegatedTask.slice(0, 150)}"`)
+                            agent.bus.emitEvent('agent:acting', {
+                                agentType: agent.type,
+                                taskId: context.taskId,
+                                action: `Delegating to ${targetAgent} (step ${step})`,
+                            })
+
+                            try {
+                                const subResult = await context.delegateFn(targetAgent as AgentType, delegatedTask)
+                                const outputStr = typeof subResult.output === 'string'
+                                    ? subResult.output
+                                    : JSON.stringify(subResult.output)
+                                delegSuccess = subResult.status === 'success' || subResult.status === 'partial'
+                                delegResult = outputStr
+                                totalTokensIn += subResult.tokensIn
+                                totalTokensOut += subResult.tokensOut
+
+                                if (context.blackboard && delegSuccess) {
+                                    context.blackboard.board.write(
+                                        context.blackboard.planId,
+                                        `delegated-${targetAgent}-result`,
+                                        outputStr,
+                                        agent.type,
+                                        context.taskId
+                                    )
+                                }
+
+                                artifacts.push({
+                                    type: 'json',
+                                    name: `delegation-${targetAgent}-step${step}`,
+                                    content: JSON.stringify({
+                                        agent: targetAgent,
+                                        status: subResult.status,
+                                        confidence: subResult.confidence,
+                                        output: outputStr,
+                                    }, null, 2),
+                                })
+                            } catch (err) {
+                                delegResult = `DELEGATION FAILED: ${err instanceof Error ? err.message : String(err)}`
+                            }
+                        }
+                    }
+
+                    toolResults.push({ tool: `delegate_to_agent:${targetAgent ?? 'unknown'}`, success: delegSuccess, content: delegResult })
+                    resultBlocks.push(createToolResult(toolUse.id, delegResult, !delegSuccess))
+
+                    const delegSummary = delegSuccess
+                        ? `Delegated to ${targetAgent} — completed`
+                        : `Delegation to ${targetAgent ?? 'agent'} failed`
+                    agent.bus.emitEvent('agent:tool-result', {
+                        agentType: agent.type,
+                        taskId: context.taskId,
+                        tool: `delegate_to_agent:${targetAgent ?? 'unknown'}`,
+                        success: delegSuccess,
+                        summary: delegSummary,
+                        step,
+                    })
+                    emitToolCallInfo(agent.bus, agent.type, {
+                        taskId: context.taskId, step,
+                        tool: `delegate_to_agent:${targetAgent ?? 'unknown'}`,
+                        args: toolUse.input,
+                        success: delegSuccess,
+                        summary: delegSummary,
+                        duration: 0,
+                        resultPreview: delegResult.slice(0, 300),
+                    })
+                    continue
+                }
+
+                // ── Delegation: use_subagents (parallel) ──
+                if (toolUse.name === 'use_subagents') {
+                    const { tasks: tasksRaw } = toolUse.input as { tasks?: unknown }
+                    let parsedTasks: Array<{ agent: string; task: string }> = []
+
+                    try {
+                        if (typeof tasksRaw === 'string') {
+                            parsedTasks = JSON.parse(tasksRaw)
+                        } else if (Array.isArray(tasksRaw)) {
+                            parsedTasks = tasksRaw as Array<{ agent: string; task: string }>
+                        }
+                    } catch {
+                        const msg = 'INVALID ARGS: tasks must be a valid JSON array of { agent, task } objects'
+                        toolResults.push({ tool: 'use_subagents', success: false, content: msg })
+                        resultBlocks.push(createToolResult(toolUse.id, msg, true))
+                        continue
+                    }
+
+                    let parResult: string
+                    let parSuccess = false
+
+                    if (!Array.isArray(parsedTasks) || parsedTasks.length === 0) {
+                        parResult = 'INVALID ARGS: tasks must be a non-empty array'
+                    } else if (!context.parallelDelegateFn) {
+                        parResult = 'PARALLEL DELEGATION UNAVAILABLE in this context'
+                    } else if (!canDelegateAtDepth(context.delegationDepth ?? 0)) {
+                        parResult = 'DELEGATION DEPTH EXCEEDED — complete the tasks yourself'
+                    } else {
+                        // Validate each task's agent permission
+                        const validatedTasks: Array<{ agent: AgentType; task: string }> = []
+                        const rejections: string[] = []
+                        for (const t of parsedTasks.slice(0, 5)) {
+                            const perm = canDelegate(agent.type as AgentType, t.agent as AgentType)
+                            if (!perm.allowed) {
+                                rejections.push(`"${t.agent}": ${perm.reason}`)
+                            } else {
+                                validatedTasks.push({ agent: t.agent as AgentType, task: t.task })
+                            }
+                        }
+
+                        if (validatedTasks.length === 0) {
+                            parResult = `ALL DELEGATIONS DENIED:\n${rejections.join('\n')}`
+                        } else {
+                            console.log(`[${agent.type}] Step ${step}: Parallel delegation → ${validatedTasks.length} sub-agents: ${validatedTasks.map(t => t.agent).join(', ')}`)
+                            agent.bus.emitEvent('agent:acting', {
+                                agentType: agent.type,
+                                taskId: context.taskId,
+                                action: `Parallel delegation: ${validatedTasks.length} sub-agents (step ${step})`,
+                            })
+
+                            try {
+                                const results = await context.parallelDelegateFn(validatedTasks)
+                                const resultParts: string[] = []
+                                let allSuccess = true
+                                for (let i = 0; i < results.length; i++) {
+                                    const r = results[i]
+                                    const t = validatedTasks[i]
+                                    const outputStr = typeof r.output === 'string' ? r.output : JSON.stringify(r.output)
+                                    const ok = r.status === 'success' || r.status === 'partial'
+                                    if (!ok) allSuccess = false
+                                    totalTokensIn += r.tokensIn
+                                    totalTokensOut += r.tokensOut
+
+                                    resultParts.push(
+                                        `--- Sub-agent: ${t.agent} (${r.status}) ---\n` +
+                                        `Task: ${t.task}\n` +
+                                        `Result:\n${outputStr}`
+                                    )
+
+                                    if (context.blackboard && ok) {
+                                        context.blackboard.board.write(
+                                            context.blackboard.planId,
+                                            `parallel-${t.agent}-${i}-result`,
+                                            outputStr,
+                                            agent.type,
+                                            context.taskId
+                                        )
+                                    }
+                                }
+
+                                parResult = resultParts.join('\n\n')
+                                parSuccess = allSuccess
+
+                                if (rejections.length > 0) {
+                                    parResult += `\n\nNote: ${rejections.length} sub-task(s) skipped: ${rejections.join('; ')}`
+                                }
+
+                                artifacts.push({
+                                    type: 'json',
+                                    name: `parallel-delegation-step${step}`,
+                                    content: JSON.stringify({
+                                        tasks: validatedTasks.map((t, i) => ({
+                                            agent: t.agent,
+                                            task: t.task,
+                                            status: results[i].status,
+                                            confidence: results[i].confidence,
+                                        })),
+                                        allSuccess,
+                                        rejections,
+                                    }, null, 2),
+                                })
+                            } catch (err) {
+                                parResult = `PARALLEL DELEGATION FAILED: ${err instanceof Error ? err.message : String(err)}`
+                            }
+                        }
+                    }
+
+                    toolResults.push({ tool: 'use_subagents', success: parSuccess, content: parResult })
+                    resultBlocks.push(createToolResult(toolUse.id, parResult, !parSuccess))
+
+                    const parSummary = parSuccess
+                        ? `Parallel delegation (${parsedTasks.length} agents) — completed`
+                        : 'Parallel delegation failed'
+                    agent.bus.emitEvent('agent:tool-result', {
+                        agentType: agent.type,
+                        taskId: context.taskId,
+                        tool: 'use_subagents',
+                        success: parSuccess,
+                        summary: parSummary,
+                        step,
+                    })
+                    emitToolCallInfo(agent.bus, agent.type, {
+                        taskId: context.taskId, step,
+                        tool: 'use_subagents',
+                        args: toolUse.input,
+                        success: parSuccess,
+                        summary: parSummary,
+                        duration: 0,
+                        resultPreview: parResult.slice(0, 300),
+                    })
+                    continue
                 }
 
                 // Map API name back to internal tool key
