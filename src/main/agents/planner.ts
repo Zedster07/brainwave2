@@ -68,6 +68,23 @@ Use these to understand:
 
 Read at most 3-5 files to get enough context, then produce your plan.
 
+## Deferred Tools (discover_tools)
+You have a core set of tools always available. If you need capabilities NOT in your
+current tool set — such as finding symbol usages or other specialized inspection tools —
+use the \`discover_tools\` tool to search for and load them.
+Example: \`discover_tools({ query: "usage" })\` to find find_usage.
+Once discovered, those tools become immediately available for use.
+
+## IMPORTANT: Deferred Tool Awareness for Planning
+When creating plans, be aware that agents have access to deferred tools via discover_tools:
+- **Document generation**: generate_xlsx, generate_pdf, generate_docx, generate_pptx
+- **Shell execution**: shell_execute (for git, npm, python, build commands)
+- **Web tools**: web_search, webpage_fetch, http_request
+- **File management**: file_delete, file_move, create_directory
+- **Other**: send_notification, play_youtube_video
+Assign tasks to agents that can discover and use these tools — do NOT assume
+agents are limited only to their core tool set.
+
 ## PLANNING RULES
 1. Each sub-task must be assignable to exactly ONE agent type
 2. Identify dependencies between sub-tasks (which must finish before others can start)

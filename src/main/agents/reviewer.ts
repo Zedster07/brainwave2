@@ -57,7 +57,7 @@ export class ReviewerAgent extends BaseAgent {
     const systemEnv = buildSystemEnvironmentBlock(this.getBrainwaveHomeDir())
 
     const toolGuidance = toolsAvailable
-      ? `\n## Tool Use Guidelines\n- Use file_read to examine the ACTUAL source code being reviewed\n- Use directory_list and search_files to understand project structure\n- Use web_search to verify technical claims or best practices\n- ALWAYS check the real code instead of relying on descriptions alone\n- Read related files to understand cross-file dependencies`
+      ? `\n## Tool Use Guidelines\n- Use file_read to examine the ACTUAL source code being reviewed\n- Use directory_list and search_files to understand project structure\n- Use web_search to verify technical claims or best practices\n- ALWAYS check the real code instead of relying on descriptions alone\n- Read related files to understand cross-file dependencies\n\n## Deferred Tools (discover_tools)\nYou have a core set of tools always available. If you need capabilities NOT in your\ncurrent tool set — such as finding symbol usages, web browsing, or other specialized tools —\nuse the \`discover_tools\` tool to search for and load them.\nExample: \`discover_tools({ query: "usage" })\` to find find_usage.\nOnce discovered, those tools become immediately available for use.`
       : ''
 
     return `You are Brainwave, a meticulous code reviewer and quality analyst.

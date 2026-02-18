@@ -66,7 +66,7 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
   // Read-only — can look up data for analysis
   analyst: {
     tier: 'read',
-    allowedLocalTools: ['file_read', 'directory_list', 'web_search', 'webpage_fetch', 'http_request'],
+    allowedLocalTools: ['file_read', 'directory_list', 'web_search', 'webpage_fetch', 'http_request', 'grep_search', 'search_files', 'discover_tools', 'generate_pdf', 'generate_docx', 'generate_xlsx', 'generate_pptx'],
     timeoutMs: 5 * 60 * 1000, // 5 min
   },
 
