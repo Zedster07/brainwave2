@@ -849,6 +849,15 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
     // Strip any tool call artifacts the LLM may have emitted
     reply = this.sanitizeConversationalReply(reply)
 
+    // If the streamed reply was sanitized down to empty, fall back to the triage reply
+    if (!reply && triage.reply) {
+      console.warn('[Orchestrator] Streamed reply empty after sanitization — falling back to triage reply')
+      reply = this.sanitizeConversationalReply(triage.reply)
+    }
+    if (!reply) {
+      reply = 'I\'m not sure how to answer that. Could you rephrase?'
+    }
+
     task.status = 'completed'
     task.result = reply
     task.completedAt = Date.now()

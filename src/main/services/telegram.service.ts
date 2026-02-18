@@ -111,6 +111,12 @@ class TelegramService {
       return false
     }
 
+    // Guard against empty messages (Telegram API rejects them)
+    if (!text || !text.trim()) {
+      console.warn('[Telegram] Skipping empty message send')
+      return false
+    }
+
     try {
       // Telegram has a 4096 character limit per message — split if needed
       const chunks = this.splitMessage(text, 4096)
