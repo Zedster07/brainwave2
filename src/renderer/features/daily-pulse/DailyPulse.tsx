@@ -20,6 +20,9 @@ import {
   ExternalLink,
   ArrowUpRight,
   Clock,
+  DollarSign,
+  TrendingUp,
+  Cpu,
 } from 'lucide-react'
 
 // ─── Types ──────────────────────────────────────────────────
@@ -91,6 +94,33 @@ interface ReminderItem {
   createdAt: string
 }
 
+interface SpendingPeriod {
+  cost: number
+  runs: number
+}
+
+interface SpendingModelBreakdown {
+  model: string
+  cost: number
+  runs: number
+  tokens: number
+}
+
+interface SpendingDailyBreakdown {
+  day: string
+  cost: number
+  runs: number
+}
+
+interface SpendingData {
+  today: SpendingPeriod
+  week: SpendingPeriod
+  month: SpendingPeriod
+  allTime: SpendingPeriod & { tokensIn: number; tokensOut: number }
+  byModel: SpendingModelBreakdown[]
+  dailyBreakdown: SpendingDailyBreakdown[]
+}
+
 interface QuickStats {
   emails: number
   jiraTickets: number
@@ -107,6 +137,7 @@ const PULSE_SECTIONS = [
   'jira',
   'confluence',
   'reminders',
+  'spending',
 ] as const
 type PulseSection = (typeof PULSE_SECTIONS)[number]
 
@@ -142,6 +173,7 @@ export function DailyPulse() {
   const [jira, setJira] = useState<{ status: 'idle' | 'loading' | 'loaded' | 'error'; data?: JiraItem[]; error?: string }>({ status: 'idle' })
   const [confluence, setConfluence] = useState<{ status: 'idle' | 'loading' | 'loaded' | 'error'; data?: ConfluenceItem[]; error?: string }>({ status: 'idle' })
   const [reminders, setReminders] = useState<{ status: 'idle' | 'loading' | 'loaded' | 'error'; data?: ReminderItem[]; error?: string }>({ status: 'idle' })
+  const [spending, setSpending] = useState<{ status: 'idle' | 'loading' | 'loaded' | 'error'; data?: SpendingData; error?: string }>({ status: 'idle' })
 
   // ── Fetch a single section ──
   const fetchSection = useCallback(async (section: PulseSection) => {
@@ -152,6 +184,7 @@ export function DailyPulse() {
       jira: setJira,
       confluence: setConfluence,
       reminders: setReminders,
+      spending: setSpending,
     }
 
     const setter = setters[section]
@@ -186,7 +219,7 @@ export function DailyPulse() {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Quick Stats Banner ──
-  const statsLine = buildStatsLine(weather, emails, jira, confluence, reminders)
+  const statsLine = buildStatsLine(weather, emails, jira, confluence, reminders, spending)
 
   return (
     <div className="w-full">
@@ -375,6 +408,11 @@ export function DailyPulse() {
             <EmptyState text="No active reminders" />
           ) : null}
         </SectionCard>
+
+        {/* Spending — full width */}
+        <div className="lg:col-span-2">
+          <SpendingCard state={spending} onRetry={() => fetchSection('spending')} />
+        </div>
       </div>
     </div>
   )
@@ -441,6 +479,153 @@ function WeatherCard({ state, onRetry }: {
   }
 
   return null
+}
+
+function SpendingCard({ state, onRetry }: {
+  state: { status: string; data?: SpendingData; error?: string }
+  onRetry: () => void
+}) {
+  if (state.status === 'loading') {
+    return (
+      <div className="glass-elevated p-8 flex items-center justify-center gap-3 text-gray-400">
+        <Loader2 className="w-5 h-5 animate-spin" />
+        <span className="text-sm">Loading spending data...</span>
+      </div>
+    )
+  }
+
+  if (state.status === 'error') {
+    return (
+      <div className="glass-elevated p-8 flex items-center justify-between">
+        <div className="flex items-center gap-3 text-red-400">
+          <AlertCircle className="w-5 h-5" />
+          <span className="text-sm">{state.error || 'Failed to load spending data'}</span>
+        </div>
+        <button onClick={onRetry} className="text-xs text-accent hover:text-accent/80 px-3 py-1.5 rounded-lg bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.06] transition-all">Retry</button>
+      </div>
+    )
+  }
+
+  if (state.status === 'loaded' && state.data) {
+    const s = state.data
+    const maxDailyCost = Math.max(...s.dailyBreakdown.map((d) => d.cost), 0.01)
+    const maxModelCost = Math.max(...s.byModel.map((m) => m.cost), 0.01)
+
+    return (
+      <div className="glass-card p-6 transition-all duration-300">
+        {/* Header */}
+        <div className="flex items-center gap-2.5 mb-5">
+          <div className="p-1.5 rounded-lg bg-white/[0.04]">
+            <DollarSign className="w-4 h-4 text-green-400" />
+          </div>
+          <h3 className="text-sm font-semibold text-white">AI Spending</h3>
+        </div>
+
+        {/* Cost Summary Row */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+          <CostPeriodBox label="Today" cost={s.today.cost} runs={s.today.runs} />
+          <CostPeriodBox label="7 Days" cost={s.week.cost} runs={s.week.runs} />
+          <CostPeriodBox label="30 Days" cost={s.month.cost} runs={s.month.runs} />
+          <CostPeriodBox label="All Time" cost={s.allTime.cost} runs={s.allTime.runs}
+            extra={`${formatTokens(s.allTime.tokensIn + s.allTime.tokensOut)} tokens`} />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          {/* Daily Breakdown — mini bar chart */}
+          {s.dailyBreakdown.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <TrendingUp className="w-3.5 h-3.5 text-gray-500" />
+                <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider">Daily (Last 7 Days)</h4>
+              </div>
+              <div className="space-y-1.5">
+                {s.dailyBreakdown.map((day) => (
+                  <div key={day.day} className="flex items-center gap-3">
+                    <span className="text-[11px] text-gray-500 font-mono w-12 flex-shrink-0">
+                      {formatDayLabel(day.day)}
+                    </span>
+                    <div className="flex-1 h-5 bg-white/[0.03] rounded overflow-hidden">
+                      <div
+                        className="h-full bg-green-500/30 rounded transition-all duration-500"
+                        style={{ width: `${Math.max((day.cost / maxDailyCost) * 100, 2)}%` }}
+                      />
+                    </div>
+                    <span className="text-[11px] text-gray-400 font-mono w-14 text-right flex-shrink-0">
+                      ${day.cost.toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Per-Model Breakdown */}
+          {s.byModel.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <Cpu className="w-3.5 h-3.5 text-gray-500" />
+                <h4 className="text-xs font-medium text-gray-400 uppercase tracking-wider">By Model (30 Days)</h4>
+              </div>
+              <div className="space-y-1.5">
+                {s.byModel.map((m) => (
+                  <div key={m.model} className="flex items-center gap-3">
+                    <span className="text-[11px] text-gray-400 truncate w-28 flex-shrink-0" title={m.model}>
+                      {shortenModelName(m.model)}
+                    </span>
+                    <div className="flex-1 h-5 bg-white/[0.03] rounded overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500/30 rounded transition-all duration-500"
+                        style={{ width: `${Math.max((m.cost / maxModelCost) * 100, 2)}%` }}
+                      />
+                    </div>
+                    <span className="text-[11px] text-gray-400 font-mono w-14 text-right flex-shrink-0">
+                      ${m.cost.toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  return null
+}
+
+function CostPeriodBox({ label, cost, runs, extra }: { label: string; cost: number; runs: number; extra?: string }) {
+  return (
+    <div className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.04]">
+      <span className="text-[10px] font-medium text-gray-500 uppercase tracking-wider">{label}</span>
+      <p className="text-lg font-bold text-white mt-0.5">${cost.toFixed(2)}</p>
+      <p className="text-[10px] text-gray-500 mt-0.5">
+        {runs} run{runs !== 1 ? 's' : ''}
+        {extra ? ` • ${extra}` : ''}
+      </p>
+    </div>
+  )
+}
+
+function shortenModelName(model: string): string {
+  // shorten common prefixes like "openai/gpt-4o" → "gpt-4o"
+  const parts = model.split('/')
+  return parts[parts.length - 1] || model
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`
+  return String(n)
+}
+
+function formatDayLabel(dateStr: string): string {
+  try {
+    const d = new Date(dateStr + 'T00:00:00')
+    return d.toLocaleDateString('en-US', { weekday: 'short' })
+  } catch {
+    return dateStr
+  }
 }
 
 function SectionCard({ title, icon: Icon, colorClass, status, error, onRetry, children, count }: {
@@ -626,6 +811,7 @@ function buildStatsLine(
   jira: { status: string; data?: JiraItem[] },
   confluence: { status: string; data?: ConfluenceItem[] },
   reminders: { status: string; data?: ReminderItem[] },
+  spending: { status: string; data?: SpendingData },
 ): string | null {
   const parts: string[] = []
 
@@ -648,6 +834,10 @@ function buildStatsLine(
 
   if (reminders.status === 'loaded' && reminders.data) {
     parts.push(`${reminders.data.length} reminder${reminders.data.length !== 1 ? 's' : ''}`)
+  }
+
+  if (spending.status === 'loaded' && spending.data) {
+    parts.push(`$${spending.data.today.cost.toFixed(2)} spent today`)
   }
 
   return parts.length > 0 ? parts.join(' • ') : null

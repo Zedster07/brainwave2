@@ -12,7 +12,7 @@ import { net } from 'electron'
 import { getMcpRegistry } from '../mcp'
 import { getDatabase } from '../db/database'
 
-type PulseSection = 'weather' | 'emails' | 'news' | 'jira' | 'confluence' | 'reminders'
+type PulseSection = 'weather' | 'emails' | 'news' | 'jira' | 'confluence' | 'reminders' | 'spending'
 
 export async function fetchDailyPulseSection(section: PulseSection): Promise<unknown> {
   switch (section) {
@@ -28,6 +28,8 @@ export async function fetchDailyPulseSection(section: PulseSection): Promise<unk
       return fetchConfluence()
     case 'reminders':
       return fetchReminders()
+    case 'spending':
+      return fetchSpending()
     default:
       throw new Error(`Unknown pulse section: ${section}`)
   }
@@ -402,6 +404,75 @@ function parseConfluenceResults(content: string): Array<Record<string, string>> 
   }
 
   return []
+}
+
+// ─── Spending ───────────────────────────────────────────────
+
+async function fetchSpending(): Promise<unknown> {
+  const db = getDatabase()
+
+  try {
+    // Today's cost
+    const today = db.get<{ cost: number; runs: number }>(
+      `SELECT COALESCE(SUM(cost_usd), 0.0) as cost, COUNT(*) as runs
+       FROM agent_runs WHERE DATE(started_at) = DATE('now', 'localtime')`
+    ) ?? { cost: 0, runs: 0 }
+
+    // Last 7 days
+    const week = db.get<{ cost: number; runs: number }>(
+      `SELECT COALESCE(SUM(cost_usd), 0.0) as cost, COUNT(*) as runs
+       FROM agent_runs WHERE started_at >= datetime('now', '-7 days', 'localtime')`
+    ) ?? { cost: 0, runs: 0 }
+
+    // Last 30 days
+    const month = db.get<{ cost: number; runs: number }>(
+      `SELECT COALESCE(SUM(cost_usd), 0.0) as cost, COUNT(*) as runs
+       FROM agent_runs WHERE started_at >= datetime('now', '-30 days', 'localtime')`
+    ) ?? { cost: 0, runs: 0 }
+
+    // All-time
+    const allTime = db.get<{ cost: number; runs: number; tokens_in: number; tokens_out: number }>(
+      `SELECT COALESCE(SUM(cost_usd), 0.0) as cost, COUNT(*) as runs,
+              COALESCE(SUM(tokens_in), 0) as tokens_in, COALESCE(SUM(tokens_out), 0) as tokens_out
+       FROM agent_runs`
+    ) ?? { cost: 0, runs: 0, tokens_in: 0, tokens_out: 0 }
+
+    // Per-model breakdown (last 30 days)
+    const byModel = db.all<{ model: string; cost: number; runs: number; tokens: number }>(
+      `SELECT llm_model as model, COALESCE(SUM(cost_usd), 0.0) as cost,
+              COUNT(*) as runs, COALESCE(SUM(tokens_in + tokens_out), 0) as tokens
+       FROM agent_runs
+       WHERE started_at >= datetime('now', '-30 days', 'localtime') AND llm_model IS NOT NULL
+       GROUP BY llm_model ORDER BY cost DESC LIMIT 10`
+    ) ?? []
+
+    // Daily breakdown (last 7 days)
+    const dailyBreakdown = db.all<{ day: string; cost: number; runs: number }>(
+      `SELECT DATE(started_at, 'localtime') as day, COALESCE(SUM(cost_usd), 0.0) as cost, COUNT(*) as runs
+       FROM agent_runs
+       WHERE started_at >= datetime('now', '-7 days', 'localtime')
+       GROUP BY DATE(started_at, 'localtime') ORDER BY day`
+    ) ?? []
+
+    return {
+      today: { cost: today.cost, runs: today.runs },
+      week: { cost: week.cost, runs: week.runs },
+      month: { cost: month.cost, runs: month.runs },
+      allTime: { cost: allTime.cost, runs: allTime.runs, tokensIn: allTime.tokens_in, tokensOut: allTime.tokens_out },
+      byModel,
+      dailyBreakdown,
+    }
+  } catch (err) {
+    console.warn('[DailyPulse] Failed to fetch spending data:', err)
+    return {
+      today: { cost: 0, runs: 0 },
+      week: { cost: 0, runs: 0 },
+      month: { cost: 0, runs: 0 },
+      allTime: { cost: 0, runs: 0, tokensIn: 0, tokensOut: 0 },
+      byModel: [],
+      dailyBreakdown: [],
+    }
+  }
 }
 
 // ─── Reminders ──────────────────────────────────────────────
