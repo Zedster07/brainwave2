@@ -522,7 +522,104 @@ const TOOL_DEFS: McpTool[] = [
       required: ['text'],
     },
   },
+  // ─── Grep Search Tool (regex search with line numbers) ───
+  {
+    key: 'local::grep_search',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'grep_search',
+    description: 'Search files using a regex or literal pattern. Returns matching lines with file paths and line numbers. Supports case-insensitive search and file type filtering. Use this for fast, targeted code searches — more powerful than search_files for pattern matching.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Regex pattern or literal text to search for. Use JS regex syntax.' },
+        path: { type: 'string', description: 'Root directory to search in (default: current working directory)' },
+        include_pattern: { type: 'string', description: 'Glob pattern to filter files (e.g. "*.ts", "*.tsx")' },
+        is_regex: { type: 'boolean', description: 'If true, treat pattern as regex. If false, treat as literal text (default: true)' },
+        max_results: { type: 'number', description: 'Maximum number of matches to return (default: 100)' },
+      },
+      required: ['pattern'],
+    },
+  },
+  // ─── Git Info Tool (diff, log, status in one tool) ───
+  {
+    key: 'local::git_info',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'git_info',
+    description: 'Get git information for the workspace. Actions: "status" (modified/staged/untracked files), "diff" (uncommitted changes or diff between refs), "log" (recent commit history). Use this to understand what changed and the project history.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', description: '"status" | "diff" | "log"' },
+        path: { type: 'string', description: 'Repository root directory (default: current working directory)' },
+        ref: { type: 'string', description: 'For diff: compare against this ref (e.g. "HEAD~3", "main"). For log: start from this ref. Default: HEAD' },
+        max_count: { type: 'number', description: 'For log: max number of commits to show (default: 10)' },
+        file: { type: 'string', description: 'For diff/log: scope to a specific file path' },
+      },
+      required: ['action'],
+    },
+  },
+  // ─── Discover Tools (load additional tools on demand) ───
+  {
+    key: 'local::discover_tools',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'discover_tools',
+    description: 'Search for and load additional tools that are not in your core set. Use when you need a capability not available in your current tools (e.g. document generation, shell execution, web fetching). Returns matching tool names and descriptions. Once discovered, tools become immediately available for use in subsequent calls.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query — matches against tool names and descriptions. Use keywords like "pdf", "shell", "web", "youtube", "notification", etc.' },
+      },
+      required: ['query'],
+    },
+  },
 ]
+
+// ─── Core vs Deferred Tool Classification ───────────────────
+// Core tools are always sent to the model. Deferred tools are only loaded
+// when the agent uses discover_tools. This keeps the prompt lean (~15 tools
+// per agent instead of 30+), reducing token overhead and selection confusion.
+
+/** Tool keys that are always available (core set) */
+const CORE_TOOL_KEYS = new Set([
+  'local::file_read',
+  'local::file_write',
+  'local::file_create',
+  'local::file_edit',
+  'local::directory_list',
+  'local::grep_search',
+  'local::search_files',
+  'local::list_code_definition_names',
+  'local::get_file_diagnostics',
+  'local::run_test',
+  'local::apply_patch',
+  'local::ask_followup_question',
+  'local::condense',
+  'local::discover_tools',
+  'local::repo_map',
+  'local::git_info',
+])
+
+/** These are deferred — loaded on demand via discover_tools */
+const DEFERRED_TOOL_KEYS = new Set([
+  'local::file_delete',
+  'local::file_move',
+  'local::create_directory',
+  'local::shell_execute',
+  'local::shell_kill',
+  'local::http_request',
+  'local::send_notification',
+  'local::web_search',
+  'local::webpage_fetch',
+  'local::generate_pdf',
+  'local::generate_docx',
+  'local::generate_xlsx',
+  'local::generate_pptx',
+  'local::play_youtube_video',
+  'local::find_usage',
+])
 
 // ─── Provider ───────────────────────────────────────────────
 
@@ -533,14 +630,72 @@ class LocalToolProvider {
   /** Background process tracker — maps PID to child process reference */
   private backgroundProcesses = new Map<number, ChildProcess>()
 
-  /** Get all available local tool definitions */
+  /** Per-session loaded deferred tools (keys that have been discovered) */
+  private _loadedDeferredKeys = new Set<string>()
+
+  /** Get core tool definitions (always available) */
+  getCoreTools(): McpTool[] {
+    return TOOL_DEFS.filter((t) => CORE_TOOL_KEYS.has(t.key))
+  }
+
+  /** Get deferred tool definitions (available after discover_tools) */
+  getDeferredTools(): McpTool[] {
+    return TOOL_DEFS.filter((t) => DEFERRED_TOOL_KEYS.has(t.key))
+  }
+
+  /** Get deferred tools that have been loaded in the current session */
+  getLoadedDeferredTools(): McpTool[] {
+    return TOOL_DEFS.filter((t) => this._loadedDeferredKeys.has(t.key))
+  }
+
+  /** Get all tools visible to the model: core + any loaded deferred tools */
   getTools(): McpTool[] {
+    return TOOL_DEFS.filter((t) => CORE_TOOL_KEYS.has(t.key) || this._loadedDeferredKeys.has(t.key))
+  }
+
+  /** Get ALL tool definitions (including unloaded deferred — for callTool dispatch) */
+  getAllToolDefs(): McpTool[] {
     return [...TOOL_DEFS]
+  }
+
+  /** Search deferred tools by query and load matches into the session */
+  discoverTools(query: string): McpTool[] {
+    const q = query.toLowerCase()
+    const matches = TOOL_DEFS.filter((t) => {
+      if (!DEFERRED_TOOL_KEYS.has(t.key)) return false
+      // Match against name, description, and key
+      return (
+        t.name.toLowerCase().includes(q) ||
+        t.description.toLowerCase().includes(q) ||
+        t.key.toLowerCase().includes(q)
+      )
+    })
+    // Load matched tools into the session
+    for (const t of matches) {
+      this._loadedDeferredKeys.add(t.key)
+    }
+    return matches
+  }
+
+  /** Check if a tool is currently available (core or loaded deferred) */
+  isToolAvailable(toolKey: string): boolean {
+    return CORE_TOOL_KEYS.has(toolKey) || this._loadedDeferredKeys.has(toolKey)
+  }
+
+  /** Check if a tool exists at all (core or deferred) */
+  isToolRegistered(toolKey: string): boolean {
+    return CORE_TOOL_KEYS.has(toolKey) || DEFERRED_TOOL_KEYS.has(toolKey)
+  }
+
+  /** Reset session state (call when starting a new task) */
+  resetSession(): void {
+    this._loadedDeferredKeys.clear()
   }
 
   /** Get a formatted tool catalog string for injection into agent prompts */
   getToolCatalog(): string {
-    const lines = TOOL_DEFS.map((t) => {
+    const tools = this.getTools()
+    const lines = tools.map((t) => {
       const schema = t.inputSchema as { properties?: Record<string, unknown> }
       const params = Object.keys(schema.properties ?? {}).join(', ')
       return `- ${t.key}: ${t.description} (params: ${params})`
@@ -614,6 +769,12 @@ class LocalToolProvider {
         return this.repoMap(args)
       case 'find_usage':
         return this.findUsage(args)
+      case 'grep_search':
+        return this.grepSearch(args)
+      case 'git_info':
+        return this.gitInfo(args)
+      case 'discover_tools':
+        return this.handleDiscoverTools(args)
 
       default:
         return {
@@ -2650,6 +2811,185 @@ class LocalToolProvider {
     // I will just use the same logic as searchFiles but pre-process the regex.
 
     return this.searchFiles({ ...args, regex, path })
+  }
+
+  // ─── Grep Search ──────────────────────────────────────
+
+  private async grepSearch(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const pattern = String(args.pattern ?? '')
+    const dirPath = resolve(String(args.path ?? process.cwd()))
+    const includePattern = args.include_pattern ? String(args.include_pattern) : undefined
+    const isRegex = args.is_regex !== false // default true
+    const maxResults = typeof args.max_results === 'number' ? args.max_results : 100
+    const start = Date.now()
+
+    if (!pattern) {
+      return this.error('local::grep_search', 'pattern is required', start)
+    }
+
+    // Safety gate
+    const verdict = getHardEngine().evaluate({ type: 'file_read', path: dirPath })
+    if (!verdict.allowed) {
+      return this.blocked('local::grep_search', verdict.reason, start)
+    }
+
+    try {
+      const regex = isRegex
+        ? new RegExp(pattern, 'gi')
+        : new RegExp(pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+
+      const results: string[] = []
+      const MAX_FILE_SIZE = 1024 * 1024 // 1MB
+
+      // Build file filter from include_pattern glob
+      const extFilter = includePattern ? this.globToExtensions(includePattern) : null
+
+      await this.walkDir(dirPath, async (filePath) => {
+        if (results.length >= maxResults) return
+        if (extFilter && !extFilter(filePath)) return
+
+        try {
+          const stats = await stat(filePath)
+          if (stats.size > MAX_FILE_SIZE || stats.size === 0) return
+        } catch { return }
+
+        try {
+          const content = await readFile(filePath, 'utf-8')
+          if (content.includes('\0')) return // skip binary
+
+          const lines = content.split('\n')
+          for (let i = 0; i < lines.length && results.length < maxResults; i++) {
+            regex.lastIndex = 0
+            if (regex.test(lines[i])) {
+              results.push(`${filePath}:${i + 1}: ${lines[i].trimEnd()}`)
+            }
+          }
+        } catch { /* skip unreadable */ }
+      })
+
+      if (results.length === 0) {
+        return {
+          toolKey: 'local::grep_search',
+          success: true,
+          content: `No matches found for ${isRegex ? '/' + pattern + '/' : '"' + pattern + '"'} in ${dirPath}`,
+          isError: false,
+          duration: Date.now() - start,
+        }
+      }
+
+      const truncNote = results.length >= maxResults ? `\n\n(Results truncated at ${maxResults} matches)` : ''
+      return {
+        toolKey: 'local::grep_search',
+        success: true,
+        content: `Found ${results.length} match(es):\n\n${results.join('\n')}${truncNote}`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::grep_search', this.errMsg(err), start)
+    }
+  }
+
+  // ─── Git Info ─────────────────────────────────────────
+
+  private async gitInfo(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const action = String(args.action ?? '').toLowerCase()
+    const dirPath = resolve(String(args.path ?? process.cwd()))
+    const ref = args.ref ? String(args.ref) : undefined
+    const maxCount = typeof args.max_count === 'number' ? args.max_count : 10
+    const file = args.file ? String(args.file) : undefined
+    const start = Date.now()
+
+    if (!['status', 'diff', 'log'].includes(action)) {
+      return this.error('local::git_info', 'action must be "status", "diff", or "log"', start)
+    }
+
+    // Safety gate — read-only operations on the directory
+    const verdict = getHardEngine().evaluate({ type: 'file_read', path: dirPath })
+    if (!verdict.allowed) {
+      return this.blocked('local::git_info', verdict.reason, start)
+    }
+
+    try {
+      let cmd: string
+
+      switch (action) {
+        case 'status':
+          cmd = 'git status --porcelain'
+          break
+        case 'diff':
+          cmd = `git diff ${ref ?? 'HEAD'}`
+          if (file) cmd += ` -- "${file}"`
+          break
+        case 'log':
+          cmd = `git log --oneline --no-decorate -n ${maxCount}`
+          if (ref) cmd += ` ${ref}`
+          if (file) cmd += ` -- "${file}"`
+          break
+        default:
+          return this.error('local::git_info', `Unknown action: ${action}`, start)
+      }
+
+      const output = await new Promise<string>((resolve, reject) => {
+        exec(cmd, { cwd: dirPath, maxBuffer: 1024 * 1024, timeout: 15000 }, (err, stdout, stderr) => {
+          if (err) {
+            // Git returns non-zero for some normal cases (e.g. empty diff)
+            if (stdout) resolve(stdout)
+            else reject(new Error(stderr || err.message))
+          } else {
+            resolve(stdout)
+          }
+        })
+      })
+
+      const trimmed = output.trim()
+      const label = action === 'status' ? 'Git status' : action === 'diff' ? `Git diff (${ref ?? 'HEAD'})` : `Git log (last ${maxCount})`
+
+      return {
+        toolKey: 'local::git_info',
+        success: true,
+        content: trimmed ? `${label}:\n\n${trimmed}` : `${label}: (empty — no ${action === 'status' ? 'changes' : 'results'})`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::git_info', this.errMsg(err), start)
+    }
+  }
+
+  // ─── Discover Tools ───────────────────────────────────
+
+  private async handleDiscoverTools(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const query = String(args.query ?? '').trim().toLowerCase()
+    const start = Date.now()
+
+    if (!query) {
+      return this.error('local::discover_tools', 'query is required', start)
+    }
+
+    // Search deferred tools by name and description
+    const matched = this.discoverTools(query)
+
+    if (matched.length === 0) {
+      // Still helpful: list all deferred tool names so model knows what's available
+      const all = this.getDeferredTools().map(t => `  - ${t.name}: ${t.description.slice(0, 80)}...`)
+      return {
+        toolKey: 'local::discover_tools',
+        success: true,
+        content: `No tools matched "${query}". Available deferred tools:\n\n${all.join('\n')}\n\nTry a different search query.`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    }
+
+    const lines = matched.map(t => `  - **${t.name}**: ${t.description}`)
+    return {
+      toolKey: 'local::discover_tools',
+      success: true,
+      content: `Loaded ${matched.length} tool(s) matching "${query}":\n\n${lines.join('\n')}\n\nThese tools are now available for use. Call them by name.`,
+      isError: false,
+      duration: Date.now() - start,
+    }
   }
 
   // ─── YouTube Player ────────────────────────────────────

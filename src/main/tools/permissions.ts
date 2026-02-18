@@ -44,14 +44,14 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
   // Read + web search — can look things up, can't modify
   researcher: {
     tier: 'read',
-    allowedLocalTools: ['web_search', 'webpage_fetch', 'file_read', 'directory_list', 'http_request', 'search_files', 'list_code_definition_names', 'ask_followup_question'],
+    allowedLocalTools: ['web_search', 'webpage_fetch', 'file_read', 'directory_list', 'http_request', 'search_files', 'list_code_definition_names', 'ask_followup_question', 'grep_search', 'git_info', 'discover_tools'],
     timeoutMs: 8 * 60 * 1000, // 8 min — web research chains can be lengthy
   },
 
   // Read filesystem + write code — can read context, write files
   coder: {
     tier: 'readWrite',
-    allowedLocalTools: ['file_read', 'file_write', 'file_create', 'file_edit', 'directory_list', 'web_search', 'webpage_fetch', 'search_files', 'apply_patch', 'list_code_definition_names', 'ask_followup_question', 'run_test', 'get_file_diagnostics', 'repo_map', 'find_usage'],
+    allowedLocalTools: ['file_read', 'file_write', 'file_create', 'file_edit', 'directory_list', 'web_search', 'webpage_fetch', 'search_files', 'apply_patch', 'list_code_definition_names', 'ask_followup_question', 'run_test', 'get_file_diagnostics', 'repo_map', 'find_usage', 'grep_search', 'git_info', 'discover_tools'],
     blockedLocalTools: ['shell_execute', 'file_delete'],
     timeoutMs: 10 * 60 * 1000, // 10 min — complex multi-file edits
   },
@@ -59,7 +59,7 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
   // Read-only — can check actual code/files for review
   reviewer: {
     tier: 'read',
-    allowedLocalTools: ['file_read', 'directory_list', 'web_search', 'webpage_fetch', 'search_files', 'list_code_definition_names', 'ask_followup_question', 'get_file_diagnostics', 'repo_map', 'find_usage'],
+    allowedLocalTools: ['file_read', 'directory_list', 'web_search', 'webpage_fetch', 'search_files', 'list_code_definition_names', 'ask_followup_question', 'get_file_diagnostics', 'repo_map', 'find_usage', 'grep_search', 'git_info', 'discover_tools'],
     timeoutMs: 5 * 60 * 1000, // 5 min
   },
 
@@ -85,7 +85,7 @@ const AGENT_PERMISSIONS: Record<string, ToolPermissionConfig> = {
   // Read-only reconnaissance — can inspect project structure before planning
   planner: {
     tier: 'read',
-    allowedLocalTools: ['file_read', 'directory_list', 'search_files', 'list_code_definition_names', 'get_file_diagnostics', 'repo_map', 'find_usage'],
+    allowedLocalTools: ['file_read', 'directory_list', 'search_files', 'list_code_definition_names', 'get_file_diagnostics', 'repo_map', 'find_usage', 'grep_search', 'git_info', 'discover_tools'],
     maxSteps: 12,
     timeoutMs: 3 * 60 * 1000, // 3 min
   },
@@ -109,6 +109,7 @@ function classifyLocalTool(toolName: string): 'read' | 'write' | 'execute' {
     'file_read', 'directory_list', 'web_search', 'webpage_fetch',
     'http_request', 'send_notification', 'search_files', 'list_code_definition_names',
     'ask_followup_question', 'condense', 'get_file_diagnostics', 'repo_map', 'find_usage',
+    'grep_search', 'git_info', 'discover_tools',
   ])
   const WRITE_TOOLS = new Set([
     'file_write', 'file_create', 'file_delete', 'file_move', 'file_edit', 'apply_patch',

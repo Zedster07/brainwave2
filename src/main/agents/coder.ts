@@ -63,9 +63,17 @@ export class CoderAgent extends BaseAgent {
 - Use file_read to examine existing code BEFORE modifying it
 - Use directory_list and search_files to understand project structure
 - Use file_write / file_create to write code to actual files
-- Use web_search / webpage_fetch to look up documentation
+- Use grep_search for fast regex-based code searches with line numbers
+- Use git_info to check status, diff, and commit history
 - ALWAYS read existing code before proposing changes
 - When writing code, always provide COMPLETE implementations — no placeholders
+
+## Deferred Tools (discover_tools)
+You have a core set of tools always available. If you need capabilities NOT in your
+current tool set — such as shell execution, file deletion, document generation (PDF/DOCX/XLSX),
+web browsing, YouTube playback, or HTTP requests — use the \`discover_tools\` tool to search for
+and load additional tools. Example: \`discover_tools({ query: "shell" })\` to find shell_execute.
+Once discovered, those tools become immediately available for use.
 
 ## File Editing Strategy
 1. ALWAYS read a file before editing it — never assume its contents

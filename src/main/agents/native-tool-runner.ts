@@ -78,11 +78,24 @@ export async function executeWithNativeTools(
         : filterToolsForAgent(agent.type, allTools)
 
     // Convert to native tool definitions
-    const nativeTools = toAnthropicTools(allowedTools)
-    const toolNameMap = new ToolNameMap(allowedTools)
+    // These are `let` because discover_tools can expand the set mid-session
+    let nativeTools = toAnthropicTools(allowedTools)
+    let toolNameMap = new ToolNameMap(allowedTools)
 
     // Add completion signal tool
     nativeTools.push(buildCompletionToolDefinition())
+
+    // Helper: rebuild tool list when discover_tools loads new deferred tools
+    const rebuildToolList = (): void => {
+        const updatedAll = [...localProvider.getTools(), ...registry.getAllTools()]
+        const updatedAllowed = modeConfig
+            ? filterToolsForMode(modeConfig, updatedAll)
+            : filterToolsForAgent(agent.type, updatedAll)
+        nativeTools = toAnthropicTools(updatedAllowed)
+        toolNameMap = new ToolNameMap(updatedAllowed)
+        nativeTools.push(buildCompletionToolDefinition())
+        console.log(`[${agent.type}] Tool list rebuilt: ${nativeTools.length} tools (after discover_tools)`)
+    }
 
     // Native tool calling REQUIRES the Anthropic adapter
     const provider = LLMFactory.getProvider('anthropic')
@@ -476,6 +489,12 @@ export async function executeWithNativeTools(
                 const isWriteOp = ['file_edit', 'file_write', 'file_create'].includes(toolBaseName)
                 if (result.success && isWriteOp && readPath) {
                     fileTracker.trackFileEdit(readPath, step)
+                }
+
+                // Dynamic tool expansion: when discover_tools loads new tools,
+                // rebuild the tool list so subsequent API calls include them
+                if (toolBaseName === 'discover_tools' && result.success) {
+                    rebuildToolList()
                 }
 
                 // Artifact tracking
