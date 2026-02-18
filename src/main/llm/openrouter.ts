@@ -84,7 +84,17 @@ export class OpenRouterProvider implements LLMAdapter {
       )
 
       cb.recordSuccess()
-      const choice = response.choices[0]
+      const choice = response.choices?.[0]
+      if (!choice?.message) {
+        console.error(
+          `[OpenRouter] Empty/malformed response from ${model} — ` +
+          `choices=${JSON.stringify(response.choices)}, id=${response.id}`,
+        )
+        throw new Error(
+          `Model ${model} returned an empty response (no choices). ` +
+          `This may indicate a rate limit, content filter, or model error.`,
+        )
+      }
 
       console.log(`[OpenRouter] ← ${model} | finish=${choice.finish_reason} | tokens=${response.usage?.prompt_tokens ?? 0}+${response.usage?.completion_tokens ?? 0} | response=${(choice.message.content ?? '').slice(0, 150)}...`)
 

@@ -366,7 +366,18 @@ export class AnthropicProvider implements LLMAdapter {
       )
 
       cb.recordSuccess()
-      const choice = response.choices[0]
+
+      const choice = response.choices?.[0]
+      if (!choice?.message) {
+        console.error(
+          `[Anthropic/OpenRouter] Empty/malformed response from ${model} — ` +
+          `choices=${JSON.stringify(response.choices)}, id=${response.id}`,
+        )
+        throw new Error(
+          `Model ${model} returned an empty response (no choices). ` +
+          `This may indicate a rate limit, content filter, or model error.`,
+        )
+      }
       const contentBlocks = this.openAIResponseToBlocks(choice.message)
 
       const textContent = contentBlocks
