@@ -327,8 +327,8 @@ export function ChatInput({ onSubmit, modes, selectedMode, onModeChange, disable
           </div>
         )}
 
-        {/* Input row */}
-        <div className="flex gap-3">
+        {/* Input area — full width with overlaid buttons */}
+        <div className="relative">
           <textarea
             ref={inputRef}
             value={input}
@@ -356,80 +356,87 @@ export function ChatInput({ onSubmit, modes, selectedMode, onModeChange, disable
                 ? 'Listening...'
                 : (attachedImages.length > 0 || attachedDocuments.length > 0)
                   ? 'Add a message or just send the attachment(s)...'
-                  : 'e.g., Build a REST API for user authentication...'
+                  : 'Ask anything...'
             }
             disabled={isDisabled}
             rows={1}
-            className="flex-1 bg-white/[0.03] border border-white/[0.08] rounded-lg px-4 py-3 text-sm text-white
+            className="w-full bg-white/[0.03] border border-white/[0.08] rounded-2xl px-4 pt-3 pb-12 text-sm text-white
                        placeholder:text-gray-600 focus:outline-none focus:border-accent/40 focus:ring-1 focus:ring-accent/20
                        disabled:opacity-50 transition-all resize-none overflow-hidden"
-            style={{ minHeight: '44px', maxHeight: '160px', height: 'auto' }}
+            style={{ minHeight: '100px', maxHeight: '240px', height: 'auto' }}
             onInput={(e) => {
               const target = e.target as HTMLTextAreaElement
               target.style.height = 'auto'
-              target.style.height = `${Math.min(target.scrollHeight, 160)}px`
+              target.style.height = `${Math.max(100, Math.min(target.scrollHeight, 240))}px`
             }}
           />
 
-          {/* Image attach */}
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isDisabled || attachedImages.length >= MAX_IMAGES}
-            title={attachedImages.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : 'Attach image(s)'}
-            className="flex items-center justify-center w-11 rounded-lg border transition-all
-              bg-white/[0.03] border-white/[0.08] text-gray-400 hover:text-white hover:border-white/20
-              disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            <ImageIcon className="w-4 h-4" />
-          </button>
+          {/* Bottom toolbar — overlaid at bottom of textarea */}
+          <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between">
+            {/* Left: attach buttons */}
+            <div className="flex items-center gap-1">
+              {/* Plus menu (image + doc) */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isDisabled || attachedImages.length >= MAX_IMAGES}
+                title={attachedImages.length >= MAX_IMAGES ? `Max ${MAX_IMAGES} images` : 'Attach image(s)'}
+                className="flex items-center justify-center w-8 h-8 rounded-full transition-all
+                  text-gray-500 hover:text-white hover:bg-white/[0.08]
+                  disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <ImageIcon className="w-4 h-4" />
+              </button>
 
-          {/* Doc attach */}
-          <button
-            type="button"
-            onClick={() => docInputRef.current?.click()}
-            disabled={isDisabled || attachedDocuments.length >= MAX_DOCS || processingDocs}
-            title={attachedDocuments.length >= MAX_DOCS ? `Max ${MAX_DOCS} documents` : 'Attach document(s)'}
-            className="flex items-center justify-center w-11 rounded-lg border transition-all
-              bg-white/[0.03] border-white/[0.08] text-gray-400 hover:text-white hover:border-white/20
-              disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            <Paperclip className="w-4 h-4" />
-          </button>
+              <button
+                type="button"
+                onClick={() => docInputRef.current?.click()}
+                disabled={isDisabled || attachedDocuments.length >= MAX_DOCS || processingDocs}
+                title={attachedDocuments.length >= MAX_DOCS ? `Max ${MAX_DOCS} documents` : 'Attach document(s)'}
+                className="flex items-center justify-center w-8 h-8 rounded-full transition-all
+                  text-gray-500 hover:text-white hover:bg-white/[0.08]
+                  disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                <Paperclip className="w-4 h-4" />
+              </button>
+            </div>
 
-          {/* Mic */}
-          {voice.canListen && (
-            <button
-              type="button"
-              onClick={voice.toggleListening}
-              disabled={isDisabled}
-              title={voice.isListening ? 'Stop listening' : 'Voice input'}
-              className={`flex items-center justify-center w-11 rounded-lg border transition-all
-                ${voice.isListening
-                  ? 'bg-red-500/20 border-red-500/40 text-red-400 animate-pulse'
-                  : 'bg-white/[0.03] border-white/[0.08] text-gray-400 hover:text-white hover:border-white/20'
-                } disabled:opacity-30 disabled:cursor-not-allowed`}
-            >
-              {voice.isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-            </button>
-          )}
-
-          {/* Submit */}
-          <button
-            type="submit"
-            disabled={!hasContent || isDisabled}
-            className="flex items-center gap-2 px-5 py-3 rounded-lg bg-accent text-white text-sm font-medium
-                       hover:bg-accent/90 disabled:opacity-30 disabled:cursor-not-allowed
-                       transition-all active:scale-[0.98]"
-          >
-            {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-            Submit
-          </button>
+            {/* Right: voice + send */}
+            <div className="flex items-center gap-1">
+              {voice.canListen && (
+                <button
+                  type="button"
+                  onClick={voice.toggleListening}
+                  disabled={isDisabled}
+                  title={voice.isListening ? 'Stop listening' : 'Voice input'}
+                  className={`flex items-center justify-center w-8 h-8 rounded-full transition-all
+                    ${voice.isListening
+                      ? 'bg-red-500/20 text-red-400 animate-pulse'
+                      : 'text-gray-500 hover:text-white hover:bg-white/[0.08]'
+                    } disabled:opacity-30 disabled:cursor-not-allowed`}
+                >
+                  {voice.isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
+              )}
+  
+              <button
+                type="submit"
+                disabled={!hasContent || isDisabled}
+                className={`flex items-center justify-center w-5 h-5 rounded-full transition-all
+                  ${hasContent && !isDisabled
+                    ? 'bg-gray-500 text-gray-100 hover:bg-gray-800 active:scale-95'
+                    : 'bg-white/[0.08] text-gray-600 cursor-not-allowed'
+                  }`}
+                title="Send message"
+              >
+                {submitting
+                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                  : <Send className="w-3 h-3" />
+                }
+              </button>
+            </div>
+          </div>
         </div>
-
-        <p className="text-[10px] text-gray-600 mt-2 text-center">
-          Drag & drop files, or use <ImageIcon className="w-3 h-3 inline" /> for images and <Paperclip className="w-3 h-3 inline" /> for documents
-        </p>
       </form>
     </div>
   )
