@@ -50,15 +50,17 @@ class TelegramService {
     this.initialized = true
     this.submitTask = submitTaskFn
 
+    // Wire up event bus listeners for outbound notifications
+    // Must happen BEFORE the config check — user may configure the bot later
+    // via reconfigure(), and listeners need to be ready to catch task:completed events.
+    this.setupEventListeners()
+
     // Load config from DB
     this.config = this.loadConfig()
     if (!this.config) {
       console.log('[Telegram] No bot token configured — skipping initialization')
       return
     }
-
-    // Wire up event bus listeners for outbound notifications
-    this.setupEventListeners()
 
     // Create bot and start polling
     await this.startBot()
