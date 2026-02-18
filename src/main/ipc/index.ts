@@ -354,9 +354,20 @@ export function registerIpcHandlers(): void {
   }
 
   // ─── Task Live State Accumulator ───
-  // Keeps currentStep + activityLog in main process memory so the renderer
-  // can replay them when the user navigates away and back.
-  const taskLiveState = new Map<string, { currentStep?: string; activityLog: string[]; progress?: number; status: string }>()
+  // Keeps currentStep + activityLog + accumulated stream text in main process
+  // memory so the renderer can replay them when the user navigates away and back.
+  const taskLiveState = new Map<string, {
+    currentStep?: string
+    activityLog: string[]
+    progress?: number
+    status: string
+    /** Accumulated streamed text (non-thinking chunks) */
+    streamedText?: string
+    /** Accumulated thinking text */
+    thinkingText?: string
+    /** Tool call info for rich block recovery */
+    toolCalls?: Array<{ tool: string; toolName?: string; args?: unknown; success: boolean; summary?: string; duration?: number; resultPreview?: string; step?: number; timestamp: number }>
+  }>()
 
   function updateLiveState(taskId: string, update: { currentStep?: string; progress?: number; status: string }) {
     let state = taskLiveState.get(taskId)
@@ -376,11 +387,58 @@ export function registerIpcHandlers(): void {
     }
   }
 
+  /** Accumulate a stream chunk in taskLiveState for recovery */
+  function accumulateStreamChunk(taskId: string, chunk: string, isThinking: boolean) {
+    let state = taskLiveState.get(taskId)
+    if (!state) {
+      state = { activityLog: [], status: 'executing' }
+      taskLiveState.set(taskId, state)
+    }
+    if (isThinking) {
+      state.thinkingText = (state.thinkingText ?? '') + chunk.replace(/^💭\s*/, '')
+    } else {
+      state.streamedText = (state.streamedText ?? '') + chunk
+    }
+  }
+
+  /** Accumulate a tool call in taskLiveState for recovery */
+  function accumulateToolCall(taskId: string, info: Record<string, unknown>) {
+    let state = taskLiveState.get(taskId)
+    if (!state) {
+      state = { activityLog: [], status: 'executing' }
+      taskLiveState.set(taskId, state)
+    }
+    if (!state.toolCalls) state.toolCalls = []
+    state.toolCalls.push({
+      tool: info.tool as string,
+      toolName: info.toolName as string | undefined,
+      args: info.args,
+      success: info.success as boolean,
+      summary: info.summary as string | undefined,
+      duration: info.duration as number | undefined,
+      resultPreview: info.resultPreview as string | undefined,
+      step: info.step as number | undefined,
+      timestamp: Date.now(),
+    })
+  }
+
   ipcMain.handle(IPC_CHANNELS.AGENT_GET_TASK_LIVE_STATE, async (_event, taskIds: string[]) => {
-    const result: Record<string, { currentStep?: string; activityLog: string[]; progress?: number; status: string }> = {}
+    const result: Record<string, {
+      currentStep?: string
+      activityLog: string[]
+      progress?: number
+      status: string
+      streamedText?: string
+      thinkingText?: string
+      toolCalls?: Array<{ tool: string; toolName?: string; args?: unknown; success: boolean; summary?: string; duration?: number; resultPreview?: string; step?: number; timestamp: number }>
+    }> = {}
     for (const id of taskIds) {
       const state = taskLiveState.get(id)
-      if (state) result[id] = { ...state, activityLog: [...state.activityLog] }
+      if (state) result[id] = {
+        ...state,
+        activityLog: [...state.activityLog],
+        toolCalls: state.toolCalls ? [...state.toolCalls] : undefined,
+      }
     }
     return result
   })
@@ -499,7 +557,7 @@ export function registerIpcHandlers(): void {
 
   // Structured tool-call-info → renderer (rich tool cards with args, duration, preview)
   eventBus.onEvent('agent:tool-call-info', (data) => {
-    forwardToRenderer(IPC_CHANNELS.AGENT_TOOL_CALL_INFO, {
+    const payload = {
       taskId: data.taskId,
       agentType: data.agentType,
       step: data.step,
@@ -511,7 +569,9 @@ export function registerIpcHandlers(): void {
       duration: data.duration,
       resultPreview: data.resultPreview,
       timestamp: Date.now(),
-    })
+    }
+    accumulateToolCall(data.taskId, payload)
+    forwardToRenderer(IPC_CHANNELS.AGENT_TOOL_CALL_INFO, payload)
   })
 
   // Context usage → renderer (context window indicator bar)
@@ -543,6 +603,7 @@ export function registerIpcHandlers(): void {
 
   // Streaming events — forward LLM response chunks to renderer for live text display
   eventBus.onEvent('agent:stream-chunk', (data) => {
+    accumulateStreamChunk(data.taskId, data.chunk, data.chunk.startsWith('💭'))
     forwardToRenderer(IPC_CHANNELS.AGENT_STREAM_CHUNK, {
       taskId: data.taskId,
       agentType: data.agentType,

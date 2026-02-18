@@ -60,22 +60,9 @@ export function CommandCenter() {
     window.brainwave.getModes().then(store.setModes).catch(console.error)
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ─── IPC Subscriptions (single useEffect, clean teardown) ───
-
-  useEffect(() => {
-    const unsubs = [
-      window.brainwave.onSessionCreated((session) => store.addSession(session)),
-      window.brainwave.onTaskUpdate((update) => store.handleTaskUpdate(update)),
-      window.brainwave.onStreamChunk((chunk) => store.handleStreamChunk(chunk)),
-      window.brainwave.onAskUser((question) => store.handleFollowupQuestion(question)),
-      window.brainwave.onApprovalNeeded((request) => store.handleApprovalRequest(request)),
-      window.brainwave.onCheckpointCreated((checkpoint) => store.handleCheckpoint(checkpoint)),
-      window.brainwave.onToolCallInfo((info) => store.handleToolCallInfo(info)),
-      window.brainwave.onContextUsage((usage) => store.handleContextUsage(usage)),
-      window.brainwave.onYouTubePlay((payload) => store.handleYouTubePlay(payload)),
-    ]
-    return () => unsubs.forEach((unsub) => unsub())
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  // ─── IPC Subscriptions ───
+  // NOTE: IPC subscriptions are now in useGlobalIpcListeners (mounted in AppShell)
+  // so they stay alive even when the user navigates away from this page.
 
   // ─── Load messages when active session changes ───
 
@@ -86,6 +73,20 @@ export function CommandCenter() {
       store.setLoaded(true)
       return
     }
+
+    // If the store already has live/streaming messages for this session,
+    // skip the DB reload to preserve accumulated streaming blocks.
+    // This handles the case where the user navigated away and came back
+    // while a task was still streaming.
+    const existingMessages = store.messages
+    const hasLiveData = existingMessages.some(
+      (m) => m.role === 'assistant' && (m as AssistantMessage).isStreaming,
+    )
+    if (hasLiveData) {
+      store.setLoaded(true)
+      return
+    }
+
     store.setLoaded(false)
     window.brainwave.getSessionTasks(sessionId, 50).then(async (history) => {
       // Convert historical tasks to ChatMessage[]
@@ -114,7 +115,7 @@ export function CommandCenter() {
         return [userMsg, assistantMsg]
       })
 
-      // Replay live state for active tasks
+      // Replay live state for active tasks — recover buffered stream data
       const activeIds = messages
         .filter((m): m is AssistantMessage => m.role === 'assistant' && (m.status === 'queued' || m.status === 'planning' || m.status === 'executing'))
         .map((m) => m.taskId)
@@ -129,6 +130,50 @@ export function CommandCenter() {
             if (live) {
               aMsg.activity = live.currentStep ? 'thinking' : 'idle'
               if (live.status) aMsg.status = live.status
+
+              // Reconstruct rich content blocks from buffered stream data
+              const recoveredBlocks: typeof aMsg.blocks = []
+
+              if (live.thinkingText) {
+                recoveredBlocks.push({ type: 'thinking', content: live.thinkingText, isStreaming: false })
+              }
+
+              // Interleave tool calls and text based on buffered data
+              if (live.toolCalls && live.toolCalls.length > 0) {
+                for (const tc of live.toolCalls) {
+                  recoveredBlocks.push({
+                    type: 'tool_call',
+                    data: {
+                      taskId: aMsg.taskId,
+                      agentType: tc.tool.split('::')[0] ?? 'unknown',
+                      step: tc.step ?? 0,
+                      tool: tc.tool,
+                      toolName: tc.toolName ?? tc.tool.split('::').pop() ?? tc.tool,
+                      args: (tc.args as Record<string, unknown>) ?? {},
+                      success: tc.success,
+                      summary: tc.summary ?? (tc.success ? 'Completed' : 'Failed'),
+                      duration: tc.duration,
+                      resultPreview: tc.resultPreview,
+                      timestamp: tc.timestamp,
+                    },
+                  })
+                }
+              }
+
+              if (live.streamedText) {
+                const isStillStreaming = live.status === 'executing' || live.status === 'planning'
+                recoveredBlocks.push({
+                  type: 'text',
+                  content: live.streamedText,
+                  isStreaming: isStillStreaming,
+                })
+                aMsg.plainText = live.streamedText
+                aMsg.isStreaming = isStillStreaming
+              }
+
+              if (recoveredBlocks.length > 0) {
+                aMsg.blocks = recoveredBlocks
+              }
             }
           }
         } catch (err) {

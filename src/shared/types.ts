@@ -237,6 +237,22 @@ export interface TaskLiveState {
   activityLog: string[]
   progress?: number
   status: TaskStatus
+  /** Accumulated streamed text (non-thinking chunks) — for recovery after navigation */
+  streamedText?: string
+  /** Accumulated thinking text — for recovery after navigation */
+  thinkingText?: string
+  /** Tool call info accumulated during execution — for rich block recovery */
+  toolCalls?: Array<{
+    tool: string
+    toolName?: string
+    args?: unknown
+    success: boolean
+    summary?: string
+    duration?: number
+    resultPreview?: string
+    step?: number
+    timestamp: number
+  }>
 }
 
 export interface TaskUpdate {

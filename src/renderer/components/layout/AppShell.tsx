@@ -3,6 +3,7 @@ import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 import { NotificationToast } from '../NotificationToast'
 import { useKeyboardShortcuts } from '@renderer/hooks/useKeyboardShortcuts'
+import { useGlobalIpcListeners } from '@renderer/hooks/useGlobalIpcListeners'
 
 interface AppShellProps {
   children: ReactNode
@@ -10,6 +11,7 @@ interface AppShellProps {
 
 export function AppShell({ children }: AppShellProps) {
   useKeyboardShortcuts()
+  useGlobalIpcListeners()
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">
