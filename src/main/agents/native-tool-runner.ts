@@ -33,7 +33,7 @@ import {
 } from '../llm/tool-definitions'
 import { getDelegationTargets, canDelegate, canDelegateAtDepth } from './delegation'
 import type { AgentType } from './event-bus'
-import { calculateBudget, formatTokenCount, MAX_INPUT_BUDGET, REASONING_RESERVE_TOKENS, PROACTIVE_COMPACTION_THRESHOLD } from '../llm/token-counter'
+import { calculateBudget, countTokens, formatTokenCount, MAX_INPUT_BUDGET, REASONING_RESERVE_TOKENS, PROACTIVE_COMPACTION_THRESHOLD } from '../llm/token-counter'
 import { getMcpRegistry } from '../mcp'
 import { getLocalToolProvider } from '../tools'
 import { getAgentPermissions, filterToolsForAgent, filterToolsForMode, canAgentCallTool } from '../tools/permissions'
@@ -132,7 +132,18 @@ export async function executeWithNativeTools(
     const TIMEOUT_MS = permConfig.timeoutMs ?? 5 * 60 * 1000
     const ABSOLUTE_MAX_STEPS = 100
     const MAX_CONSECUTIVE_ERRORS = 5
+    const MAX_TOTAL_TOKENS = 500_000  // Cumulative token limit per task (input + output)
     let consecutiveErrors = 0
+
+    // Loop detection (ported from xml-tool-runner)
+    const MAX_TOOL_FREQUENCY = 8      // same tool called this many times → warn/break
+    const MAX_CONSECUTIVE_SAME = 5    // same tool+args in a row → break
+    const toolFrequency: Map<string, number> = new Map()
+    let consecutiveSameTool = 0
+    let lastToolKey = ''
+    let lastToolArgsHash = ''
+    let loopDetected = false
+    let stuckWarningGiven = false
 
     // File context tracking
     const fileRegistry = new Map<string, FileRegistryEntry>()
@@ -173,6 +184,22 @@ export async function executeWithNativeTools(
         const systemWithInstructions = customInstructionBlock
             ? `${systemPrompt}\n\n${customInstructionBlock}`
             : systemPrompt
+
+        // ── System prompt & tool schema budget accounting ──
+        // Measure system prompt and tool schema tokens, then subtract from the
+        // conversation budget so the ConversationManager knows the TRUE available
+        // space for messages.
+        const systemPromptTokens = countTokens(systemWithInstructions)
+        const toolSchemaTokens = countTokens(JSON.stringify(nativeTools))
+        const fixedOverhead = systemPromptTokens + toolSchemaTokens
+        const effectiveMessageBudget = Math.max(cappedBudget - fixedOverhead, 20_000) // floor at 20K
+        conversation.setBudget(effectiveMessageBudget, responseReserve)
+
+        console.log(
+            `[${agent.type}] Budget accounting: system=${formatTokenCount(systemPromptTokens)} ` +
+            `tools=${formatTokenCount(toolSchemaTokens)} overhead=${formatTokenCount(fixedOverhead)} ` +
+            `→ message budget=${formatTokenCount(effectiveMessageBudget)}`
+        )
 
         // ── Build initial user message ──
         let priorContext = ''
@@ -262,6 +289,32 @@ export async function executeWithNativeTools(
                     `[${agent.type}] Step ${step}: Context at ${Math.round(ratio * 100)}% — proactive compaction`
                 )
                 conversation.proactiveCompact(0.55)
+            }
+
+            // ── Per-task cumulative token limit check ──
+            if (totalTokensIn + totalTokensOut > MAX_TOTAL_TOKENS) {
+                console.warn(
+                    `[${agent.type}] Step ${step}: Cumulative token limit exceeded ` +
+                    `(${formatTokenCount(totalTokensIn + totalTokensOut)} > ${formatTokenCount(MAX_TOTAL_TOKENS)})`
+                )
+                const anySuccess = toolResults.some(t => t.success)
+                return agent.buildToolResult(
+                    anySuccess ? 'partial' : 'failed',
+                    `Token budget exhausted (${formatTokenCount(totalTokensIn + totalTokensOut)} total tokens used). Stopping to prevent runaway cost.`,
+                    anySuccess ? 0.5 : 0.2,
+                    totalTokensIn, totalTokensOut, model, startTime, artifacts,
+                )
+            }
+
+            // ── Loop detection check ──
+            if (loopDetected) {
+                const anySuccess = toolResults.some(t => t.success)
+                return agent.buildToolResult(
+                    anySuccess ? 'partial' : 'failed',
+                    'Loop detected — agent was repeatedly calling the same tools. Stopping to prevent waste.',
+                    anySuccess ? 0.4 : 0.2,
+                    totalTokensIn, totalTokensOut, model, startTime, artifacts,
+                )
             }
 
             // ── Call LLM with native tools ──
@@ -710,6 +763,39 @@ export async function executeWithNativeTools(
                 // Log error details so failures are diagnosable from console
                 if (!result.success) {
                     console.error(`[${agent.type}] Step ${step}: ${internalKey} ERROR — ${result.content.slice(0, 500)}`)
+                }
+
+                // ── Loop detection (ported from xml-tool-runner) ──
+                const argsHash = JSON.stringify(toolUse.input ?? {}).slice(0, 500)
+                const freq = (toolFrequency.get(toolBaseName) ?? 0) + 1
+                toolFrequency.set(toolBaseName, freq)
+
+                // Check consecutive same tool+args
+                if (internalKey === lastToolKey && argsHash === lastToolArgsHash) {
+                    consecutiveSameTool++
+                } else {
+                    consecutiveSameTool = 1
+                }
+                lastToolKey = internalKey
+                lastToolArgsHash = argsHash
+
+                if (consecutiveSameTool >= MAX_CONSECUTIVE_SAME) {
+                    console.warn(`[${agent.type}] Loop detected: "${toolBaseName}" called ${consecutiveSameTool}× consecutively with same args`)
+                    loopDetected = true
+                }
+
+                if (freq >= MAX_TOOL_FREQUENCY) {
+                    if (!stuckWarningGiven) {
+                        stuckWarningGiven = true
+                        conversation.addStructuredNotice(
+                            `STUCK DETECTION: You have called "${toolBaseName}" ${freq} times. ` +
+                            `You may be looping. Try a different approach or call attempt_completion.`
+                        )
+                        console.warn(`[${agent.type}] Stuck warning: "${toolBaseName}" called ${freq}× — injecting nudge`)
+                    } else {
+                        console.warn(`[${agent.type}] Loop detected: "${toolBaseName}" called ${freq}× (past stuck warning)`)
+                        loopDetected = true
+                    }
                 }
 
                 toolResults.push({

@@ -28,6 +28,7 @@ import { getSoftEngine } from '../rules'
 import { getPromptRegistry } from '../prompts'
 import { getMcpRegistry } from '../mcp'
 import type { ImageAttachment, DocumentAttachment } from '@shared/types'
+import { countTokens } from '../llm/token-counter'
 import { Blackboard } from './blackboard'
 import { createTaskToken, cancelTaskToken } from './cancellation'
 import { getModeRegistry, resolveToolGroups, modeAllowsMcp } from '../modes'
@@ -606,29 +607,59 @@ FINAL CHECK — before outputting, verify:
       }
 
       // 0b. Fetch session conversation history for context continuity
+      //     TOKEN-AWARE: fill greedily from most recent until budget is hit (not a blind LIMIT 20)
+      const SESSION_HISTORY_TOKEN_BUDGET = 15_000
+      const PER_MESSAGE_MAX_CHARS = 3_000  // cap individual messages to avoid a single giant result eating the budget
       let conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
       if (sessionId) {
         try {
           const rows = this.db.all(
             `SELECT description, result, status FROM tasks
              WHERE session_id = ? AND id != ? AND status IN ('completed', 'failed')
-             ORDER BY created_at ASC LIMIT 20`,
+             ORDER BY created_at DESC LIMIT 40`,
             sessionId, task.id
           ) as Array<{ description: string; result: string | null; status: string }>
 
+          // Build exchanges from most recent, stop when token budget is exhausted
+          let historyTokens = 0
+          const exchanges: Array<{ role: 'user' | 'assistant'; content: string }>[] = []
+
           for (const row of rows) {
-            conversationHistory.push({ role: 'user', content: row.description })
+            const userContent = row.description.length > PER_MESSAGE_MAX_CHARS
+              ? row.description.slice(0, PER_MESSAGE_MAX_CHARS) + '\n[...truncated]'
+              : row.description
+            let assistantContent = ''
             if (row.result) {
               try {
                 const parsed = JSON.parse(row.result)
-                conversationHistory.push({ role: 'assistant', content: typeof parsed === 'string' ? parsed : JSON.stringify(parsed) })
+                assistantContent = typeof parsed === 'string' ? parsed : JSON.stringify(parsed)
               } catch {
-                conversationHistory.push({ role: 'assistant', content: row.result })
+                assistantContent = row.result
+              }
+              if (assistantContent.length > PER_MESSAGE_MAX_CHARS) {
+                assistantContent = assistantContent.slice(0, PER_MESSAGE_MAX_CHARS) + '\n[...truncated]'
               }
             }
+
+            const pairTokens = countTokens(userContent) + (assistantContent ? countTokens(assistantContent) : 0)
+            if (historyTokens + pairTokens > SESSION_HISTORY_TOKEN_BUDGET) break
+
+            const pair: Array<{ role: 'user' | 'assistant'; content: string }> = [
+              { role: 'user', content: userContent },
+            ]
+            if (assistantContent) {
+              pair.push({ role: 'assistant', content: assistantContent })
+            }
+            exchanges.push(pair)
+            historyTokens += pairTokens
           }
+
+          // Reverse back to chronological order
+          exchanges.reverse()
+          conversationHistory = exchanges.flat()
+
           if (conversationHistory.length > 0) {
-            console.log(`[Orchestrator] Loaded ${conversationHistory.length / 2} prior exchanges from session`)
+            console.log(`[Orchestrator] Loaded ${exchanges.length} prior exchanges from session (~${historyTokens} tokens, budget ${SESSION_HISTORY_TOKEN_BUDGET})`)
           }
         } catch (err) {
           console.warn('[Orchestrator] Failed to load session history:', err)
@@ -636,12 +667,41 @@ FINAL CHECK — before outputting, verify:
       }
 
       // 0c. Inject attached document text into the prompt
+      //     BOUNDED: per-document cap + aggregate budget to prevent context overflow
       if (task.documents && task.documents.length > 0) {
-        const docBlocks = task.documents.map((doc) =>
-          `<attached_document name="${doc.name}" type="${doc.extension}" size="${doc.sizeBytes}">\n${doc.extractedText}\n</attached_document>`
-        ).join('\n\n')
-        task.prompt = `${task.prompt}\n\n--- Attached Documents ---\n${docBlocks}`
-        console.log(`[Orchestrator] Injected ${task.documents.length} document(s) into prompt context`)
+        const MAX_DOC_CHARS = 50_000       // ~12.5K tokens per document
+        const MAX_TOTAL_DOC_CHARS = 80_000 // ~20K tokens for all documents combined
+
+        let totalChars = 0
+        const docBlocks: string[] = []
+
+        for (const doc of task.documents) {
+          let text = doc.extractedText ?? ''
+          if (text.length > MAX_DOC_CHARS) {
+            text = text.slice(0, MAX_DOC_CHARS) + `\n[...document truncated at ${MAX_DOC_CHARS} chars — original size: ${doc.sizeBytes} bytes]`
+            console.log(`[Orchestrator] Truncated document "${doc.name}" from ${doc.extractedText.length} to ${MAX_DOC_CHARS} chars`)
+          }
+
+          if (totalChars + text.length > MAX_TOTAL_DOC_CHARS) {
+            const remaining = MAX_TOTAL_DOC_CHARS - totalChars
+            if (remaining > 500) {
+              text = text.slice(0, remaining) + `\n[...document truncated to fit aggregate budget]`
+            } else {
+              console.warn(`[Orchestrator] Skipping document "${doc.name}" — aggregate document budget exhausted`)
+              continue
+            }
+          }
+
+          docBlocks.push(
+            `<attached_document name="${doc.name}" type="${doc.extension}" size="${doc.sizeBytes}">\n${text}\n</attached_document>`
+          )
+          totalChars += text.length
+        }
+
+        if (docBlocks.length > 0) {
+          task.prompt = `${task.prompt}\n\n--- Attached Documents ---\n${docBlocks.join('\n\n')}`
+          console.log(`[Orchestrator] Injected ${docBlocks.length}/${task.documents.length} document(s) into prompt context (~${totalChars} chars)`)
+        }
       }
 
       // 1. Triage — classify the prompt before doing heavy work
