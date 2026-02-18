@@ -28,10 +28,11 @@ export function useGlobalIpcListeners(): void {
       window.brainwave.onCheckpointCreated((checkpoint) => useChatStore.getState().handleCheckpoint(checkpoint)),
       window.brainwave.onToolCallInfo((info) => useChatStore.getState().handleToolCallInfo(info)),
       window.brainwave.onContextUsage((usage) => useChatStore.getState().handleContextUsage(usage)),
+      window.brainwave.onCostUpdate((payload) => useChatStore.getState().handleCostUpdate(payload)),
       window.brainwave.onYouTubePlay((payload) => useChatStore.getState().handleYouTubePlay(payload)),
     ]
 
-    console.log('[AppShell] Global IPC listeners registered (9 channels)')
+    console.log('[AppShell] Global IPC listeners registered (11 channels)')
 
     return () => {
       unsubs.forEach((unsub) => unsub())

@@ -189,6 +189,11 @@ export const IPC_CHANNELS = {
   AGENT_CONTEXT_USAGE: 'agent:context-usage',
   AGENT_TOOL_CALL_INFO: 'agent:tool-call-info',
 
+  // Cost & spending
+  AGENT_GET_TASK_COST: 'agent:get-task-cost',
+  AGENT_GET_SESSION_COST: 'agent:get-session-cost',
+  AGENT_COST_UPDATE: 'agent:cost-update',
+
   // Document extraction (renderer → main)
   DOCUMENT_EXTRACT_TEXT: 'document:extract-text',
 
@@ -336,6 +341,40 @@ export interface ApprovalResponse {
   approved: boolean
   feedback?: string
   reason?: string
+}
+
+// ─── Cost & Spending (​Phase 5D) ───
+
+/** Per-task cost summary (aggregated from agent_runs) */
+export interface TaskCostInfo {
+  taskId: string
+  tokensIn: number
+  tokensOut: number
+  totalTokens: number
+  costUsd: number
+  runCount: number
+  models: string[]
+}
+
+/** Per-session cost summary */
+export interface SessionCostInfo {
+  sessionId: string
+  tokensIn: number
+  tokensOut: number
+  totalTokens: number
+  costUsd: number
+  taskCount: number
+}
+
+/** Real-time cost update pushed to renderer on task completion */
+export interface CostUpdatePayload {
+  taskId: string
+  sessionId?: string
+  tokensIn: number
+  tokensOut: number
+  costUsd: number
+  model: string
+  runCount: number
 }
 
 // ─── Context Usage (Phase 16) ───
@@ -530,6 +569,11 @@ export interface BrainwaveAPI {
   onStreamChunk: (callback: (chunk: StreamChunk) => void) => () => void
   onContextUsage: (callback: (usage: ContextUsageInfo) => void) => () => void
   onToolCallInfo: (callback: (info: ToolCallInfo) => void) => () => void
+  onCostUpdate: (callback: (cost: CostUpdatePayload) => void) => () => void
+
+  // Cost & Spending
+  getTaskCost: (taskId: string) => Promise<TaskCostInfo>
+  getSessionCost: (sessionId: string) => Promise<SessionCostInfo>
 
   // Agent follow-up questions
   onAskUser: (callback: (question: FollowupQuestion) => void) => () => void

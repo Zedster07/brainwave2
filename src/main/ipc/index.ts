@@ -347,6 +347,56 @@ export function registerIpcHandlers(): void {
     console.log('[AgentMonitor] Cleared all agent run history')
   })
 
+  // ─── Cost & Spending ─────────────────────────────────────
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_GET_TASK_COST, async (_event, taskId: string) => {
+    const db = getDatabase()
+    const row = db.get(
+      `SELECT
+         COALESCE(SUM(tokens_in), 0) as tokens_in,
+         COALESCE(SUM(tokens_out), 0) as tokens_out,
+         COALESCE(SUM(tokens_in + tokens_out), 0) as total_tokens,
+         COALESCE(SUM(cost_usd), 0.0) as cost_usd,
+         COUNT(*) as run_count,
+         GROUP_CONCAT(DISTINCT llm_model) as models
+       FROM agent_runs WHERE task_id = ?`,
+      taskId
+    ) as { tokens_in: number; tokens_out: number; total_tokens: number; cost_usd: number; run_count: number; models: string | null }
+    return {
+      taskId,
+      tokensIn: row.tokens_in,
+      tokensOut: row.tokens_out,
+      totalTokens: row.total_tokens,
+      costUsd: row.cost_usd,
+      runCount: row.run_count,
+      models: row.models ? row.models.split(',').filter(Boolean) : [],
+    }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.AGENT_GET_SESSION_COST, async (_event, sessionId: string) => {
+    const db = getDatabase()
+    const row = db.get(
+      `SELECT
+         COALESCE(SUM(ar.tokens_in), 0) as tokens_in,
+         COALESCE(SUM(ar.tokens_out), 0) as tokens_out,
+         COALESCE(SUM(ar.tokens_in + ar.tokens_out), 0) as total_tokens,
+         COALESCE(SUM(ar.cost_usd), 0.0) as cost_usd,
+         COUNT(DISTINCT ar.task_id) as task_count
+       FROM agent_runs ar
+       INNER JOIN tasks t ON ar.task_id = t.id
+       WHERE t.session_id = ?`,
+      sessionId
+    ) as { tokens_in: number; tokens_out: number; total_tokens: number; cost_usd: number; task_count: number }
+    return {
+      sessionId,
+      tokensIn: row.tokens_in,
+      tokensOut: row.tokens_out,
+      totalTokens: row.total_tokens,
+      costUsd: row.cost_usd,
+      taskCount: row.task_count,
+    }
+  })
+
   // Forward agent events to renderer
   const forwardToRenderer = (channel: string, data: unknown) => {
     BrowserWindow.getAllWindows().forEach((win) => {
@@ -587,6 +637,19 @@ export function registerIpcHandlers(): void {
       messageCount: data.messageCount,
       condensations: data.condensations,
       step: data.step,
+    })
+  })
+
+  // Cost updates → renderer
+  eventBus.onEvent('agent:cost-update', (data) => {
+    forwardToRenderer(IPC_CHANNELS.AGENT_COST_UPDATE, {
+      taskId: data.taskId,
+      sessionId: data.sessionId,
+      tokensIn: data.tokensIn,
+      tokensOut: data.tokensOut,
+      costUsd: data.costUsd,
+      model: data.model,
+      runCount: data.runCount,
     })
   })
 

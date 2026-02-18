@@ -15,6 +15,7 @@ import { getProceduralStore, type ProceduralEntry } from './procedural'
 import { getProspectiveStore, type ProspectiveEntry } from './prospective'
 import { getDatabase } from '../db/database'
 import { getEventBus } from '../agents/event-bus'
+import { countTokens } from '../llm/token-counter'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -203,8 +204,9 @@ export class MemoryManager {
 
   /**
    * Recall and format as context strings (for agent prompts).
+   * @param maxTokens Optional token budget — memories exceeding it are trimmed/dropped (default 2000)
    */
-  async recallForContext(query: string, limit = 5): Promise<string[]> {
+  async recallForContext(query: string, limit = 5, maxTokens = 2000): Promise<string[]> {
     const results = await this.recall(query, { limit })
 
     const formatted = results.map((r) => {
@@ -236,9 +238,34 @@ export class MemoryManager {
         if (Object.keys(p.preferences).length > 0) parts.push(`preferences: ${JSON.stringify(p.preferences)}`)
         return parts.join(' — ')
       })
-      return [...peopleContext, ...formatted]
+
+      // Search procedural memory for relevant learned workflows
+      let proceduralContext: string[] = []
+      try {
+        const proceduralStore = getProceduralStore()
+        const matchedProcedures = proceduralStore.search(query, 3)
+        proceduralContext = matchedProcedures
+          .filter((p) => p.successRate >= 0.3 || p.executionCount === 0)
+          .map((p) => {
+            const steps = p.steps.map((s) => `  ${s.order}. ${s.action}`).join('\n')
+            return `[Procedure] ${p.name}${p.description ? ': ' + p.description : ''} (success: ${(p.successRate * 100).toFixed(0)}%, used ${p.executionCount}x)\n${steps}`
+          })
+      } catch (err) {
+        console.warn('[MemoryManager] Procedural store search failed:', err)
+      }
+
+      const allMemories = [...peopleContext, ...formatted, ...proceduralContext]
+
+      // Token budget enforcement — trim memories that exceed budget
+      if (maxTokens > 0) {
+        return this.trimToTokenBudget(allMemories, maxTokens)
+      }
+      return allMemories
     } catch (err) {
       console.warn('[MemoryManager] People store search failed:', err)
+      if (maxTokens > 0) {
+        return this.trimToTokenBudget(formatted, maxTokens)
+      }
       return formatted
     }
   }
@@ -311,6 +338,37 @@ export class MemoryManager {
     }
 
     return [...byId.values()].sort((a, b) => b.relevance - a.relevance)
+  }
+
+  /**
+   * Trim a list of memory strings to fit within a token budget.
+   * Keeps items in order, truncating the last one that partially fits.
+   */
+  private trimToTokenBudget(memories: string[], maxTokens: number): string[] {
+    const result: string[] = []
+    let totalTokens = 0
+
+    for (const mem of memories) {
+      const tokens = countTokens(mem)
+      if (totalTokens + tokens <= maxTokens) {
+        result.push(mem)
+        totalTokens += tokens
+      } else {
+        // Partially fit: truncate to remaining budget (rough char estimate)
+        const remaining = maxTokens - totalTokens
+        if (remaining > 50) {
+          // ~4 chars per token heuristic for truncation point
+          const charLimit = remaining * 4
+          result.push(mem.slice(0, charLimit) + '\n[...memory truncated to fit budget]')
+        }
+        break
+      }
+    }
+
+    if (result.length < memories.length) {
+      console.log(`[MemoryManager] Trimmed recalled memories from ${memories.length} to ${result.length} items (~${totalTokens}/${maxTokens} tokens)`)
+    }
+    return result
   }
 }
 

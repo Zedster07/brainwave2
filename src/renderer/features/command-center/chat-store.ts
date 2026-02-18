@@ -20,6 +20,7 @@ import type {
   ChatSession,
   ModeInfo,
   YouTubePlayPayload,
+  CostUpdatePayload,
 } from '@shared/types'
 import type { ToolCallCardData } from './ToolCallCard'
 import type { ContextUsageData } from './ContextIndicator'
@@ -74,6 +75,7 @@ interface ChatStore {
   handleCheckpoint: (checkpoint: CheckpointInfo) => void
   handleToolCallInfo: (info: ToolCallInfo) => void
   handleContextUsage: (usage: ContextUsageInfo) => void
+  handleCostUpdate: (payload: CostUpdatePayload) => void
   handleYouTubePlay: (payload: YouTubePlayPayload) => void
 
   // ─── Actions: Modes ───
@@ -431,6 +433,20 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         })
         return { ...msg, blocks: newBlocks }
       }),
+    })),
+
+  handleCostUpdate: (payload) =>
+    set((s) => ({
+      messages: updateAssistant(s.messages, payload.taskId, (msg) => ({
+        ...msg,
+        costInfo: {
+          taskId: payload.taskId,
+          tokensIn: payload.tokensIn,
+          tokensOut: payload.tokensOut,
+          costUsd: payload.costUsd,
+          runCount: payload.runCount ?? 1,
+        },
+      })),
     })),
 
   // ─── Modes ───

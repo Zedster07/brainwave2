@@ -606,6 +606,27 @@ FINAL CHECK — before outputting, verify:
         console.log(`[Orchestrator] Fresh autonomous task — skipping memory recall to avoid cross-task contamination`)
       }
 
+      // 0a-bis. Prospective memory — inject due/pending reminders so the agent is aware of them
+      if (!skipMemory) {
+        try {
+          const prospectiveStore = getProspectiveStore()
+          const dueReminders = prospectiveStore.getDue()
+          const highPriorityPending = prospectiveStore.getPending(10).filter(r => r.priority >= 0.7)
+          const reminders = [...dueReminders, ...highPriorityPending]
+            .filter((r, i, arr) => arr.findIndex(x => x.id === r.id) === i) // deduplicate
+            .slice(0, 5)
+          if (reminders.length > 0) {
+            for (const r of reminders) {
+              const dueLabel = r.dueAt ? ` (due: ${r.dueAt})` : ''
+              relevantMemories.push(`[Reminder${dueLabel}] ${r.intention} (priority: ${r.priority})`)
+            }
+            console.log(`[Orchestrator] Injected ${reminders.length} prospective reminders (${dueReminders.length} due, ${highPriorityPending.length} high-priority pending)`)
+          }
+        } catch (err) {
+          console.warn('[Orchestrator] Prospective memory check failed:', err)
+        }
+      }
+
       // 0b. Fetch session conversation history for context continuity
       //     TOKEN-AWARE: fill greedily from most recent until budget is hit (not a blind LIMIT 20)
       const SESSION_HISTORY_TOKEN_BUDGET = 15_000
@@ -1250,6 +1271,32 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
 
     this.bus.emitEvent('task:completed', { taskId: task.id, result, sessionId: task.sessionId })
 
+    // Emit cost update for the completed task
+    try {
+      const costRow = this.db.get(
+        `SELECT
+           COALESCE(SUM(tokens_in), 0) as ti,
+           COALESCE(SUM(tokens_out), 0) as to_,
+           COALESCE(SUM(cost_usd), 0.0) as cost,
+           COUNT(*) as runs
+         FROM agent_runs WHERE task_id = ?`,
+        task.id
+      ) as { ti: number; to_: number; cost: number; runs: number } | undefined
+      if (costRow && costRow.cost > 0) {
+        this.bus.emitEvent('agent:cost-update', {
+          taskId: task.id,
+          sessionId: task.sessionId,
+          tokensIn: costRow.ti,
+          tokensOut: costRow.to_,
+          costUsd: costRow.cost,
+          model: 'aggregate',
+          runCount: costRow.runs,
+        })
+      }
+    } catch (err) {
+      console.warn('[Orchestrator] Failed to emit cost update:', err)
+    }
+
     // Store experience as episodic memory — skip for autonomous tasks
     // to prevent cron results like "No pending reminders" from polluting recall
     let isAutonomous = false
@@ -1403,6 +1450,7 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
           toolingNeeds: (task as any)._toolingNeeds,
           cancellationToken,
           mode: task.mode,
+          workingMemoryContext: getWorkingMemory().buildContextString() || undefined,
         })
 
         results.set(subTask.id, result)

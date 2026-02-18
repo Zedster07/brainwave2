@@ -259,11 +259,16 @@ export abstract class BaseAgent {
       ? `\n\nRELEVANT MEMORIES:\n${context.relevantMemories.join('\n---\n')}`
       : ''
 
+    // Build working memory context (plan progress, scratchpad)
+    const wmContext = context.workingMemoryContext
+      ? `\n\nWORKING MEMORY:\n${context.workingMemoryContext}`
+      : ''
+
     const request: LLMRequest = {
       model: modelConfig?.model,
       system: systemPrompt + constraintBlock,
       user: userMessage,
-      context: memoryContext || undefined,
+      context: (memoryContext + wmContext) || undefined,
       temperature: overrides?.temperature ?? modelConfig?.temperature ?? 0.7,
       maxTokens: overrides?.maxTokens ?? modelConfig?.maxTokens,
       responseFormat: overrides?.responseFormat,
@@ -319,12 +324,17 @@ export abstract class BaseAgent {
       ? `\n\nRELEVANT MEMORIES:\n${context.relevantMemories.join('\n---\n')}`
       : ''
 
+    // Build working memory context (plan progress, scratchpad)
+    const wmContext = context.workingMemoryContext
+      ? `\n\nWORKING MEMORY:\n${context.workingMemoryContext}`
+      : ''
+
     const request: LLMRequest = {
       model: modelConfig?.model,
       system: systemPrompt + (instructionBlock ?? '') + constraintBlock,
       user: '', // ignored when messages is set
       messages,
-      context: memoryContext || undefined,
+      context: (memoryContext + wmContext) || undefined,
       temperature: overrides?.temperature ?? modelConfig?.temperature ?? 0.7,
       maxTokens: overrides?.maxTokens ?? modelConfig?.maxTokens,
       // No responseFormat — let the model respond naturally (prose + XML tool blocks)

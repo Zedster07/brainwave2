@@ -26,6 +26,7 @@ import { ThinkingBlock } from './ThinkingBlock'
 import { AgentStatusIndicator } from './AgentStatusIndicator'
 import { ToolCallCard } from './ToolCallCard'
 import { ContextIndicator } from './ContextIndicator'
+import { CostIndicator } from './CostIndicator'
 import { StreamingContent } from './StreamingCodeCard'
 import { YouTubePlayer } from './YouTubePlayer'
 import type {
@@ -322,6 +323,13 @@ function AssistantBubble({
         {msg.contextUsage && (
           <div className="mt-2">
             <ContextIndicator data={msg.contextUsage} />
+          </div>
+        )}
+
+        {/* Cost info */}
+        {msg.costInfo && (
+          <div className="mt-1">
+            <CostIndicator data={msg.costInfo} />
           </div>
         )}
 

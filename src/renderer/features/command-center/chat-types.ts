@@ -16,6 +16,7 @@ import type {
 } from '@shared/types'
 import type { ToolCallCardData } from './ToolCallCard'
 import type { ContextUsageData } from './ContextIndicator'
+import type { CostData } from './CostIndicator'
 
 // ─── Agent Status ───
 
@@ -128,6 +129,8 @@ export interface AssistantMessage {
   checkpoints?: CheckpointInfo[]
   /** Context usage stats */
   contextUsage?: ContextUsageData
+  /** Cost info for this task */
+  costInfo?: CostData
   /** Whether the response is still streaming */
   isStreaming: boolean
   /** Task status */

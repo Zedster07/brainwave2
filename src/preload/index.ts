@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type StreamChunk, type FollowupQuestion, type ApprovalRequest, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession, type NotificationPayload, type TaskLiveState, type CheckpointInfo, type ModeInfo, type InstructionInfo, type ContextUsageInfo, type ToolCallInfo, type YouTubePlayPayload } from '@shared/types'
+import { IPC_CHANNELS, type BrainwaveAPI, type TaskSubmission, type MemoryQuery, type TaskUpdate, type AgentLogEntry, type StreamChunk, type FollowupQuestion, type ApprovalRequest, type CreateScheduledJobInput, type ScheduledJobInfo, type TaskRecord, type ChatSession, type NotificationPayload, type TaskLiveState, type CheckpointInfo, type ModeInfo, type InstructionInfo, type ContextUsageInfo, type ToolCallInfo, type YouTubePlayPayload, type CostUpdatePayload, type TaskCostInfo, type SessionCostInfo } from '@shared/types'
 
 const api: BrainwaveAPI = {
   // ─── Window Controls ───
@@ -90,6 +90,17 @@ const api: BrainwaveAPI = {
     ipcRenderer.on(IPC_CHANNELS.AGENT_CONTEXT_USAGE, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_CONTEXT_USAGE, handler)
   },
+
+  // ─── Cost Updates ───
+  onCostUpdate: (callback: (payload: CostUpdatePayload) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: CostUpdatePayload) => callback(payload)
+    ipcRenderer.on(IPC_CHANNELS.AGENT_COST_UPDATE, handler)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.AGENT_COST_UPDATE, handler)
+  },
+  getTaskCost: (taskId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_GET_TASK_COST, taskId) as Promise<TaskCostInfo>,
+  getSessionCost: (sessionId: string) =>
+    ipcRenderer.invoke(IPC_CHANNELS.AGENT_GET_SESSION_COST, sessionId) as Promise<SessionCostInfo>,
 
   onToolCallInfo: (callback: (info: ToolCallInfo) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, info: ToolCallInfo) => callback(info)

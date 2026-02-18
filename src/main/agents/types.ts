@@ -69,6 +69,8 @@ export interface AgentContext {
     workDir?: string
     /** Active mode slug — when set, tool filtering uses mode-based rules instead of agent defaults */
     mode?: string
+    /** Serialized working memory state — current plan progress, scratchpad, recent results */
+    workingMemoryContext?: string
 }
 
 export interface AgentResult {
