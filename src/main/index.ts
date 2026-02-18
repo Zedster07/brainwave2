@@ -19,6 +19,7 @@ import { getPluginRegistry } from './plugins'
 import { getNotificationService } from './services/notification.service'
 import { getTelegramService } from './services/telegram.service'
 import { initAutonomySystem, saveScheduledJobs } from './services/autonomy-jobs'
+import { initVoiceOverlay, destroyVoiceOverlay } from './services/voice-overlay.service'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -194,6 +195,9 @@ app.whenReady().then(() => {
   // System tray — keeps the app alive in the background
   createTray(() => mainWindow)
 
+  // Voice overlay — global hotkey for push-to-talk from anywhere
+  initVoiceOverlay()
+
   // Start the scheduler service
   const scheduler = getScheduler()
   scheduler.start()
@@ -258,6 +262,7 @@ app.on('before-quit', () => {
   getDecayService().stop()
   getTelegramService().stop().catch(() => {})
   getMcpRegistry().disconnectAll().catch(() => {})
+  destroyVoiceOverlay()
   destroyTray()
   getDatabase().close()
 })

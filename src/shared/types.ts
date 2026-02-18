@@ -200,6 +200,12 @@ export const IPC_CHANNELS = {
 
   // YouTube Player (main → renderer)
   YOUTUBE_PLAY: 'youtube:play',
+
+  // Voice Overlay (global hotkey → floating mic UI)
+  VOICE_OVERLAY_STATE: 'voice-overlay:state',         // main → overlay (recording/processing/idle)
+  VOICE_OVERLAY_RESULT: 'voice-overlay:result',       // main → result card (task completed)
+  VOICE_OVERLAY_DISMISS: 'voice-overlay:dismiss',     // result card → main (user dismissed)
+  VOICE_OVERLAY_SUBMIT: 'voice-overlay:submit',       // overlay → main (audio buffer to transcribe + submit)
 } as const
 
 // ─── IPC Payload Types ───
@@ -240,6 +246,40 @@ export interface DocumentAttachment {
 }
 
 export type TaskStatus = 'queued' | 'planning' | 'executing' | 'completed' | 'failed' | 'cancelled'
+
+// ─── Voice Overlay Types ───
+
+export type VoiceOverlayState = 'idle' | 'listening' | 'processing' | 'error'
+
+export interface VoiceOverlayStatePayload {
+  state: VoiceOverlayState
+  message?: string
+}
+
+export interface VoiceOverlayResultPayload {
+  taskId: string
+  prompt: string
+  result: string
+  status: 'completed' | 'failed'
+}
+
+/** API exposed to the voice overlay window */
+export interface VoiceOverlayAPI {
+  /** Submit recorded audio for transcription + task execution */
+  submitAudio: (audioBuffer: ArrayBuffer, mimeType: string) => Promise<void>
+  /** Listen for state changes from main process */
+  onStateChange: (callback: (state: VoiceOverlayStatePayload) => void) => () => void
+  /** Dismiss the overlay (user cancelled) */
+  dismiss: () => void
+}
+
+/** API exposed to the result card window */
+export interface VoiceResultAPI {
+  /** Listen for task results */
+  onResult: (callback: (result: VoiceOverlayResultPayload) => void) => () => void
+  /** Dismiss the result card */
+  dismiss: () => void
+}
 
 /** Live state accumulated in main process — survives renderer navigation */
 export interface TaskLiveState {
@@ -954,5 +994,7 @@ export interface CreateScheduledJobInput {
 declare global {
   interface Window {
     brainwave: BrainwaveAPI
+    voiceOverlay?: VoiceOverlayAPI
+    voiceResult?: VoiceResultAPI
   }
 }
