@@ -19,6 +19,7 @@ import { getAgentPool } from '../agents/agent-pool'
 import { getEventBus } from '../agents/event-bus'
 import { getMemoryManager, exportAllMemories, importAllMemories } from '../memory'
 import { getPeopleStore } from '../memory/people'
+import { getTelegramService } from '../services/telegram.service'
 import { getCalibrationTracker } from '../agents/calibration'
 import { getCheckpointService } from '../agents/checkpoint-service'
 import { getModeRegistry } from '../modes'
@@ -937,7 +938,26 @@ export function registerIpcHandlers(): void {
       const hostRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'ollama_host')
       const host = hostRow?.value ? JSON.parse(hostRow.value) : 'http://localhost:11434'
       LLMFactory.configure('ollama', { apiKey: host, defaultModel: value })
+    } else if (key.startsWith('telegram_')) {
+      // Re-configure Telegram bot when any telegram setting changes
+      getTelegramService().reconfigure().catch((err) => {
+        console.warn('[IPC] Telegram reconfigure error:', err)
+      })
     }
+  })
+
+  // ─── Telegram Bot ───
+  ipcMain.handle(IPC_CHANNELS.TELEGRAM_STATUS, async () => {
+    return getTelegramService().getBotInfo()
+  })
+
+  ipcMain.handle(IPC_CHANNELS.TELEGRAM_TEST, async () => {
+    const telegram = getTelegramService()
+    if (!telegram.isConfigured()) {
+      return { success: false, error: 'Telegram bot not configured. Set bot token and chat ID in settings.' }
+    }
+    const sent = await telegram.sendMessage('🧪 Test message from Brainwave 2 — Telegram integration is working!')
+    return { success: sent, error: sent ? null : 'Failed to send test message. Check bot token and chat ID.' }
   })
 
   // ─── Speech-to-Text (Whisper) ───

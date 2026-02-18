@@ -75,8 +75,8 @@ export interface EventMap {
   'task:planning': { taskId: string }
   'task:executing': { taskId: string; step: string }
   'task:progress': { taskId: string; progress: number; currentStep: string }
-  'task:completed': { taskId: string; result: unknown }
-  'task:failed': { taskId: string; error: string }
+  'task:completed': { taskId: string; result: unknown; sessionId?: string }
+  'task:failed': { taskId: string; error: string; sessionId?: string }
   'task:cancelled': { taskId: string }
 
   // Agent lifecycle

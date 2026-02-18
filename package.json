@@ -33,6 +33,7 @@
     "fastest-levenshtein": "^1.0.16",
     "framer-motion": "^11.15.0",
     "gpt-tokenizer": "^3.4.0",
+    "grammy": "^1.40.0",
     "lucide-react": "^0.469.0",
     "mammoth": "^1.11.0",
     "openai": "^4.77.0",

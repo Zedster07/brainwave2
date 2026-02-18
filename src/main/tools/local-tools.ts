@@ -17,6 +17,7 @@ import https from 'node:https'
 import http from 'node:http'
 import { getHardEngine } from '../rules'
 import { getEventBus } from '../agents/event-bus'
+import { getTelegramService } from '../services/telegram.service'
 import type { McpTool, McpToolCallResult } from '../mcp/types'
 import { getDiffStrategy, parsePatchOperations, type DiffBlock } from './diff-strategy'
 import { isBinaryDocument, extractDocumentText } from './document-extractor'
@@ -258,6 +259,21 @@ const TOOL_DEFS: McpTool[] = [
         body: { type: 'string', description: 'Notification body message' },
       },
       required: ['title', 'body'],
+    },
+  },
+  {
+    key: 'local::send_telegram_message',
+    serverId: 'local',
+    serverName: 'Built-in Tools',
+    name: 'send_telegram_message',
+    description: 'Send a message to the user via Telegram. Use this when you want to notify the user on their phone or send results to Telegram. Requires Telegram bot to be configured in settings.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        message: { type: 'string', description: 'The message text to send to Telegram' },
+        title: { type: 'string', description: 'Optional title/header prepended to the message' },
+      },
+      required: ['message'],
     },
   },
   {
@@ -774,6 +790,8 @@ class LocalToolProvider {
         return this.httpRequest(args)
       case 'send_notification':
         return this.sendNotification(args)
+      case 'send_telegram_message':
+        return this.sendTelegramMessage(args)
       case 'web_search':
         return this.webSearch(args)
       case 'webpage_fetch':
@@ -1412,6 +1430,46 @@ class LocalToolProvider {
       }
     } catch (err) {
       return this.error('local::send_notification', this.errMsg(err), start)
+    }
+  }
+
+  // ─── Send Telegram Message ─────────────────────────────
+
+  private async sendTelegramMessage(args: Record<string, unknown>): Promise<McpToolCallResult> {
+    const start = Date.now()
+    const message = String(args.message ?? '')
+    const title = args.title ? String(args.title) : undefined
+
+    if (!message) {
+      return this.error('local::send_telegram_message', 'message is required', start)
+    }
+
+    const telegram = getTelegramService()
+    if (!telegram.isConfigured()) {
+      return this.error(
+        'local::send_telegram_message',
+        'Telegram bot is not configured. The user needs to set bot token and chat ID in Settings → Telegram.',
+        start,
+      )
+    }
+
+    try {
+      const text = title ? `📋 *${title}*\n\n${message}` : message
+      const sent = await telegram.sendMessage(text)
+
+      if (!sent) {
+        return this.error('local::send_telegram_message', 'Failed to send Telegram message. Check bot token and chat ID.', start)
+      }
+
+      return {
+        toolKey: 'local::send_telegram_message',
+        success: true,
+        content: `Telegram message sent${title ? `: "${title}"` : ''}`,
+        isError: false,
+        duration: Date.now() - start,
+      }
+    } catch (err) {
+      return this.error('local::send_telegram_message', this.errMsg(err), start)
     }
   }
 

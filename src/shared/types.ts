@@ -77,6 +77,10 @@ export const IPC_CHANNELS = {
   SETTINGS_GET: 'settings:get',
   SETTINGS_SET: 'settings:set',
 
+  // Telegram
+  TELEGRAM_STATUS: 'telegram:status',
+  TELEGRAM_TEST: 'telegram:test',
+
   // Model Mode
   MODEL_MODE_GET: 'model-mode:get',
   MODEL_MODE_SET: 'model-mode:set',
@@ -576,6 +580,10 @@ export interface BrainwaveAPI {
   getSetting: <T = unknown>(key: string) => Promise<T>
   setSetting: <T = unknown>(key: string, value: T) => Promise<void>
   selectDirectory: (title?: string) => Promise<string | null>
+
+  // Telegram
+  getTelegramStatus: () => Promise<{ username: string; running: boolean; configured: boolean } | null>
+  testTelegram: () => Promise<{ success: boolean; error?: string | null }>
 
   // Model Mode
   getModelMode: () => Promise<string>

@@ -855,7 +855,7 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
       task.id
     )
 
-    this.bus.emitEvent('task:completed', { taskId: task.id, result: reply })
+    this.bus.emitEvent('task:completed', { taskId: task.id, result: reply, sessionId: task.sessionId })
   }
 
   /**
@@ -1175,7 +1175,7 @@ SYSTEM CAPABILITIES — AVAILABLE TOOLS:${this.getMcpSummary()}`,
       task.id
     )
 
-    this.bus.emitEvent('task:completed', { taskId: task.id, result })
+    this.bus.emitEvent('task:completed', { taskId: task.id, result, sessionId: task.sessionId })
 
     // Store experience as episodic memory — skip for autonomous tasks
     // to prevent cron results like "No pending reminders" from polluting recall
@@ -1892,7 +1892,7 @@ Rules:
       error,
       task.id
     )
-    this.bus.emitEvent('task:failed', { taskId: task.id, error })
+    this.bus.emitEvent('task:failed', { taskId: task.id, error, sessionId: task.sessionId })
   }
 }
 

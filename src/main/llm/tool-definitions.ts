@@ -194,6 +194,13 @@ const TOOL_ALIASES: Record<string, string> = {
   'create_pptx':           'local__generate_pptx',
   'write_pptx':            'local__generate_pptx',
   'create_presentation':   'local__generate_pptx',
+
+  // Telegram
+  'send_telegram':         'local__send_telegram_message',
+  'telegram_send':         'local__send_telegram_message',
+  'telegram_message':      'local__send_telegram_message',
+  'telegram_notify':       'local__send_telegram_message',
+  'message_telegram':      'local__send_telegram_message',
 }
 
 // ─── Name Mapping ───────────────────────────────────────────

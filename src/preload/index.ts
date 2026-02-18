@@ -212,6 +212,13 @@ const api: BrainwaveAPI = {
   selectDirectory: (title?: string) =>
     ipcRenderer.invoke(IPC_CHANNELS.DIALOG_SELECT_DIRECTORY, title) as Promise<string | null>,
 
+  // ─── Telegram ───
+  getTelegramStatus: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.TELEGRAM_STATUS) as Promise<{ username: string; running: boolean; configured: boolean } | null>,
+
+  testTelegram: () =>
+    ipcRenderer.invoke(IPC_CHANNELS.TELEGRAM_TEST) as Promise<{ success: boolean; error?: string | null }>,
+
   // ─── Model Mode ───
   getModelMode: () =>
     ipcRenderer.invoke(IPC_CHANNELS.MODEL_MODE_GET) as Promise<string>,

@@ -16,6 +16,7 @@ import { initAutoUpdater } from './updater'
 import { getMcpRegistry } from './mcp'
 import { getPluginRegistry } from './plugins'
 import { getNotificationService } from './services/notification.service'
+import { getTelegramService } from './services/telegram.service'
 import { initAutonomySystem, saveScheduledJobs } from './services/autonomy-jobs'
 
 let mainWindow: BrowserWindow | null = null
@@ -148,6 +149,25 @@ app.whenReady().then(() => {
   // ── Initialize Notification Service ──
   getNotificationService().init()
 
+  // ── Initialize Telegram Bot (two-way messaging) ──
+  const orchestrator = getOrchestrator()
+  getTelegramService().init(async (prompt, sessionId) => {
+    // Create an autonomous session for Telegram tasks (visible in the UI)
+    const now = Date.now()
+    const sessionTitle = `📱 Telegram: ${prompt.slice(0, 60)}${prompt.length > 60 ? '...' : ''}`
+    db.run(
+      `INSERT INTO chat_sessions (id, title, session_type, created_at, updated_at) VALUES (?, ?, 'autonomous', ?, ?)`,
+      sessionId, sessionTitle, now, now
+    )
+    // Forward to renderer so it appears immediately
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send('session:created', { id: sessionId, title: sessionTitle, type: 'autonomous', createdAt: now, updatedAt: now })
+    })
+    await orchestrator.submitTask(prompt, 'normal', sessionId)
+  }).catch((err) => {
+    console.warn('[Main] Telegram initialization error:', err)
+  })
+
   // ── Initialize MCP (connect to auto-connect servers) ──
   getMcpRegistry().initialize().catch((err) => {
     console.warn('[Main] MCP initialization error:', err)
@@ -225,6 +245,7 @@ app.on('before-quit', () => {
   getScheduler().stop()
   saveScheduledJobs()  // Persist scheduler state before exit
   getDecayService().stop()
+  getTelegramService().stop().catch(() => {})
   getMcpRegistry().disconnectAll().catch(() => {})
   destroyTray()
   getDatabase().close()
