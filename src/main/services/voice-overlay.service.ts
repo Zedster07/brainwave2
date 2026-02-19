@@ -110,7 +110,7 @@ function createResultWindow(): BrowserWindow {
     resizable: false,
     movable: false,
     skipTaskbar: true,
-    focusable: true,
+    focusable: false,
     show: false,
     hasShadow: false,
     webPreferences: {
