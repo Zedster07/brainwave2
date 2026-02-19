@@ -86,6 +86,8 @@ export interface AgentResult {
     artifacts?: Artifact[]
     error?: string
     duration: number // ms
+    /** Actual cost in USD from the API provider. Preferred over local calculation. */
+    cost?: number
 }
 
 export interface SuggestedMemory {

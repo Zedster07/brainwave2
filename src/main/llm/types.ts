@@ -166,6 +166,13 @@ export interface LLMResponse {
     cacheCreationInputTokens: number
     cacheReadInputTokens: number
   }
+  /**
+   * Actual cost in USD as reported by the API provider (e.g. OpenRouter).
+   * More accurate than local calculation because it reflects cache discounts,
+   * provider-specific pricing, and promotions.
+   * When available, this should be preferred over local `calculateCost()`.
+   */
+  cost?: number
 }
 
 export interface LLMAdapter {

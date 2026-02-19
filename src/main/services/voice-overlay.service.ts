@@ -409,7 +409,9 @@ async function transcribeAudio(
       ? 'ogg'
       : 'wav'
   const tempPath = join(tmpdir(), `bw-voice-${randomUUID()}.${ext}`)
-  writeFileSync(tempPath, Buffer.from(audioBuffer))
+  const buf = Buffer.from(audioBuffer)
+  writeFileSync(tempPath, buf)
+  console.log(`[VoiceOverlay] STT: wrote ${buf.length} bytes to ${tempPath}, magic: ${buf.slice(0, 4).toString('hex')}`)
 
   try {
     const client = new OpenAI({ apiKey: sttKey, baseURL, timeout: 30_000 })

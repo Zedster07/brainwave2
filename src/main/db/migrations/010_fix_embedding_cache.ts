@@ -1,14 +1,15 @@
 /**
- * Migration 008 — Embedding generation cache
+ * Migration 010 — Fix missing embedding_cache table
  *
- * Persists text→embedding mappings to avoid redundant API calls on restart.
- * Uses a SHA-256 hash of the text as key to keep index compact.
+ * Migration 008 was originally defined with `id` instead of `version`,
+ * so it was silently skipped by the migration runner. This re-applies
+ * the CREATE TABLE IF NOT EXISTS to fix existing installations.
  */
 import type { Migration } from '../migrations'
 
 const migration: Migration = {
-  version: 8,
-  name: 'embedding_cache',
+  version: 10,
+  name: 'fix_embedding_cache',
   up: `
     CREATE TABLE IF NOT EXISTS embedding_cache (
       text_hash   TEXT PRIMARY KEY,
@@ -23,7 +24,7 @@ const migration: Migration = {
       ON embedding_cache(last_used);
   `,
   down: `
-    DROP TABLE IF EXISTS embedding_cache;
+    -- Don't drop — the table should persist
   `,
 }
 

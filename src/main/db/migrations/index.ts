@@ -12,6 +12,7 @@ import migration006 from './006_session_type'
 import migration007 from './007_task_checkpoints'
 import migration008 from './008_embedding_cache'
 import migration009 from './009_token_cache'
+import migration010 from './010_fix_embedding_cache'
 
 export const ALL_MIGRATIONS: Migration[] = [
   migration001,
@@ -23,5 +24,6 @@ export const ALL_MIGRATIONS: Migration[] = [
   migration007,
   migration008,
   migration009,
+  migration010,
   // Add future migrations here in order
 ]

@@ -11,6 +11,7 @@
  * Inspired by Goose's TokenCounter (tiktoken o200k_base + DashMap cache).
  */
 import { encode } from 'gpt-tokenizer/model/gpt-4o'
+import { getDatabase } from '../db/database'
 
 // ─── Token Cache ──────────────────────────────────────────
 
@@ -71,8 +72,6 @@ export function countTokens(text: string): number {
  */
 export function saveTokenCacheToDB(): void {
   try {
-    // Lazy import to avoid circular dependency
-    const { getDatabase } = require('../db/database')
     const db = getDatabase()
 
     // Check if table exists
@@ -106,7 +105,6 @@ export function saveTokenCacheToDB(): void {
  */
 export function loadTokenCacheFromDB(): void {
   try {
-    const { getDatabase } = require('../db/database')
     const db = getDatabase()
 
     const tableExists = db.get<{ name: string }>(

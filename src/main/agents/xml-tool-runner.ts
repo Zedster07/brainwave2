@@ -127,11 +127,14 @@ export async function executeWithTools(
     const TIMEOUT_MS = permConfig.timeoutMs ?? 5 * 60 * 1000
     const MAX_LOOP_REPEATS = 3
     const MAX_TOOL_FREQUENCY = 8
+    const MAX_READ_TOOL_FREQUENCY = 30
     const MAX_CONSECUTIVE_SAME = 5
     const ABSOLUTE_MAX_STEPS = 100
     const SOFT_WARNING_STEP = 50
+    const READ_ONLY_TOOLS = new Set(['file_read', 'read_text_file', 'read_file', 'directory_list', 'list_directory', 'list_allowed_directories', 'search_files', 'grep_search'])
     const toolCallHistory: Array<{ tool: string; argsHash: string }> = []
-    const toolFrequency: Map<string, number> = new Map()
+    const toolFrequency: Map<string, number> = new Map()        // tracks tool+args combos
+    const toolNameFrequency: Map<string, number> = new Map()    // tracks tool name only
     let stuckWarningGiven = false
 
     const repetitionDetector = new ToolRepetitionDetector(3)
@@ -504,8 +507,11 @@ export async function executeWithTools(
 
                 // Loop detection
                 toolCallHistory.push({ tool: toolCall.tool, argsHash })
-                const freq = (toolFrequency.get(toolBaseName) ?? 0) + 1
-                toolFrequency.set(toolBaseName, freq)
+                const callKey = `${toolBaseName}::${argsHash}`
+                const freq = (toolFrequency.get(callKey) ?? 0) + 1
+                toolFrequency.set(callKey, freq)
+                const nameFreq = (toolNameFrequency.get(toolBaseName) ?? 0) + 1
+                toolNameFrequency.set(toolBaseName, nameFreq)
 
                 const repCheck = repetitionDetector.check({ tool: toolCall.tool, args: toolCall.args ?? {} })
                 if (repCheck.isRepetition) {
@@ -514,11 +520,15 @@ export async function executeWithTools(
                     break
                 }
 
-                if (freq >= MAX_TOOL_FREQUENCY) {
+                const isReadOnly = READ_ONLY_TOOLS.has(toolBaseName)
+                const effectiveLimit = isReadOnly ? MAX_READ_TOOL_FREQUENCY : MAX_TOOL_FREQUENCY
+                const effectiveFreq = isReadOnly ? nameFreq : freq
+
+                if (effectiveFreq >= effectiveLimit) {
                     if (!stuckWarningGiven) {
                         stuckWarningGiven = true
-                        toolResults.push({ tool: toolCall.tool, success: false, content: `STUCK DETECTION: You called "${toolBaseName}" ${freq} times.` })
-                        conversation.addSystemNotice(`You have called "${toolBaseName}" ${freq} times. You may be looping.`)
+                        toolResults.push({ tool: toolCall.tool, success: false, content: `STUCK DETECTION: You called "${toolBaseName}" ${effectiveFreq} times.` })
+                        conversation.addSystemNotice(`You have called "${toolBaseName}" ${effectiveFreq} times. You may be looping.`)
                         continue
                     }
                     loopDetected = true
@@ -1033,6 +1043,7 @@ function buildToolResult(
     startTime: number,
     artifacts: Artifact[],
     error?: string,
+    cost?: number,
 ): AgentResult {
     return {
         status,
@@ -1044,6 +1055,7 @@ function buildToolResult(
         artifacts: artifacts.length > 0 ? artifacts : undefined,
         error,
         duration: Date.now() - startTime,
+        cost,
     }
 }
 

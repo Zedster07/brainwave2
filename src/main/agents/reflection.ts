@@ -277,29 +277,4 @@ Focus on concrete, actionable insights that can improve future performance.`
     return Math.min(1, conf)
   }
 
-  private logRun(task: SubTask, context: AgentContext, result: AgentResult): void {
-    try {
-      const { randomUUID } = require('crypto')
-      this.db.run(
-        `INSERT INTO agent_runs (id, agent_type, task_id, status, input, output, llm_model, tokens_in, tokens_out, cost_usd, confidence, prompt_version, started_at, completed_at, error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), CURRENT_TIMESTAMP, ?)`,
-        randomUUID(),
-        this.type,
-        context.taskId,
-        result.status === 'success' ? 'completed' : 'failed',
-        JSON.stringify({ description: task.description }),
-        JSON.stringify(result.output),
-        result.model,
-        result.tokensIn,
-        result.tokensOut,
-        0,
-        result.confidence,
-        result.promptVersion ?? null,
-        `-${result.duration / 1000} seconds`,
-        result.error ?? null
-      )
-    } catch (err) {
-      console.error(`[${this.type}] Failed to log run:`, err)
-    }
-  }
 }

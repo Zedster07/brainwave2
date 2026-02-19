@@ -248,18 +248,25 @@ export function CommandCenter() {
       mode,
     })
 
-    // Add assistant message placeholder
-    store.addAssistantMessage({
-      id: `assistant-${taskId}`,
-      role: 'assistant',
-      taskId,
-      blocks: [],
-      activity: 'idle',
-      plainText: '',
-      isStreaming: true,
-      status: 'queued',
-      timestamp: Date.now(),
-    })
+    // Add assistant message placeholder — but only if handleTaskUpdate
+    // hasn't already created one (race: task:submitted IPC event can
+    // arrive before this await resolves).
+    const alreadyExists = useChatStore.getState().messages.some(
+      (m) => m.role === 'assistant' && (m as AssistantMessage).taskId === taskId,
+    )
+    if (!alreadyExists) {
+      store.addAssistantMessage({
+        id: `assistant-${taskId}`,
+        role: 'assistant',
+        taskId,
+        blocks: [],
+        activity: 'idle',
+        plainText: '',
+        isStreaming: true,
+        status: 'queued',
+        timestamp: Date.now(),
+      })
+    }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleFollowupRespond = useCallback(async (questionId: string, answer: string) => {

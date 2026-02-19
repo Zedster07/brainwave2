@@ -427,6 +427,8 @@ export abstract class BaseAgent {
   /** Log the agent run to the database for tracking and reflection */
   protected logRun(task: SubTask, context: AgentContext, result: AgentResult): void {
     try {
+      // Prefer API-reported cost over local calculation (reflects cache discounts etc.)
+      const costUsd = result.cost ?? calculateCost(result.model, result.tokensIn, result.tokensOut)
       this.db.run(
         `INSERT INTO agent_runs (id, agent_type, task_id, status, input, output, llm_model, tokens_in, tokens_out, cost_usd, confidence, prompt_version, started_at, completed_at, error)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now', ?), CURRENT_TIMESTAMP, ?)`,
@@ -439,7 +441,7 @@ export abstract class BaseAgent {
         result.model,
         result.tokensIn,
         result.tokensOut,
-        calculateCost(result.model, result.tokensIn, result.tokensOut),
+        costUsd,
         result.confidence,
         result.promptVersion ?? null,
         `-${result.duration / 1000} seconds`,
@@ -585,7 +587,9 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
     task: SubTask,
     context: AgentContext,
   ): Promise<AgentResult> {
-    return executeWithNativeTools(this, task, context)
+    const result = await executeWithNativeTools(this, task, context)
+    this.logRun(task, context, result)
+    return result
   }
 
   /**
@@ -606,7 +610,9 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
     task: SubTask,
     context: AgentContext
   ): Promise<AgentResult> {
-    return executeWithXmlTools(this, task, context)
+    const result = await executeWithXmlTools(this, task, context)
+    this.logRun(task, context, result)
+    return result
   }
 
   /** Build an AgentResult from tool execution */
@@ -619,7 +625,8 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
     model: string,
     startTime: number,
     artifacts: Artifact[],
-    error?: string
+    error?: string,
+    cost?: number
   ): AgentResult {
     return {
       status,
@@ -632,6 +639,7 @@ Do NOT use \`{ "done": true }\` — always use the XML completion block above.`
       artifacts: artifacts.length > 0 ? artifacts : undefined,
       error,
       duration: Date.now() - startTime,
+      cost,
     }
   }
 }

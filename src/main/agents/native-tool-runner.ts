@@ -126,6 +126,7 @@ export async function executeWithNativeTools(
 
     let totalTokensIn = 0
     let totalTokensOut = 0
+    let totalCost = 0
     let totalCacheCreation = 0
     let totalCacheRead = 0
     const artifacts: Artifact[] = []
@@ -139,9 +140,12 @@ export async function executeWithNativeTools(
     let consecutiveErrors = 0
 
     // Loop detection (ported from xml-tool-runner)
-    const MAX_TOOL_FREQUENCY = 8      // same tool called this many times → warn/break
-    const MAX_CONSECUTIVE_SAME = 5    // same tool+args in a row → break
-    const toolFrequency: Map<string, number> = new Map()
+    const MAX_TOOL_FREQUENCY = 8       // same tool called this many times (with same args) → warn/break
+    const MAX_READ_TOOL_FREQUENCY = 30 // read-only tools (file_read, directory_list) get a higher limit
+    const MAX_CONSECUTIVE_SAME = 5     // same tool+args in a row → break
+    const READ_ONLY_TOOLS = new Set(['file_read', 'read_text_file', 'read_file', 'directory_list', 'list_directory', 'list_allowed_directories', 'search_files', 'grep_search'])
+    const toolFrequency: Map<string, number> = new Map()        // tracks tool+args combos
+    const toolNameFrequency: Map<string, number> = new Map()    // tracks tool name only (for read-only limit)
     let consecutiveSameTool = 0
     let lastToolKey = ''
     let lastToolArgsHash = ''
@@ -360,6 +364,7 @@ export async function executeWithNativeTools(
 
             totalTokensIn += response.tokensIn
             totalTokensOut += response.tokensOut
+            totalCost += response.cost ?? 0
 
             // ── Log cache metrics if available ──
             if (response.cacheMetrics) {
@@ -784,8 +789,11 @@ export async function executeWithNativeTools(
 
                 // ── Loop detection (ported from xml-tool-runner) ──
                 const argsHash = JSON.stringify(toolUse.input ?? {}).slice(0, 500)
-                const freq = (toolFrequency.get(toolBaseName) ?? 0) + 1
-                toolFrequency.set(toolBaseName, freq)
+                const callKey = `${toolBaseName}::${argsHash}` // unique per tool+args
+                const freq = (toolFrequency.get(callKey) ?? 0) + 1
+                toolFrequency.set(callKey, freq)
+                const nameFreq = (toolNameFrequency.get(toolBaseName) ?? 0) + 1
+                toolNameFrequency.set(toolBaseName, nameFreq)
 
                 // Check consecutive same tool+args
                 if (internalKey === lastToolKey && argsHash === lastToolArgsHash) {
@@ -801,16 +809,22 @@ export async function executeWithNativeTools(
                     loopDetected = true
                 }
 
-                if (freq >= MAX_TOOL_FREQUENCY) {
+                // For read-only tools, use a generous per-name limit (exploring files is normal).
+                // For mutation tools, use the stricter per-call (tool+args) frequency limit.
+                const isReadOnly = READ_ONLY_TOOLS.has(toolBaseName)
+                const effectiveLimit = isReadOnly ? MAX_READ_TOOL_FREQUENCY : MAX_TOOL_FREQUENCY
+                const effectiveFreq = isReadOnly ? nameFreq : freq
+
+                if (effectiveFreq >= effectiveLimit) {
                     if (!stuckWarningGiven) {
                         stuckWarningGiven = true
                         conversation.addStructuredNotice(
-                            `STUCK DETECTION: You have called "${toolBaseName}" ${freq} times. ` +
+                            `STUCK DETECTION: You have called "${toolBaseName}" ${effectiveFreq} times. ` +
                             `You may be looping. Try a different approach or call attempt_completion.`
                         )
-                        console.warn(`[${agent.type}] Stuck warning: "${toolBaseName}" called ${freq}× — injecting nudge`)
+                        console.warn(`[${agent.type}] Stuck warning: "${toolBaseName}" called ${effectiveFreq}× — injecting nudge`)
                     } else {
-                        console.warn(`[${agent.type}] Loop detected: "${toolBaseName}" called ${freq}× (past stuck warning)`)
+                        console.warn(`[${agent.type}] Loop detected: "${toolBaseName}" called ${effectiveFreq}× (past stuck warning)`)
                         loopDetected = true
                     }
                 }

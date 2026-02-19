@@ -385,10 +385,14 @@ export class AnthropicProvider implements LLMAdapter {
         .map(b => b.text)
         .join('')
 
+      // Extract cost from OpenRouter's usage extension (total_cost field)
+      const apiCost: number | undefined = (response.usage as any)?.total_cost ?? undefined
+
       console.log(
         `[Anthropic/OpenRouter] ← ${model} | finish=${choice.finish_reason} | ` +
         `blocks=${contentBlocks.length} (${contentBlocks.map(b => b.type).join(',')}) | ` +
-        `tokens=${response.usage?.prompt_tokens ?? 0}+${response.usage?.completion_tokens ?? 0}`,
+        `tokens=${response.usage?.prompt_tokens ?? 0}+${response.usage?.completion_tokens ?? 0}` +
+        `${apiCost != null ? ` | cost=$${apiCost.toFixed(6)}` : ''}`,
       )
 
       return {
@@ -398,6 +402,7 @@ export class AnthropicProvider implements LLMAdapter {
         tokensOut: response.usage?.completion_tokens ?? 0,
         finishReason: choice.finish_reason === 'tool_calls' ? 'tool_use' : (choice.finish_reason ?? 'unknown'),
         contentBlocks,
+        cost: apiCost,
       }
     } catch (err) {
       cb.recordFailure()

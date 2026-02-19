@@ -154,9 +154,34 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   handleTaskUpdate: (update) =>
     set((s) => {
       // Auto-create user + assistant messages for externally-initiated tasks
-      // (Telegram, scheduler) that arrive for the active session
+      // (Telegram, scheduler) that arrive for the active session.
+      // Guard: only auto-create if no assistant message AND no recent user message
+      // with the same prompt exists (prevents race with handleSubmit which adds
+      // the user message before submitTask IPC resolves).
       const idx = findByTaskId(s.messages, update.taskId)
       if (idx === -1 && update.sessionId && update.sessionId === s.activeSessionId && update.prompt) {
+        // Check if a user message with this exact prompt was already added by handleSubmit
+        const alreadyHasUserMsg = s.messages.some(
+          (m) => m.role === 'user' && (m as UserMessage).content === update.prompt,
+        )
+
+        if (alreadyHasUserMsg) {
+          // User message exists (from handleSubmit) but assistant placeholder hasn't
+          // been added yet — only add the assistant message to avoid duplication.
+          const assistantMsg: AssistantMessage = {
+            id: `assistant-${update.taskId}`,
+            role: 'assistant',
+            taskId: update.taskId,
+            blocks: [],
+            activity: 'idle',
+            plainText: '',
+            isStreaming: true,
+            status: update.status,
+            timestamp: update.timestamp,
+          }
+          return { messages: [...s.messages, assistantMsg] }
+        }
+
         const userMsg: UserMessage = {
           id: `user-${update.taskId}`,
           role: 'user',
