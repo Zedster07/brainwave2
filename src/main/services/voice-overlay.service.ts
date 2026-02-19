@@ -110,7 +110,7 @@ function createResultWindow(): BrowserWindow {
     resizable: false,
     movable: false,
     skipTaskbar: true,
-    focusable: false,
+    focusable: true,
     show: false,
     hasShadow: false,
     webPreferences: {
@@ -120,6 +120,16 @@ function createResultWindow(): BrowserWindow {
       nodeIntegration: false,
       backgroundThrottling: false,
     },
+  })
+
+  // Use highest z-order level so result card stays above everything
+  win.setAlwaysOnTop(true, 'screen-saver')
+
+  // Re-assert topmost when focus is lost (prevents card slipping behind main window)
+  win.on('blur', () => {
+    if (!win.isDestroyed() && win.isVisible()) {
+      win.moveTop()
+    }
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -355,6 +365,7 @@ function showResult(result: {
   resultWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_RESULT, result)
   resultWindow.showInactive()
   resultWindow.moveTop() // Force z-order on Windows
+  resultWindow.webContents.invalidate() // Force repaint on transparent window
   console.log(`[VoiceOverlay] Result window visible=${resultWindow.isVisible()}, bounds=${JSON.stringify(resultWindow.getBounds())}`)
 
   if (resultAutoDismissTimer) clearTimeout(resultAutoDismissTimer)
