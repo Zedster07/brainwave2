@@ -55,6 +55,7 @@ function createVoiceWindow(): BrowserWindow {
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   })
 
@@ -116,6 +117,7 @@ function createResultWindow(): BrowserWindow {
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   })
 
@@ -170,8 +172,11 @@ function onHotkeyToggle(): void {
     const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
     voiceWindow.setPosition(Math.round(sw / 2 - 110), Math.round(sh / 2 - 130))
 
-    voiceWindow.showInactive()
+    // Send IPC BEFORE showing so renderer updates content while still hidden
     voiceWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, { state: 'listening' })
+    voiceWindow.showInactive()
+    voiceWindow.moveTop() // Force z-order on Windows
+    console.log(`[VoiceOverlay] Window visible=${voiceWindow.isVisible()}, bounds=${JSON.stringify(voiceWindow.getBounds())}`)
   }
 }
 
@@ -328,8 +333,11 @@ function showResult(result: {
 
   const { height: sh } = screen.getPrimaryDisplay().workAreaSize
   resultWindow.setPosition(16, Math.round(sh / 2 - 180))
-  resultWindow.showInactive()
+  // Send IPC BEFORE showing so renderer has content ready
   resultWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_RESULT, result)
+  resultWindow.showInactive()
+  resultWindow.moveTop() // Force z-order on Windows
+  console.log(`[VoiceOverlay] Result window visible=${resultWindow.isVisible()}, bounds=${JSON.stringify(resultWindow.getBounds())}`)
 
   if (resultAutoDismissTimer) clearTimeout(resultAutoDismissTimer)
   resultAutoDismissTimer = setTimeout(() => {

@@ -181,8 +181,9 @@ function VoiceOverlayApp(): React.JSX.Element {
   const ring2Scale = 1 + audioLevel * 0.7
   const ring3Scale = 1 + audioLevel * 1.0
 
-  // Don't render anything while idle (window is hidden anyway)
-  if (state === 'idle') return <div />
+  // Always render the full UI — window is hidden when idle anyway.
+  // Returning an empty <div /> causes transparent windows on Windows to
+  // appear invisible even after state changes (no content to composite).
 
   return (
     <div

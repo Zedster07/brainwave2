@@ -24,7 +24,11 @@ function VoiceResultApp() {
     }, 300)
   }
 
-  if (!result) return null
+  // Always render a container — returning null on transparent windows
+  // causes Windows compositor to have no content to paint.
+  if (!result) {
+    return <div style={{ width: '100%', height: '100%', background: 'transparent' }} />
+  }
 
   const isSuccess = result.status === 'completed'
 
