@@ -188,13 +188,18 @@ function VoiceOverlayApp(): React.JSX.Element {
   return (
     <div
       style={{
-        width: '100%',
-        height: '100%',
+        width: '100vw',
+        height: '100vh',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        background: 'transparent',
+        background: state === 'idle'
+          ? 'transparent'
+          : 'rgba(0, 0, 0, 0.35)',
+        backdropFilter: state === 'idle' ? 'none' : 'blur(8px)',
+        WebkitBackdropFilter: state === 'idle' ? 'none' : 'blur(8px)',
+        transition: 'background 0.3s ease, backdrop-filter 0.3s ease',
       }}
     >
       {/* Outer glow rings */}

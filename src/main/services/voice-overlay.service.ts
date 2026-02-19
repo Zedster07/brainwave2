@@ -38,10 +38,10 @@ function createVoiceWindow(): BrowserWindow {
   const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
 
   const win = new BrowserWindow({
-    width: 220,
-    height: 260,
-    x: Math.round(sw / 2 - 110),
-    y: Math.round(sh / 2 - 130),
+    width: sw,
+    height: sh,
+    x: 0,
+    y: 0,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -97,12 +97,12 @@ function createVoiceWindow(): BrowserWindow {
 }
 
 function createResultWindow(): BrowserWindow {
-  const { height: sh } = screen.getPrimaryDisplay().workAreaSize
+  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
 
   const win = new BrowserWindow({
     width: 420,
     height: 360,
-    x: 16,
+    x: sw - 420 - 16,
     y: Math.round(sh / 2 - 180),
     frame: false,
     transparent: true,
@@ -169,9 +169,9 @@ function onHotkeyToggle(): void {
     isRecording = true
     console.log('[VoiceOverlay] Hotkey toggle → start recording')
 
-    // Re-center in case display changed
+    // Full-screen overlay — reposition to cover entire display
     const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
-    voiceWindow.setPosition(Math.round(sw / 2 - 110), Math.round(sh / 2 - 130))
+    voiceWindow.setBounds({ x: 0, y: 0, width: sw, height: sh })
 
     // Send IPC BEFORE showing so renderer updates content while still hidden
     voiceWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, { state: 'listening' })
@@ -348,8 +348,9 @@ function showResult(result: {
 }): void {
   if (!resultWindow || resultWindow.isDestroyed() || !resultWindowReady) return
 
-  const { height: sh } = screen.getPrimaryDisplay().workAreaSize
-  resultWindow.setPosition(16, Math.round(sh / 2 - 180))
+  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
+  // Position on the right side of the screen
+  resultWindow.setPosition(sw - 420 - 16, Math.round(sh / 2 - 180))
   // Send IPC BEFORE showing so renderer has content ready
   resultWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_RESULT, result)
   resultWindow.showInactive()

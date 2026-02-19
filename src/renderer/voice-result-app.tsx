@@ -9,10 +9,14 @@ function VoiceResultApp() {
 
   useEffect(() => {
     const unsub = window.voiceResult?.onResult((payload: VoiceOverlayResultPayload) => {
-      setResult(payload)
+      // Fully reset animation state before setting new result
+      setVisible(false)
       setExiting(false)
-      // Slide in after a tiny delay so the DOM updates first
-      requestAnimationFrame(() => setVisible(true))
+      setResult(payload)
+      // Slide in after a frame so the DOM has the fresh content
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => setVisible(true))
+      })
     })
     return () => unsub?.()
   }, [])
@@ -20,6 +24,8 @@ function VoiceResultApp() {
   const handleDismiss = () => {
     setExiting(true)
     setTimeout(() => {
+      setVisible(false)
+      setExiting(false)
       window.voiceResult?.dismiss()
     }, 300)
   }
@@ -39,7 +45,7 @@ function VoiceResultApp() {
         height: '100%',
         display: 'flex',
         alignItems: 'flex-start',
-        justifyContent: 'flex-start',
+        justifyContent: 'flex-end',
         padding: 12,
         background: 'transparent',
       }}
@@ -54,7 +60,7 @@ function VoiceResultApp() {
           border: `1px solid ${isSuccess ? 'rgba(99, 102, 241, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
           boxShadow: `0 8px 32px rgba(0, 0, 0, 0.5), 0 0 60px ${isSuccess ? 'rgba(99, 102, 241, 0.1)' : 'rgba(239, 68, 68, 0.1)'}`,
           padding: 20,
-          transform: visible && !exiting ? 'translateX(0)' : 'translateX(-120%)',
+          transform: visible && !exiting ? 'translateX(0)' : 'translateX(120%)',
           opacity: visible && !exiting ? 1 : 0,
           transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.3s ease',
           overflow: 'hidden',
