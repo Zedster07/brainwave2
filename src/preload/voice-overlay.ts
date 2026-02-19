@@ -10,7 +10,10 @@ const api: VoiceOverlayAPI = {
     ipcRenderer.invoke(IPC_CHANNELS.VOICE_OVERLAY_SUBMIT, audioBuffer, mimeType),
 
   onStateChange: (callback: (state: VoiceOverlayStatePayload) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, state: VoiceOverlayStatePayload) => callback(state)
+    // Remove any stale listeners first — HMR full page reloads re-run
+    // the preload but ipcRenderer (Node EventEmitter) keeps old handlers
+    ipcRenderer.removeAllListeners(IPC_CHANNELS.VOICE_OVERLAY_STATE)
+    const handler = (_event: Electron.IpcRendererEvent, state: VoiceOverlayStatePayload): void => callback(state)
     ipcRenderer.on(IPC_CHANNELS.VOICE_OVERLAY_STATE, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.VOICE_OVERLAY_STATE, handler)
   },

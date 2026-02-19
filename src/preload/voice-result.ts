@@ -7,7 +7,9 @@ import { IPC_CHANNELS, type VoiceResultAPI, type VoiceOverlayResultPayload } fro
 
 const api: VoiceResultAPI = {
   onResult: (callback: (result: VoiceOverlayResultPayload) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, result: VoiceOverlayResultPayload) => callback(result)
+    // Remove stale listeners — HMR full reloads keep old ipcRenderer handlers
+    ipcRenderer.removeAllListeners(IPC_CHANNELS.VOICE_OVERLAY_RESULT)
+    const handler = (_event: Electron.IpcRendererEvent, result: VoiceOverlayResultPayload): void => callback(result)
     ipcRenderer.on(IPC_CHANNELS.VOICE_OVERLAY_RESULT, handler)
     return () => ipcRenderer.removeListener(IPC_CHANNELS.VOICE_OVERLAY_RESULT, handler)
   },

@@ -25,6 +25,7 @@ import { getEventBus } from '../agents/event-bus'
 let voiceWindow: BrowserWindow | null = null
 let resultWindow: BrowserWindow | null = null
 let isRecording = false
+let isSubmitting = false // guard against duplicate audio submissions
 let voiceWindowReady = false
 let resultWindowReady = false
 let activeTaskId: string | null = null
@@ -176,6 +177,8 @@ function onHotkeyToggle(): void {
     voiceWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, { state: 'listening' })
     voiceWindow.showInactive()
     voiceWindow.moveTop() // Force z-order on Windows
+    // Force compositor repaint — transparent windows on Windows can go blank after hide/show
+    voiceWindow.webContents.invalidate()
     console.log(`[VoiceOverlay] Window visible=${voiceWindow.isVisible()}, bounds=${JSON.stringify(voiceWindow.getBounds())}`)
   }
 }
@@ -187,6 +190,13 @@ function registerIpc(): void {
   ipcMain.handle(
     IPC_CHANNELS.VOICE_OVERLAY_SUBMIT,
     async (_event, audioBuffer: ArrayBuffer, mimeType: string) => {
+      // Guard: ignore duplicate submissions (HMR can cause double IPC calls)
+      if (isSubmitting) {
+        console.warn('[VoiceOverlay] Ignoring duplicate audio submission')
+        return
+      }
+      isSubmitting = true
+
       const audioSize = audioBuffer.byteLength
       console.log(`[VoiceOverlay] Audio received: ${(audioSize / 1024).toFixed(1)} KB, type=${mimeType}`)
 
@@ -194,6 +204,7 @@ function registerIpc(): void {
         console.warn('[VoiceOverlay] Audio too short, ignoring')
         sendVoiceState('error', 'Recording too short — try again')
         setTimeout(() => hideVoice(), 1500)
+        isSubmitting = false
         return
       }
 
@@ -262,6 +273,8 @@ function registerIpc(): void {
         console.error('[VoiceOverlay] Pipeline failed:', err)
         sendVoiceState('error', 'Failed to process')
         setTimeout(() => hideVoice(), 2500)
+      } finally {
+        isSubmitting = false
       }
     }
   )
@@ -320,7 +333,11 @@ function sendVoiceState(state: string, message?: string): void {
 }
 
 function hideVoice(): void {
-  if (voiceWindow && !voiceWindow.isDestroyed()) voiceWindow.hide()
+  if (voiceWindow && !voiceWindow.isDestroyed()) {
+    // Reset renderer state so it's ready for the next activation
+    sendVoiceState('idle')
+    voiceWindow.hide()
+  }
 }
 
 function showResult(result: {
@@ -452,6 +469,7 @@ export function destroyVoiceOverlay(): void {
   voiceWindowReady = false
   resultWindowReady = false
   isRecording = false
+  isSubmitting = false
 
   console.log('[VoiceOverlay] Destroyed')
 }
