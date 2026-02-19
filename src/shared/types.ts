@@ -206,6 +206,7 @@ export const IPC_CHANNELS = {
   VOICE_OVERLAY_RESULT: 'voice-overlay:result',       // main → result card (task completed)
   VOICE_OVERLAY_DISMISS: 'voice-overlay:dismiss',     // result card → main (user dismissed)
   VOICE_OVERLAY_SUBMIT: 'voice-overlay:submit',       // overlay → main (audio buffer to transcribe + submit)
+  VOICE_OVERLAY_READY: 'voice-overlay:ready',         // overlay → main (renderer mounted + IPC listener ready)
 } as const
 
 // ─── IPC Payload Types ───
@@ -271,6 +272,8 @@ export interface VoiceOverlayAPI {
   onStateChange: (callback: (state: VoiceOverlayStatePayload) => void) => () => void
   /** Dismiss the overlay (user cancelled) */
   dismiss: () => void
+  /** Signal that the renderer is mounted and ready to receive IPC */
+  signalReady: () => void
 }
 
 /** API exposed to the result card window */

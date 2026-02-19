@@ -51,7 +51,7 @@ function createVoiceWindow(): BrowserWindow {
     show: false,
     hasShadow: false,
     webPreferences: {
-      preload: join(__dirname, '../../preload/voice-overlay.js'),
+      preload: join(__dirname, '../preload/voice-overlay.js'),
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
@@ -64,14 +64,25 @@ function createVoiceWindow(): BrowserWindow {
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/voice-overlay.html`)
+    const url = `${process.env['ELECTRON_RENDERER_URL']}/voice-overlay.html`
+    console.log(`[VoiceOverlay] Loading voice window from: ${url}`)
+    win.loadURL(url).catch((err) => {
+      console.error('[VoiceOverlay] loadURL failed:', err)
+    })
   } else {
-    win.loadFile(join(__dirname, '../../renderer/voice-overlay.html'))
+    const filePath = join(__dirname, '../renderer/voice-overlay.html')
+    console.log(`[VoiceOverlay] Loading voice window from file: ${filePath}`)
+    win.loadFile(filePath).catch((err) => {
+      console.error('[VoiceOverlay] loadFile failed:', err)
+    })
   }
 
   win.webContents.on('did-finish-load', () => {
-    voiceWindowReady = true
-    console.log('[VoiceOverlay] Voice window pre-loaded and ready')
+    console.log('[VoiceOverlay] Voice window HTML loaded (waiting for renderer ready signal)')
+  })
+
+  win.webContents.on('did-fail-load', (_e, code, desc) => {
+    console.error(`[VoiceOverlay] Voice window FAILED to load: ${code} ${desc}`)
   })
 
   // Prevent close — just hide
@@ -101,7 +112,7 @@ function createResultWindow(): BrowserWindow {
     show: false,
     hasShadow: false,
     webPreferences: {
-      preload: join(__dirname, '../../preload/voice-result.js'),
+      preload: join(__dirname, '../preload/voice-result.js'),
       sandbox: false,
       contextIsolation: true,
       nodeIntegration: false,
@@ -111,12 +122,16 @@ function createResultWindow(): BrowserWindow {
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/voice-result.html`)
   } else {
-    win.loadFile(join(__dirname, '../../renderer/voice-result.html'))
+    win.loadFile(join(__dirname, '../renderer/voice-result.html'))
   }
 
   win.webContents.on('did-finish-load', () => {
     resultWindowReady = true
     console.log('[VoiceOverlay] Result window pre-loaded and ready')
+  })
+
+  win.webContents.on('did-fail-load', (_e, code, desc) => {
+    console.error(`[VoiceOverlay] Result window FAILED to load: ${code} ${desc}`)
   })
 
   win.on('close', (e) => {
@@ -251,6 +266,12 @@ function registerIpc(): void {
     if (resultAutoDismissTimer) clearTimeout(resultAutoDismissTimer)
     if (resultWindow && !resultWindow.isDestroyed()) resultWindow.hide()
   })
+
+  // Renderer signals that React mounted and IPC listener is active
+  ipcMain.on(IPC_CHANNELS.VOICE_OVERLAY_READY, () => {
+    voiceWindowReady = true
+    console.log('[VoiceOverlay] Renderer ready — voice overlay fully initialized')
+  })
 }
 
 // ─── Task Completion Watcher ────────────────────────────────
@@ -381,21 +402,29 @@ async function transcribeAudio(
 // ─── Public API ─────────────────────────────────────────────
 
 export function initVoiceOverlay(): void {
-  registerIpc()
-  watchTaskCompletion()
+  console.log('[VoiceOverlay] Initializing...')
 
-  // Pre-create windows (hidden) — they'll be instant to show later
-  voiceWindow = createVoiceWindow()
-  resultWindow = createResultWindow()
+  try {
+    registerIpc()
+    watchTaskCompletion()
 
-  // Toggle hotkey: press once to start, again to stop
-  const accel = 'Ctrl+Shift+Space'
-  const ok = globalShortcut.register(accel, onHotkeyToggle)
+    // Pre-create windows (hidden) — they'll be instant to show later
+    voiceWindow = createVoiceWindow()
+    console.log(`[VoiceOverlay] Voice window created, id=${voiceWindow?.id}`)
+    resultWindow = createResultWindow()
+    console.log(`[VoiceOverlay] Result window created, id=${resultWindow?.id}`)
 
-  if (!ok) {
-    console.warn(`[VoiceOverlay] Failed to register shortcut: ${accel}`)
-  } else {
-    console.log(`[VoiceOverlay] Ready — ${accel} to toggle voice input`)
+    // Toggle hotkey: press once to start, again to stop
+    const accel = 'Ctrl+Shift+Space'
+    const ok = globalShortcut.register(accel, onHotkeyToggle)
+
+    if (!ok) {
+      console.error(`[VoiceOverlay] FAILED to register shortcut: ${accel}`)
+    } else {
+      console.log(`[VoiceOverlay] Ready — ${accel} to toggle voice input`)
+    }
+  } catch (err) {
+    console.error('[VoiceOverlay] INIT FAILED:', err)
   }
 }
 

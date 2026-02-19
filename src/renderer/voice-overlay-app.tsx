@@ -23,6 +23,10 @@ function VoiceOverlayApp(): React.JSX.Element {
     if (isRecordingRef.current) return
     isRecordingRef.current = true
 
+    // Set listening state IMMEDIATELY so UI shows before mic connects
+    setState('listening')
+    setMessage('')
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true },
@@ -65,9 +69,6 @@ function VoiceOverlayApp(): React.JSX.Element {
 
       mediaRecorderRef.current = recorder
       recorder.start(250)
-
-      setState('listening')
-      setMessage('')
     } catch {
       isRecordingRef.current = false
       setState('error')
@@ -128,6 +129,17 @@ function VoiceOverlayApp(): React.JSX.Element {
 
   // ── Listen for state changes from main process ──
   useEffect(() => {
+    // Pre-warm microphone permission on first load so it's instant when needed
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((stream) => {
+        // Got permission — immediately release the stream
+        stream.getTracks().forEach((t) => t.stop())
+        console.log('[VoiceOverlay] Mic permission pre-warmed')
+      })
+      .catch(() => {
+        console.warn('[VoiceOverlay] Failed to pre-warm mic permission')
+      })
+
     const unsub = window.voiceOverlay?.onStateChange(
       (payload: VoiceOverlayStatePayload) => {
         const { state: newState, message: msg } = payload
@@ -151,6 +163,10 @@ function VoiceOverlayApp(): React.JSX.Element {
         }
       }
     )
+
+    // Signal to main process: "I'm mounted and listening for IPC"
+    window.voiceOverlay?.signalReady()
+    console.log('[VoiceOverlay] Renderer ready, signaled main process')
 
     return () => {
       unsub?.()

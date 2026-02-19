@@ -16,6 +16,8 @@ const api: VoiceOverlayAPI = {
   },
 
   dismiss: () => ipcRenderer.send(IPC_CHANNELS.VOICE_OVERLAY_DISMISS),
+
+  signalReady: () => ipcRenderer.send(IPC_CHANNELS.VOICE_OVERLAY_READY),
 }
 
 contextBridge.exposeInMainWorld('voiceOverlay', api)
