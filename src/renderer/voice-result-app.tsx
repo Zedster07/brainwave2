@@ -10,7 +10,8 @@ function VoiceResultApp() {
   useEffect(() => {
     const unsub = window.voiceResult?.onResult((payload: VoiceOverlayResultPayload) => {
       setResult(payload)
-      // Slide in after a tiny delay
+      setExiting(false)
+      // Slide in after a tiny delay so the DOM updates first
       requestAnimationFrame(() => setVisible(true))
     })
     return () => unsub?.()

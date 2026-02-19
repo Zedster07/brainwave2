@@ -1,23 +1,17 @@
 /**
- * Voice Overlay Service
+ * Voice Overlay Service — v2 (Optimized)
  *
- * Manages global hotkey (Ctrl+Shift+Space) for push-to-talk voice input.
- * Creates two overlay windows:
- *   1. Voice overlay — tiny centered mic animation while recording
- *   2. Result card — slides in from the left when task completes
+ * Toggle-based global hotkey (Ctrl+Shift+Space):
+ *   Press once → show overlay + start recording
+ *   Press again → stop recording → transcribe → submit task → hide
  *
- * Flow:
- *   Hold Ctrl+Shift+Space → show overlay + start recording
- *   Release → stop recording → transcribe (Whisper) → submit task
- *   Task completes in background → show result card
- *   User clicks ✕ → dismiss result card
+ * Windows are pre-created at init and kept hidden for instant show/hide.
  */
 import {
   BrowserWindow,
   globalShortcut,
   ipcMain,
   screen,
-  session,
 } from 'electron'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
@@ -26,29 +20,34 @@ import { getOrchestrator } from '../agents/orchestrator'
 import { getDatabase } from '../db/database'
 import { getEventBus } from '../agents/event-bus'
 
-let voiceOverlayWindow: BrowserWindow | null = null
-let resultCardWindow: BrowserWindow | null = null
-let isHotkeyDown = false
+// ─── State ──────────────────────────────────────────────────
+
+let voiceWindow: BrowserWindow | null = null
+let resultWindow: BrowserWindow | null = null
+let isRecording = false
+let voiceWindowReady = false
+let resultWindowReady = false
 let activeTaskId: string | null = null
 let activePrompt: string | null = null
+let resultAutoDismissTimer: ReturnType<typeof setTimeout> | null = null
 
-// ─── Window Creation ────────────────────────────────────────
+// ─── Window Factories ───────────────────────────────────────
 
-function createVoiceOverlay(): BrowserWindow {
-  const { width: screenW, height: screenH } = screen.getPrimaryDisplay().workAreaSize
+function createVoiceWindow(): BrowserWindow {
+  const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
 
   const win = new BrowserWindow({
     width: 220,
-    height: 250,
-    x: Math.round(screenW / 2 - 110),
-    y: Math.round(screenH / 2 - 125),
+    height: 260,
+    x: Math.round(sw / 2 - 110),
+    y: Math.round(sh / 2 - 130),
     frame: false,
     transparent: true,
     alwaysOnTop: true,
     resizable: false,
     movable: false,
     skipTaskbar: true,
-    focusable: false,         // Don't steal focus from other apps
+    focusable: false,
     show: false,
     hasShadow: false,
     webPreferences: {
@@ -59,40 +58,46 @@ function createVoiceOverlay(): BrowserWindow {
     },
   })
 
-  // Ensure mic permissions for the overlay window
-  win.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
-    callback(['media', 'mediaKeySystem', 'audioCapture'].includes(permission))
+  // Grant mic permissions
+  win.webContents.session.setPermissionRequestHandler((_wc, permission, cb) => {
+    cb(['media', 'mediaKeySystem', 'audioCapture'].includes(permission))
   })
 
-  // Load the overlay renderer
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     win.loadURL(`${process.env['ELECTRON_RENDERER_URL']}/voice-overlay.html`)
   } else {
     win.loadFile(join(__dirname, '../../renderer/voice-overlay.html'))
   }
 
-  win.on('closed', () => {
-    voiceOverlayWindow = null
+  win.webContents.on('did-finish-load', () => {
+    voiceWindowReady = true
+    console.log('[VoiceOverlay] Voice window pre-loaded and ready')
+  })
+
+  // Prevent close — just hide
+  win.on('close', (e) => {
+    e.preventDefault()
+    win.hide()
   })
 
   return win
 }
 
-function createResultCard(): BrowserWindow {
-  const { height: screenH } = screen.getPrimaryDisplay().workAreaSize
+function createResultWindow(): BrowserWindow {
+  const { height: sh } = screen.getPrimaryDisplay().workAreaSize
 
   const win = new BrowserWindow({
     width: 420,
     height: 360,
     x: 16,
-    y: Math.round(screenH / 2 - 180),
+    y: Math.round(sh / 2 - 180),
     frame: false,
     transparent: true,
     alwaysOnTop: true,
     resizable: false,
     movable: false,
     skipTaskbar: true,
-    focusable: true,          // Needs focus for the close button
+    focusable: true,
     show: false,
     hasShadow: false,
     webPreferences: {
@@ -109,160 +114,157 @@ function createResultCard(): BrowserWindow {
     win.loadFile(join(__dirname, '../../renderer/voice-result.html'))
   }
 
-  win.on('closed', () => {
-    resultCardWindow = null
+  win.webContents.on('did-finish-load', () => {
+    resultWindowReady = true
+    console.log('[VoiceOverlay] Result window pre-loaded and ready')
+  })
+
+  win.on('close', (e) => {
+    e.preventDefault()
+    win.hide()
   })
 
   return win
 }
 
-// ─── Hotkey Handling ────────────────────────────────────────
+// ─── Hotkey Toggle ──────────────────────────────────────────
 
-function onHotkeyDown(): void {
-  if (isHotkeyDown) return // Already recording
-  isHotkeyDown = true
+function onHotkeyToggle(): void {
+  if (isRecording) {
+    // ── Stop recording ──
+    isRecording = false
+    console.log('[VoiceOverlay] Hotkey toggle → stop recording')
 
-  console.log('[VoiceOverlay] Hotkey pressed — starting recording')
-
-  // Ensure overlay window exists and is loaded
-  if (!voiceOverlayWindow || voiceOverlayWindow.isDestroyed()) {
-    voiceOverlayWindow = createVoiceOverlay()
-    voiceOverlayWindow.once('ready-to-show', () => {
-      voiceOverlayWindow?.showInactive()
-      voiceOverlayWindow?.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, {
-        state: 'listening',
+    if (voiceWindow && !voiceWindow.isDestroyed() && voiceWindowReady) {
+      voiceWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, {
+        state: 'processing',
+        message: 'Processing...',
       })
-    })
+    }
   } else {
-    voiceOverlayWindow.showInactive()
-    voiceOverlayWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, {
-      state: 'listening',
-    })
-  }
-}
+    // ── Start recording ──
+    if (!voiceWindow || voiceWindow.isDestroyed() || !voiceWindowReady) {
+      console.warn('[VoiceOverlay] Voice window not ready, cannot start')
+      return
+    }
 
-function onHotkeyUp(): void {
-  if (!isHotkeyDown) return
-  isHotkeyDown = false
+    isRecording = true
+    console.log('[VoiceOverlay] Hotkey toggle → start recording')
 
-  console.log('[VoiceOverlay] Hotkey released — stopping recording')
+    // Re-center in case display changed
+    const { width: sw, height: sh } = screen.getPrimaryDisplay().workAreaSize
+    voiceWindow.setPosition(Math.round(sw / 2 - 110), Math.round(sh / 2 - 130))
 
-  // Tell the overlay to stop recording and submit
-  if (voiceOverlayWindow && !voiceOverlayWindow.isDestroyed()) {
-    voiceOverlayWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, {
-      state: 'idle', // triggers stop + submit in renderer
-    })
+    voiceWindow.showInactive()
+    voiceWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, { state: 'listening' })
   }
 }
 
 // ─── IPC Handlers ───────────────────────────────────────────
 
-function registerVoiceOverlayIpc(): void {
-  // Overlay renderer submits audio buffer after recording stops
-  ipcMain.handle(IPC_CHANNELS.VOICE_OVERLAY_SUBMIT, async (_event, audioBuffer: ArrayBuffer, mimeType: string) => {
-    console.log('[VoiceOverlay] Audio received, transcribing...')
+function registerIpc(): void {
+  // Audio submitted from the overlay renderer after recording stops
+  ipcMain.handle(
+    IPC_CHANNELS.VOICE_OVERLAY_SUBMIT,
+    async (_event, audioBuffer: ArrayBuffer, mimeType: string) => {
+      const audioSize = audioBuffer.byteLength
+      console.log(`[VoiceOverlay] Audio received: ${(audioSize / 1024).toFixed(1)} KB, type=${mimeType}`)
 
-    // Show processing state
-    if (voiceOverlayWindow && !voiceOverlayWindow.isDestroyed()) {
-      voiceOverlayWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, {
-        state: 'processing',
-        message: 'Transcribing...',
-      })
-    }
-
-    try {
-      // Reuse the existing STT pipeline
-      const transcript = await transcribeAudio(audioBuffer, mimeType)
-
-      if ('error' in transcript) {
-        if (voiceOverlayWindow && !voiceOverlayWindow.isDestroyed()) {
-          voiceOverlayWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, {
-            state: 'error',
-            message: transcript.error,
-          })
-        }
-        // Auto-hide after showing error
-        setTimeout(() => hideVoiceOverlay(), 2000)
+      if (audioSize < 1000) {
+        console.warn('[VoiceOverlay] Audio too short, ignoring')
+        sendVoiceState('error', 'Recording too short — try again')
+        setTimeout(() => hideVoice(), 1500)
         return
       }
 
-      const text = transcript.text?.trim()
-      if (!text) {
-        hideVoiceOverlay()
-        return
-      }
+      sendVoiceState('processing', 'Transcribing...')
 
-      console.log(`[VoiceOverlay] Transcript: "${text}"`)
-      activePrompt = text
+      try {
+        const transcript = await transcribeAudio(audioBuffer, mimeType)
 
-      // Update overlay to show submitting state
-      if (voiceOverlayWindow && !voiceOverlayWindow.isDestroyed()) {
-        voiceOverlayWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, {
-          state: 'processing',
-          message: 'Submitting task...',
-        })
-      }
-
-      // Submit task via orchestrator
-      const orchestrator = getOrchestrator()
-      const db = getDatabase()
-
-      // Create a voice session
-      const { randomUUID } = await import('crypto')
-      const sessionId = randomUUID()
-      const now = Date.now()
-      const sessionTitle = `🎙️ Voice`
-      db.run(
-        `INSERT INTO chat_sessions (id, title, session_type, created_at, updated_at) VALUES (?, ?, 'autonomous', ?, ?)`,
-        sessionId, sessionTitle, now, now
-      )
-
-      // Forward session to main renderer
-      BrowserWindow.getAllWindows().forEach((win) => {
-        if (win !== voiceOverlayWindow && win !== resultCardWindow) {
-          win.webContents.send('session:created', {
-            id: sessionId, title: sessionTitle, type: 'autonomous',
-            createdAt: now, updatedAt: now,
-          })
+        if ('error' in transcript) {
+          console.error('[VoiceOverlay] STT error:', transcript.error)
+          sendVoiceState('error', transcript.error)
+          setTimeout(() => hideVoice(), 2500)
+          return
         }
-      })
 
-      const task = await orchestrator.submitTask(text, 'normal', sessionId)
-      activeTaskId = task.id
+        const text = transcript.text?.trim()
+        if (!text) {
+          console.warn('[VoiceOverlay] Empty transcript')
+          sendVoiceState('error', 'No speech detected')
+          setTimeout(() => hideVoice(), 1500)
+          return
+        }
 
-      // Hide the voice overlay — task is now running in background
-      hideVoiceOverlay()
-    } catch (err) {
-      console.error('[VoiceOverlay] Submit failed:', err)
-      if (voiceOverlayWindow && !voiceOverlayWindow.isDestroyed()) {
-        voiceOverlayWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, {
-          state: 'error',
-          message: 'Failed to submit task',
+        console.log(`[VoiceOverlay] Transcript: "${text}"`)
+        activePrompt = text
+
+        sendVoiceState('processing', 'Submitting task...')
+
+        // Create voice session + submit task
+        const db = getDatabase()
+        const { randomUUID } = await import('crypto')
+        const sessionId = randomUUID()
+        const now = Date.now()
+        const sessionTitle = '🎙️ Voice'
+
+        db.run(
+          `INSERT INTO chat_sessions (id, title, session_type, created_at, updated_at) VALUES (?, ?, 'autonomous', ?, ?)`,
+          sessionId,
+          sessionTitle,
+          now,
+          now
+        )
+
+        // Notify main renderer about the new session
+        BrowserWindow.getAllWindows().forEach((win) => {
+          if (win !== voiceWindow && win !== resultWindow) {
+            win.webContents.send('session:created', {
+              id: sessionId,
+              title: sessionTitle,
+              type: 'autonomous',
+              createdAt: now,
+              updatedAt: now,
+            })
+          }
         })
-      }
-      setTimeout(() => hideVoiceOverlay(), 2000)
-    }
-  })
 
-  // Dismiss handler (from result card close button)
+        const orchestrator = getOrchestrator()
+        const task = await orchestrator.submitTask(text, 'normal', sessionId)
+        activeTaskId = task.id
+
+        console.log(`[VoiceOverlay] Task submitted: ${task.id}`)
+
+        // Hide overlay — task runs in background
+        hideVoice()
+      } catch (err) {
+        console.error('[VoiceOverlay] Pipeline failed:', err)
+        sendVoiceState('error', 'Failed to process')
+        setTimeout(() => hideVoice(), 2500)
+      }
+    }
+  )
+
+  // Dismiss from either overlay
   ipcMain.on(IPC_CHANNELS.VOICE_OVERLAY_DISMISS, () => {
-    hideResultCard()
+    if (resultAutoDismissTimer) clearTimeout(resultAutoDismissTimer)
+    if (resultWindow && !resultWindow.isDestroyed()) resultWindow.hide()
   })
 }
 
-// ─── Task Completion Listener ───────────────────────────────
+// ─── Task Completion Watcher ────────────────────────────────
 
-function watchForTaskCompletion(): void {
+function watchTaskCompletion(): void {
   const eventBus = getEventBus()
 
   eventBus.onEvent('task:completed', (data) => {
     if (data.taskId !== activeTaskId) return
-
-    console.log(`[VoiceOverlay] Task ${data.taskId} completed — showing result card`)
-    showResultCard({
+    console.log(`[VoiceOverlay] Task completed: ${data.taskId}`)
+    showResult({
       taskId: data.taskId,
       prompt: activePrompt ?? '',
-      result: data.result ?? 'Task completed.',
+      result: (data.result as string) ?? 'Task completed.',
       status: 'completed',
     })
     activeTaskId = null
@@ -271,12 +273,11 @@ function watchForTaskCompletion(): void {
 
   eventBus.onEvent('task:failed', (data) => {
     if (data.taskId !== activeTaskId) return
-
-    console.log(`[VoiceOverlay] Task ${data.taskId} failed — showing result card`)
-    showResultCard({
+    console.log(`[VoiceOverlay] Task failed: ${data.taskId}`)
+    showResult({
       taskId: data.taskId,
       prompt: activePrompt ?? '',
-      result: data.error ?? 'Task failed.',
+      result: (data.error as string) ?? 'Task failed.',
       status: 'failed',
     })
     activeTaskId = null
@@ -284,37 +285,38 @@ function watchForTaskCompletion(): void {
   })
 }
 
-// ─── Window Helpers ─────────────────────────────────────────
+// ─── Helpers ────────────────────────────────────────────────
 
-function hideVoiceOverlay(): void {
-  if (voiceOverlayWindow && !voiceOverlayWindow.isDestroyed()) {
-    voiceOverlayWindow.hide()
+function sendVoiceState(state: string, message?: string): void {
+  if (voiceWindow && !voiceWindow.isDestroyed() && voiceWindowReady) {
+    voiceWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_STATE, { state, message })
   }
 }
 
-function showResultCard(result: { taskId: string; prompt: string; result: string; status: 'completed' | 'failed' }): void {
-  if (!resultCardWindow || resultCardWindow.isDestroyed()) {
-    resultCardWindow = createResultCard()
-    resultCardWindow.once('ready-to-show', () => {
-      resultCardWindow?.showInactive()
-      resultCardWindow?.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_RESULT, result)
-    })
-  } else {
-    resultCardWindow.showInactive()
-    resultCardWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_RESULT, result)
-  }
-
-  // Auto-dismiss after 30 seconds if user doesn't close it
-  setTimeout(() => hideResultCard(), 30_000)
+function hideVoice(): void {
+  if (voiceWindow && !voiceWindow.isDestroyed()) voiceWindow.hide()
 }
 
-function hideResultCard(): void {
-  if (resultCardWindow && !resultCardWindow.isDestroyed()) {
-    resultCardWindow.hide()
-  }
+function showResult(result: {
+  taskId: string
+  prompt: string
+  result: string
+  status: 'completed' | 'failed'
+}): void {
+  if (!resultWindow || resultWindow.isDestroyed() || !resultWindowReady) return
+
+  const { height: sh } = screen.getPrimaryDisplay().workAreaSize
+  resultWindow.setPosition(16, Math.round(sh / 2 - 180))
+  resultWindow.showInactive()
+  resultWindow.webContents.send(IPC_CHANNELS.VOICE_OVERLAY_RESULT, result)
+
+  if (resultAutoDismissTimer) clearTimeout(resultAutoDismissTimer)
+  resultAutoDismissTimer = setTimeout(() => {
+    if (resultWindow && !resultWindow.isDestroyed()) resultWindow.hide()
+  }, 30_000)
 }
 
-// ─── STT Reuse ──────────────────────────────────────────────
+// ─── STT ────────────────────────────────────────────────────
 
 async function transcribeAudio(
   audioBuffer: ArrayBuffer,
@@ -327,112 +329,92 @@ async function transcribeAudio(
 
   const db = getDatabase()
   const keyRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'stt_api_key')
-  const providerRow = db.get<{ value: string }>(`SELECT value FROM settings WHERE key = ?`, 'stt_provider')
+  const providerRow = db.get<{ value: string }>(
+    `SELECT value FROM settings WHERE key = ?`,
+    'stt_provider'
+  )
 
   const sttKey = keyRow ? JSON.parse(keyRow.value) : ''
   const sttProvider: string = providerRow ? JSON.parse(providerRow.value) : 'groq'
 
   if (!sttKey) {
-    return { error: 'No STT API key configured. Go to Settings → Models.' }
+    return { error: 'No STT API key. Go to Settings → Models.' }
   }
 
-  let baseURL: string
-  let model: string
-  if (sttProvider === 'openai') {
-    baseURL = 'https://api.openai.com/v1'
-    model = 'whisper-1'
-  } else {
-    baseURL = 'https://api.groq.com/openai/v1'
-    model = 'whisper-large-v3-turbo'
-  }
+  const baseURL =
+    sttProvider === 'openai' ? 'https://api.openai.com/v1' : 'https://api.groq.com/openai/v1'
+  const model = sttProvider === 'openai' ? 'whisper-1' : 'whisper-large-v3-turbo'
 
-  const ext = mimeType.includes('webm') ? 'webm' : mimeType.includes('ogg') ? 'ogg' : mimeType.includes('mp4') ? 'mp4' : 'wav'
-  const tempPath = join(tmpdir(), `brainwave-voice-${randomUUID()}.${ext}`)
+  const ext = mimeType.includes('webm')
+    ? 'webm'
+    : mimeType.includes('ogg')
+      ? 'ogg'
+      : 'wav'
+  const tempPath = join(tmpdir(), `bw-voice-${randomUUID()}.${ext}`)
   writeFileSync(tempPath, Buffer.from(audioBuffer))
 
   try {
     const client = new OpenAI({ apiKey: sttKey, baseURL, timeout: 30_000 })
     const fs = await import('node:fs')
-
     const transcription = await client.audio.transcriptions.create({
       file: fs.createReadStream(tempPath),
       model,
       response_format: 'text',
     })
-
     return {
-      text: typeof transcription === 'string'
-        ? transcription
-        : (transcription as unknown as { text: string }).text,
+      text:
+        typeof transcription === 'string'
+          ? transcription
+          : (transcription as unknown as { text: string }).text,
     }
   } catch (err) {
-    console.error('[VoiceOverlay] STT error:', err)
     return { error: err instanceof Error ? err.message : 'Transcription failed' }
   } finally {
-    try { unlinkSync(tempPath) } catch { /* ignore */ }
+    try {
+      unlinkSync(tempPath)
+    } catch {
+      /* ignore */
+    }
   }
 }
 
 // ─── Public API ─────────────────────────────────────────────
 
-/**
- * Initialize the voice overlay system.
- * Call after app is ready and IPC handlers are registered.
- */
 export function initVoiceOverlay(): void {
-  registerVoiceOverlayIpc()
-  watchForTaskCompletion()
+  registerIpc()
+  watchTaskCompletion()
 
-  // Register global hotkey: Ctrl+Shift+Space
-  // Note: Electron's globalShortcut doesn't have keyup events,
-  // so we use a two-shortcut approach:
-  //   - Register the main shortcut (fires on keydown, repeats while held)
-  //   - Use a polling approach to detect release
-  const accelerator = 'Ctrl+Shift+Space'
+  // Pre-create windows (hidden) — they'll be instant to show later
+  voiceWindow = createVoiceWindow()
+  resultWindow = createResultWindow()
 
-  const registered = globalShortcut.register(accelerator, () => {
-    if (!isHotkeyDown) {
-      onHotkeyDown()
+  // Toggle hotkey: press once to start, again to stop
+  const accel = 'Ctrl+Shift+Space'
+  const ok = globalShortcut.register(accel, onHotkeyToggle)
 
-      // Poll for key release — check every 100ms if keys are still held
-      const pollInterval = setInterval(() => {
-        // Use a native keyboard state check via a BrowserWindow query
-        // Since Electron doesn't expose key state directly, we detect
-        // "release" by the fact that no more accelerator callbacks fire.
-        // We use a simple timeout: if the accelerator callback hasn't
-        // fired for 300ms, consider the key released.
-        if (isHotkeyDown && lastAcceleratorFire > 0 && Date.now() - lastAcceleratorFire > 300) {
-          clearInterval(pollInterval)
-          onHotkeyUp()
-        }
-      }, 100)
-    }
-    lastAcceleratorFire = Date.now()
-  })
-
-  if (!registered) {
-    console.warn(`[VoiceOverlay] Failed to register global shortcut: ${accelerator}`)
+  if (!ok) {
+    console.warn(`[VoiceOverlay] Failed to register shortcut: ${accel}`)
   } else {
-    console.log(`[VoiceOverlay] Global shortcut registered: ${accelerator}`)
+    console.log(`[VoiceOverlay] Ready — ${accel} to toggle voice input`)
   }
 }
 
-let lastAcceleratorFire = 0
-
-/**
- * Cleanup: unregister global shortcut and close overlay windows.
- */
 export function destroyVoiceOverlay(): void {
   globalShortcut.unregisterAll()
+  if (resultAutoDismissTimer) clearTimeout(resultAutoDismissTimer)
 
-  if (voiceOverlayWindow && !voiceOverlayWindow.isDestroyed()) {
-    voiceOverlayWindow.destroy()
-    voiceOverlayWindow = null
+  // Force-destroy windows (bypass close prevention)
+  for (const win of [voiceWindow, resultWindow]) {
+    if (win && !win.isDestroyed()) {
+      win.removeAllListeners('close')
+      win.destroy()
+    }
   }
-  if (resultCardWindow && !resultCardWindow.isDestroyed()) {
-    resultCardWindow.destroy()
-    resultCardWindow = null
-  }
+  voiceWindow = null
+  resultWindow = null
+  voiceWindowReady = false
+  resultWindowReady = false
+  isRecording = false
 
   console.log('[VoiceOverlay] Destroyed')
 }
